@@ -1,6 +1,6 @@
 # 🏗️ Rental Manager
 
-A Flutter Android application for managing construction site equipment rentals, inventory, customers, invoicing, and payments — all in one place.
+A Flutter Android application for managing rentals of any item type, including inventory, customers, invoicing, and payments — all in one place.
 
 ---
 
@@ -13,7 +13,7 @@ A Flutter Android application for managing construction site equipment rentals, 
 - Pull-to-refresh support.
 
 ### 📦 Inventory Management
-- Add, edit, and delete construction materials and equipment.
+- Add, edit, and delete any rentable items.
 - Categorize items (defaults to `General`) with optional notes per item.
 - Real-time stock levels: **Total / Out / Free** displayed as color-coded chips.
 - Category filter chips for quick browsing.
@@ -99,11 +99,11 @@ A Flutter Android application for managing construction site equipment rentals, 
 | Storage Paths | `path_provider` (v2.1.4) |
 | Notifications | `flutter_local_notifications` (v17.2.4) |
 | Persistence | `shared_preferences` (v2.3.2) |
-| Fonts | `google_fonts` (v6.2.1) — Roboto for PDF |
+| Fonts | Local asset fonts (`assets/fonts/Roboto-*.ttf`) |
 
 ---
 
-## 🗄️ Database Schema (v15)
+## 🗄️ Database Schema (v17)
 
 | Table | Key Columns |
 |---|---|
@@ -113,7 +113,7 @@ A Flutter Android application for managing construction site equipment rentals, 
 | `orders` | `id`, `customerId`, `customerName`, `createdDate` |
 | `business_info` | `id`, `name`, `phone`, `phone2`, `email`, `address`, `upiId`, `upiName` |
 
-Migration path: v11 → v12 → v13 (indexes) → v14 (`paymentMethod`) → v15 (`rentals.phone2`)
+Migration path: v11 → v12 → v13 (indexes) → v14 (`paymentMethod`) → v15 (`rentals.phone2`) → v16 (`customers.joinedDate`, `customers.isBlacklisted`) → v17 (`payment_logs`)
 
 ---
 
@@ -152,11 +152,11 @@ flutter build apk --split-per-abi
 
 ```
 lib/
-└── main.dart                        # Single-file architecture (~2,484 lines)
+└── main.dart                        # Single-file architecture
     ├── ThemeModeNotifier            # Light / Dark / System theme state
     ├── AppSettingsNotifier          # Currency, density, font, overdue days, notifications
     ├── NotificationService          # Local notification scheduling & checks
-    ├── DatabaseHelper               # SQLite DB (v15), migrations, all data access
+    ├── DatabaseHelper               # SQLite DB (v17), migrations, all data access
     ├── RentalGroup / groupRentalsByInvoice()  # Core grouping model
     ├── MainShell                    # Bottom nav scaffold + drawer
     ├── DashboardScreen              # Stats, overdue alerts, quick actions

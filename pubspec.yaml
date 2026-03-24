@@ -1,5 +1,5 @@
 name: rental_manager
-description: Construction site rental and inventory manager
+description: Offline rental and inventory manager for any item type
 publish_to: none
 version: 2.0.0+11
 
