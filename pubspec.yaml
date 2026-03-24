@@ -1,0 +1,34 @@
+name: rental_manager
+description: Construction site rental and inventory manager
+publish_to: none
+version: 2.0.0+11
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  sqflite: ^2.3.3
+  path_provider: ^2.1.4
+  file_picker: ^8.1.2
+  pdf: ^3.11.1
+  printing: ^5.13.2
+  shared_preferences: ^2.3.2
+  flutter_local_notifications: ^17.2.4
+  fl_chart: ^0.70.0          # ← NEW: for the beautiful monthly revenue chart
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  fonts:
+    - family: Roboto  # Roboto fonts
+      fonts:
+        - asset: assets/fonts/Roboto-Regular.ttf
+        - asset: assets/fonts/Roboto-Italic.ttf
+        - asset: assets/fonts/Roboto-Bold.ttf
+          weight: 700
