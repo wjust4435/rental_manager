@@ -1,0 +1,1 @@
+Initial fastlane metadata setup for F-Droid packaging and listing updates V 2.2.0

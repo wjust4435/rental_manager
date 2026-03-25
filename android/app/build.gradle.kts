@@ -32,6 +32,11 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
 }
 
 flutter {

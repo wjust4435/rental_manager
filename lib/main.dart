@@ -4526,7 +4526,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const ListTile(
           leading: Icon(Icons.construction, color: Colors.amber),
           title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: Text('Version 2.1.0  |  Database v18'),
+          subtitle: Text('Version 2.2.0  |  Database v18'),
         ),
         ListTile(
           leading: const Icon(Icons.privacy_tip_outlined, color: Colors.amber),
