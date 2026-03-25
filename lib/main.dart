@@ -1568,6 +1568,16 @@ class _MainShellState extends State<MainShell> {
 
   void _nav(Widget screen) { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (_) => screen)); }
 
+  Widget _drawerNavItem({
+    required IconData icon,
+    required String title,
+    required VoidCallback onTap,
+  }) => ListTile(
+    leading: Icon(icon),
+    title: Text(title),
+    onTap: onTap,
+  );
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
@@ -1597,13 +1607,13 @@ class _MainShellState extends State<MainShell> {
       ]),
     ),
     Expanded(child: ListView(padding: EdgeInsets.zero, children: [
-      ListTile(leading: const Icon(Icons.account_balance_wallet), title: const Text('Payment Ledger'), onTap: () => _nav(const PaymentLedgerScreen())),
-      ListTile(leading: const Icon(Icons.history), title: const Text('Payment History'), onTap: () => _nav(const PaymentHistoryScreen())),
+      _drawerNavItem(icon: Icons.account_balance_wallet, title: 'Payment Ledger', onTap: () => _nav(const PaymentLedgerScreen())),
+      _drawerNavItem(icon: Icons.history, title: 'Payment History', onTap: () => _nav(const PaymentHistoryScreen())),
       const Divider(height: 1),
-      ListTile(leading: const Icon(Icons.store),        title: const Text('Business Info'),     onTap: () => _nav(const BusinessInfoScreen())),
-      ListTile(leading: const Icon(Icons.group),        title: const Text('Manage Customers'),  onTap: () => _nav(const CustomersManagementScreen())),
-      ListTile(leading: const Icon(Icons.receipt_long), title: const Text('Proforma'), onTap: () => _nav(const OrdersListScreen())),
-      ListTile(leading: const Icon(Icons.request_quote), title: const Text('Invoice'), onTap: () => _nav(const FinalInvoicesScreen())),
+      _drawerNavItem(icon: Icons.store, title: 'Business Info', onTap: () => _nav(const BusinessInfoScreen())),
+      _drawerNavItem(icon: Icons.group, title: 'Manage Customers', onTap: () => _nav(const CustomersManagementScreen())),
+      _drawerNavItem(icon: Icons.receipt_long, title: 'Proforma', onTap: () => _nav(const OrdersListScreen())),
+      _drawerNavItem(icon: Icons.request_quote, title: 'Invoice', onTap: () => _nav(const FinalInvoicesScreen())),
       const Divider(height: 1),
       ListTile(leading: const Icon(Icons.save_alt), title: const Text('Export Backup'),
           onTap: () async { final m = ScaffoldMessenger.of(context); Navigator.pop(context); final result = await DatabaseHelper.exportBackup(); m.showSnackBar(SnackBar(content: Text(result))); }),
@@ -4349,6 +4359,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ]),
   );
 
+  Widget _switchSettingTile({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String subtitle,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) => SwitchListTile(
+    secondary: Icon(icon, color: color),
+    title: Text(title),
+    subtitle: Text(subtitle),
+    value: value,
+    onChanged: onChanged,
+  );
+
   @override
   Widget build(BuildContext context) {
     final s  = appSettingsNotifier;
@@ -4429,20 +4454,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // ====================================
         _sectionHeader('DASHBOARD'),
 
-        SwitchListTile(
-          secondary: const Icon(Icons.leaderboard_outlined, color: Colors.orange),
-          title: const Text('Top Customers by Revenue'),
-          subtitle: const Text('Show/hide Top 5 revenue list on dashboard'),
-          value: s.showTopCustomersByRevenue,
-          onChanged: s.setShowTopCustomersByRevenue,
-        ),
-        SwitchListTile(
-          secondary: const Icon(Icons.history, color: Colors.orange),
-          title: const Text('Payment History Time Stamp'),
-          subtitle: const Text('Show/hide time (AM/PM) in Payment History entries'),
-          value: s.showPaymentHistoryTime,
-          onChanged: s.setShowPaymentHistoryTime,
-        ),
+        _switchSettingTile(icon: Icons.leaderboard_outlined, color: Colors.orange, title: 'Top Customers by Revenue', subtitle: 'Show/hide Top 5 revenue list on dashboard', value: s.showTopCustomersByRevenue, onChanged: s.setShowTopCustomersByRevenue),
+        _switchSettingTile(icon: Icons.history, color: Colors.orange, title: 'Payment History Time Stamp', subtitle: 'Show/hide time (AM/PM) in Payment History entries', value: s.showPaymentHistoryTime, onChanged: s.setShowPaymentHistoryTime),
 
         const Divider(height: 1),
 
@@ -4451,34 +4464,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // ====================================
         _sectionHeader('NOTIFICATIONS'),
 
-        SwitchListTile(
-          secondary: const Icon(Icons.alarm_on, color: Colors.orange),
-          title: const Text('Overdue Rental Alert'),
-          subtitle: Text('Alert when a rental exceeds ${s.overdueDays} days'),
-          value: s.notifyOverdue,
-          onChanged: s.setNotifyOverdue,
-        ),
-        SwitchListTile(
-          secondary: const Icon(Icons.payments_outlined, color: Colors.orange),
-          title: const Text('Pending Payment Reminder'),
-          subtitle: const Text('Remind about unsettled returned invoices'),
-          value: s.notifyPendingPayments,
-          onChanged: s.setNotifyPendingPayments,
-        ),
-        SwitchListTile(
-          secondary: const Icon(Icons.undo, color: Colors.orange),
-          title: const Text('Refund Wait Alert'),
-          subtitle: const Text('Alert when a customer has been waiting too long for a refund'),
-          value: s.notifyRefundWait,
-          onChanged: s.setNotifyRefundWait,
-        ),
-        SwitchListTile(
-          secondary: const Icon(Icons.event_note_outlined, color: Colors.orange),
-          title: const Text('Rental Anniversary Alert'),
-          subtitle: const Text('Notify on milestone days - 7, 14, 30, 60...'),
-          value: s.notifyAnniversary,
-          onChanged: s.setNotifyAnniversary,
-        ),
+        _switchSettingTile(icon: Icons.alarm_on, color: Colors.orange, title: 'Overdue Rental Alert', subtitle: 'Alert when a rental exceeds ${s.overdueDays} days', value: s.notifyOverdue, onChanged: s.setNotifyOverdue),
+        _switchSettingTile(icon: Icons.payments_outlined, color: Colors.orange, title: 'Pending Payment Reminder', subtitle: 'Remind about unsettled returned invoices', value: s.notifyPendingPayments, onChanged: s.setNotifyPendingPayments),
+        _switchSettingTile(icon: Icons.undo, color: Colors.orange, title: 'Refund Wait Alert', subtitle: 'Alert when a customer has been waiting too long for a refund', value: s.notifyRefundWait, onChanged: s.setNotifyRefundWait),
+        _switchSettingTile(icon: Icons.event_note_outlined, color: Colors.orange, title: 'Rental Anniversary Alert', subtitle: 'Notify on milestone days - 7, 14, 30, 60...', value: s.notifyAnniversary, onChanged: s.setNotifyAnniversary),
 
 
         const Divider(height: 1, indent: 16, endIndent: 16),
@@ -4487,13 +4476,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: Text('SCHEDULED DIGESTS',
               style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.4, color: Colors.amber[600])),
         ),
-        SwitchListTile(
-          secondary: const Icon(Icons.summarize_outlined, color: Colors.amber),
-          title: const Text('Daily Summary'),
-          subtitle: const Text('A morning snapshot of active rentals and pending collections'),
-          value: s.notifySummary,
-          onChanged: s.setNotifySummary,
-        ),
+        _switchSettingTile(icon: Icons.summarize_outlined, color: Colors.amber, title: 'Daily Summary', subtitle: 'A morning snapshot of active rentals and pending collections', value: s.notifySummary, onChanged: s.setNotifySummary),
         _infoBox('Fires once per app open, at most once per day.'),
 
         const Divider(height: 1),
@@ -4543,7 +4526,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const ListTile(
           leading: Icon(Icons.construction, color: Colors.amber),
           title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: Text('Version 2.0.0  |  Database v18'),
+          subtitle: Text('Version 2.1.0  |  Database v18'),
         ),
         ListTile(
           leading: const Icon(Icons.privacy_tip_outlined, color: Colors.amber),

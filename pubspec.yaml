@@ -1,7 +1,7 @@
 name: rental_manager
 description: Offline rental and inventory manager for any item type
 publish_to: none
-version: 2.0.0+11
+version: 2.1.0+11
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
