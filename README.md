@@ -54,7 +54,7 @@ It handles inventory, customers, orders, proforma, final invoices, payment ledge
 ### Payment History
 - Dedicated page for logged payment/refund events.
 - Can open globally or scoped to one invoice from History card button.
-- Time display supports AM/PM and can be toggled in Settings.
+- Time display can be toggled and formatted as 12-hour or 24-hour in Settings.
 
 ### Customers And Business Info
 - Customer directory with search and profile details.
@@ -65,14 +65,19 @@ It handles inventory, customers, orders, proforma, final invoices, payment ledge
 ### Settings
 - Theme mode, card density, and font scale.
 - Currency symbol selection.
+- Locale-aware number grouping for money values.
 - Overdue-days threshold.
+- Date format selector (`dd/MMM/yyyy`, `dd/MM/yyyy`, `MM/dd/yyyy`, `yyyy-MM-dd`).
+- Time format selector (12-hour or 24-hour).
+- Language selector (English/Hindi).
 - Notification toggles.
 - Top customers on/off toggle.
 - Payment History time stamp toggle.
+- Privacy & Data information dialog.
 
 ### Backup And Restore
-- Export local DB backup file.
-- Restore from previous backup file.
+- Manual export of local DB backup file.
+- Manual restore from previous backup file.
 
 ## Tech Stack
 
@@ -102,7 +107,7 @@ It handles inventory, customers, orders, proforma, final invoices, payment ledge
 ## Getting Started
 
 ```bash
-git clone https://gitlab.com/wjust44351/rental_manager.git
+git clone https://gitlab.com/wjust4435/rental_manager.git
 cd rental_manager
 flutter clean
 flutter pub get
@@ -118,3 +123,7 @@ flutter build apk --release
 ## License
 
 MIT (see `LICENSE` file).
+
+## Privacy
+
+See `PRIVACY.md` for offline data-handling policy.

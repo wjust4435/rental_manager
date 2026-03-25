@@ -11,25 +11,35 @@ import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:intl/intl.dart';
 
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  await NotificationService.initialize();
   runApp(const RentalManagerApp());
+  unawaited(_initializeServicesInBackground());
+}
+
+Future<void> _initializeServicesInBackground() async {
+  try {
+    await NotificationService.initialize();
+  } catch (_) {
+    // Keep app startup resilient even if a platform service init fails.
+  }
 }
 
 // =================================================
 // Theme Notifier
 // =================================================
 class ThemeModeNotifier extends ChangeNotifier {
-  ThemeMode _mode = ThemeMode.system;
+  ThemeMode _mode = ThemeMode.dark;
   ThemeMode get mode => _mode;
 
   ThemeModeNotifier() { _load(); }
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString('themeMode') ?? 'system';
+    final saved = prefs.getString('themeMode') ?? 'dark';
     _mode = saved == 'light' ? ThemeMode.light : saved == 'dark' ? ThemeMode.dark : ThemeMode.system;
     notifyListeners();
   }
@@ -51,8 +61,9 @@ class AppSettingsNotifier extends ChangeNotifier {
   int    _overdueDays        = 30;
   String _cardDensity        = 'comfortable'; // 'comfortable' | 'compact'
   String _fontSize           = 'medium';      // 'small' | 'medium' | 'large'
+  String _dateFormat         = 'dd/MMM/yyyy'; // 'dd/MMM/yyyy' | 'dd/MM/yyyy' | 'MM/dd/yyyy' | 'yyyy-MM-dd'
+  String _timeFormat         = '12h';         // '12h' | '24h'
   String _firstDayOfWeek     = 'Monday';      // 'Monday' | 'Sunday'
-  String _autoBackupSchedule = 'off';         // 'off' | 'daily' | 'weekly' | 'monthly'
   bool   _showTopCustomersByRevenue = true;
   bool   _showPaymentHistoryTime = true;
   bool   _notifyOverdue      = true;
@@ -66,8 +77,9 @@ class AppSettingsNotifier extends ChangeNotifier {
   int    get overdueDays         => _overdueDays;
   String get cardDensity         => _cardDensity;
   String get fontSize            => _fontSize;
+  String get dateFormat          => _dateFormat;
+  String get timeFormat          => _timeFormat;
   String get firstDayOfWeek      => _firstDayOfWeek;
-  String get autoBackupSchedule  => _autoBackupSchedule;
   bool   get showTopCustomersByRevenue => _showTopCustomersByRevenue;
   bool   get showPaymentHistoryTime => _showPaymentHistoryTime;
   bool   get notifyOverdue       => _notifyOverdue;
@@ -93,8 +105,9 @@ class AppSettingsNotifier extends ChangeNotifier {
     _overdueDays          = p.getInt('overdueDays')             ?? 30;
     _cardDensity          = p.getString('cardDensity')          ?? 'comfortable';
     _fontSize             = p.getString('fontSize')             ?? 'medium';
+    _dateFormat           = p.getString('dateFormat')           ?? 'dd/MMM/yyyy';
+    _timeFormat           = p.getString('timeFormat')           ?? '12h';
     _firstDayOfWeek       = p.getString('firstDayOfWeek')       ?? 'Monday';
-    _autoBackupSchedule   = p.getString('autoBackupSchedule')   ?? 'off';
     _showTopCustomersByRevenue = p.getBool('showTopCustomersByRevenue') ?? true;
     _showPaymentHistoryTime = p.getBool('showPaymentHistoryTime') ?? true;
     _notifyOverdue        = p.getBool('notifyOverdue')          ?? true;
@@ -112,8 +125,9 @@ class AppSettingsNotifier extends ChangeNotifier {
     await p.setInt('overdueDays',            _overdueDays);
     await p.setString('cardDensity',         _cardDensity);
     await p.setString('fontSize',            _fontSize);
+    await p.setString('dateFormat',          _dateFormat);
+    await p.setString('timeFormat',          _timeFormat);
     await p.setString('firstDayOfWeek',      _firstDayOfWeek);
-    await p.setString('autoBackupSchedule',  _autoBackupSchedule);
     await p.setBool('showTopCustomersByRevenue', _showTopCustomersByRevenue);
     await p.setBool('showPaymentHistoryTime', _showPaymentHistoryTime);
     await p.setBool('notifyOverdue',         _notifyOverdue);
@@ -128,8 +142,9 @@ class AppSettingsNotifier extends ChangeNotifier {
   Future<void> setOverdueDays(int v)             async { _overdueDays         = v.clamp(1, 999); notifyListeners(); await _save(); }
   Future<void> setCardDensity(String v)          async { _cardDensity         = v; notifyListeners(); await _save(); }
   Future<void> setFontSize(String v)             async { _fontSize            = v; notifyListeners(); await _save(); }
+  Future<void> setDateFormat(String v)           async { _dateFormat          = v; notifyListeners(); await _save(); }
+  Future<void> setTimeFormat(String v)           async { _timeFormat          = v; notifyListeners(); await _save(); }
   Future<void> setFirstDayOfWeek(String v)       async { _firstDayOfWeek      = v; notifyListeners(); await _save(); }
-  Future<void> setAutoBackupSchedule(String v)   async { _autoBackupSchedule  = v; notifyListeners(); await _save(); }
   Future<void> setShowTopCustomersByRevenue(bool v) async { _showTopCustomersByRevenue = v; notifyListeners(); await _save(); }
   Future<void> setShowPaymentHistoryTime(bool v) async { _showPaymentHistoryTime = v; notifyListeners(); await _save(); }
   Future<void> setNotifyOverdue(bool v)          async { _notifyOverdue       = v; notifyListeners(); await _save(); }
@@ -208,11 +223,10 @@ class NotificationService {
     final pending = groups.where((g) => g.isFullyReturned && !g.isSettled && g.balance > 0).toList();
     if (pending.isEmpty) return;
     final total = pending.fold(0.0, (sum, g) => sum + g.balance);
-    final sym   = appSettingsNotifier.currencySymbol;
     await _show(
       _idPending,
       'Payment Pending',
-      '${pending.length} invoice${pending.length > 1 ? 's' : ''} unpaid - total due: $sym${total.toStringAsFixed(0)}.',
+      '${pending.length} invoice${pending.length > 1 ? 's' : ''} unpaid - total due: ${formatMoney(total, decimals: 0)}.',
     );
   }
 
@@ -258,11 +272,10 @@ class NotificationService {
     final pendingTotal = groups
         .where((g) => g.isFullyReturned && !g.isSettled && g.balance > 0)
         .fold(0.0, (sum, g) => sum + g.balance);
-    final sym = appSettingsNotifier.currencySymbol;
     await _show(
       _idSummary,
       'Daily Summary',
-      '$active active rental${active != 1 ? 's' : ''}  |  Pending: $sym${pendingTotal.toStringAsFixed(0)}.',
+      '$active active rental${active != 1 ? 's' : ''}  |  Pending: ${formatMoney(pendingTotal, decimals: 0)}.',
     );
   }
 
@@ -288,6 +301,39 @@ final themeModeNotifier  = ThemeModeNotifier();
 final appSettingsNotifier = AppSettingsNotifier();
 
 String get curr => appSettingsNotifier.currencySymbol;
+String get appLocaleTag => appSettingsNotifier.language == 'Hindi' ? 'en_IN' : 'en_US';
+Locale get appLocale => appSettingsNotifier.language == 'Hindi' ? const Locale('hi', 'IN') : const Locale('en', 'US');
+
+String formatMoney(num value, {int decimals = 2, bool withSymbol = true, bool absolute = false}) {
+  final v = absolute ? value.abs() : value;
+  final text = NumberFormat.currency(
+    locale: appLocaleTag,
+    symbol: '',
+    decimalDigits: decimals,
+  ).format(v).trim();
+  return withSymbol ? '$curr$text' : text;
+}
+
+String formatDateByPreference(DateTime dt) {
+  switch (appSettingsNotifier.dateFormat) {
+    case 'dd/MM/yyyy':
+      return DateFormat('dd/MM/yyyy').format(dt);
+    case 'MM/dd/yyyy':
+      return DateFormat('MM/dd/yyyy').format(dt);
+    case 'yyyy-MM-dd':
+      return DateFormat('yyyy-MM-dd').format(dt);
+    case 'dd/MMM/yyyy':
+    default:
+      return DateFormat('dd/MMM/yyyy').format(dt);
+  }
+}
+
+String formatTimeByPreference(DateTime dt) {
+  if (appSettingsNotifier.timeFormat == '24h') {
+    return DateFormat('HH:mm').format(dt);
+  }
+  return DateFormat('h:mm a').format(dt);
+}
 
 // =================================================
 // App Root
@@ -326,6 +372,16 @@ class _RentalManagerAppState extends State<RentalManagerApp> {
   Widget build(BuildContext context) => MaterialApp(
     debugShowCheckedModeBanner: false,
     title: 'Rental Manager',
+    locale: appLocale,
+    supportedLocales: const [
+      Locale('en', 'US'),
+      Locale('hi', 'IN'),
+    ],
+    localizationsDelegates: const [
+      GlobalMaterialLocalizations.delegate,
+      GlobalWidgetsLocalizations.delegate,
+      GlobalCupertinoLocalizations.delegate,
+    ],
     themeMode: themeModeNotifier.mode,
     theme: _theme(Brightness.light),
     darkTheme: _theme(Brightness.dark),
@@ -422,10 +478,10 @@ class _PaymentBreakdownLine extends StatelessWidget {
     }
 
     final sign = totalPaid < 0 ? '-' : '';
-    final paidText = 'Paid: $sign$curr${totalPaid.abs().toStringAsFixed(2)}';
+    final paidText = 'Paid: $sign${formatMoney(totalPaid, absolute: true)}';
     final parts = methodTotals.entries.map((e) {
       final partSign = e.value < 0 ? '-' : '';
-      return '${e.key}: $partSign$curr${e.value.abs().toStringAsFixed(2)}';
+      return '${e.key}: $partSign${formatMoney(e.value, absolute: true)}';
     }).toList();
 
     final style = TextStyle(fontSize: fontSize);
@@ -563,8 +619,7 @@ class DatabaseHelper {
     );
   }
 
-  static const _months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  static String formatDateFromDt(DateTime dt) => '${dt.day.toString().padLeft(2,'0')}/${_months[dt.month-1]}/${dt.year}';
+  static String formatDateFromDt(DateTime dt) => formatDateByPreference(dt);
   static String formatDateString(String? s) { if (s==null||s.isEmpty) return ''; try { return formatDateFromDt(DateTime.parse(s)); } catch (_) { return s; } }
   static String isoDate(DateTime dt) => dt.toIso8601String().split('T')[0];
   static String isoNow() => isoDate(DateTime.now());
@@ -992,8 +1047,6 @@ class DatabaseHelper {
     final fontBold    = fonts['bold']!;
     final fontItalic  = fonts['italic']!;
 
-    final pdfCurr = appSettingsNotifier.currencySymbol;
-
     String s(String k) => (biz[k] as String?) ?? '';
     final bizName=s('name'),bizPhone=s('phone'),bizPhone2=s('phone2'),bizEmail=s('email'),bizAddress=s('address'),bizUpi=s('upiId'),bizUpiName=s('upiName');
     final upiString = 'upi://pay?pa=$bizUpi&pn=${Uri.encodeComponent(bizUpiName)}&cu=INR';
@@ -1033,10 +1086,10 @@ class DatabaseHelper {
             headers:['Item','Qty','Rate/Day'],
             headerAlignments:{0:pw.Alignment.centerLeft,1:pw.Alignment.center,2:pw.Alignment.centerRight},
             cellAlignments:{0:pw.Alignment.centerLeft,1:pw.Alignment.center,2:pw.Alignment.centerRight},
-            data:[for (final r in rentals) [r['itemName']??'',(r['qty']??0).toString(),'$pdfCurr ${((r['rentalRate'] as num?)?.toDouble()??0.0).toStringAsFixed(2)}']],
+            data:[for (final r in rentals) [r['itemName']??'',(r['qty']??0).toString(),formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))]],
           ),
           pw.Divider(),
-          if (advance > 0) pw.Text('Advance Paid: $pdfCurr ${advance.toStringAsFixed(2)}', style:ts()),
+          if (advance > 0) pw.Text('Advance Paid: ${formatMoney(advance)}', style:ts()),
           pw.Text('Note: This is a Proforma (estimated rental summary).', style:ts(d:-1, italic:true)),
           pw.SizedBox(height:6), pw.Text('Thank you for your business!', style:ts(italic:true)),
           pw.SizedBox(height:40), pw.Align(alignment:pw.Alignment.center, child:sigLine('Customer Signature')),
@@ -1070,8 +1123,6 @@ class DatabaseHelper {
     final fontRegular = fonts['regular']!;
     final fontBold    = fonts['bold']!;
     final fontItalic  = fonts['italic']!;
-    final pdfCurr = appSettingsNotifier.currencySymbol;
-
     String s(String k) => (biz[k] as String?) ?? '';
     final bizName=s('name'),bizPhone=s('phone'),bizPhone2=s('phone2'),bizEmail=s('email'),bizAddress=s('address'),bizUpi=s('upiId'),bizUpiName=s('upiName');
     final upiString = 'upi://pay?pa=$bizUpi&pn=${Uri.encodeComponent(bizUpiName)}&cu=INR';
@@ -1089,9 +1140,9 @@ class DatabaseHelper {
       lineData.add([
         '${(r['itemName'] ?? '').toString()} | Return: ${returnText.isEmpty ? 'Pending' : returnText}',
         qty.toString(),
-        '$pdfCurr ${rate.toStringAsFixed(2)}',
+        formatMoney(rate),
         days.toString(),
-        '$pdfCurr ${lineTotal.toStringAsFixed(2)}',
+        formatMoney(lineTotal),
       ]);
       final rd = _safeParseDate(r['returnDate']);
       if (rd != null && (finalReturnDate == null || rd.isAfter(finalReturnDate))) {
@@ -1109,11 +1160,6 @@ class DatabaseHelper {
       final rate = (r['rentalRate'] as num?)?.toDouble() ?? 0.0;
       final days = _rentalChargeDays(r);
       return rate * qty * days;
-    }
-
-    String money(double v, {bool compact = false}) {
-      if (compact && v == v.roundToDouble()) return v.toStringAsFixed(0);
-      return v.toStringAsFixed(2);
     }
 
     pw.TextStyle ts({double d=0, bool bold=false, bool italic=false}) => pw.TextStyle(
@@ -1135,9 +1181,9 @@ class DatabaseHelper {
     pw.Widget thermalItemRow(Map<String, dynamic> r) {
       final ret = formatDateString(r['returnDate'] as String?);
       final qty = r['qty'] ?? 0;
-      final rate = money((r['rentalRate'] as num?)?.toDouble() ?? 0.0, compact: true);
+      final rate = (r['rentalRate'] as num?)?.toDouble() ?? 0.0;
       final days = _rentalChargeDays(r);
-      final amount = money(lineTotalOf(r), compact: true);
+      final amount = lineTotalOf(r);
       pw.Widget cell(String text, {bool bold = false, pw.TextAlign align = pw.TextAlign.left}) => pw.Padding(
         padding: const pw.EdgeInsets.symmetric(horizontal: 2, vertical: 2),
         child: pw.Text(text, style: ts(d: -1, bold: bold), textAlign: align),
@@ -1176,9 +1222,9 @@ class DatabaseHelper {
                 ]),
                 pw.TableRow(children: [
                   cell('$qty', align: pw.TextAlign.center),
-                  cell('$pdfCurr $rate', align: pw.TextAlign.center),
+                  cell(formatMoney(rate), align: pw.TextAlign.center),
                   cell('$days', align: pw.TextAlign.center),
-                  cell('$pdfCurr $amount', bold: true, align: pw.TextAlign.right),
+                  cell(formatMoney(amount), bold: true, align: pw.TextAlign.right),
                 ]),
               ],
             ),
@@ -1233,15 +1279,15 @@ class DatabaseHelper {
         pw.Divider(),
         pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
           pw.Text(is57mm ? 'Total:' : 'Total Billed:', style: ts(bold:true)),
-          pw.Text('$pdfCurr ${money(totalBilled, compact: is57mm)}', style: ts(bold:true)),
+          pw.Text(formatMoney(totalBilled, decimals: is57mm ? 0 : 2), style: ts(bold:true)),
         ]),
         pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
           pw.Text(is57mm ? 'Advance:' : 'Advance Paid:', style: ts()),
-          pw.Text('- $pdfCurr ${money(advance, compact: is57mm)}', style: ts()),
+          pw.Text('- ${formatMoney(advance, decimals: is57mm ? 0 : 2)}', style: ts()),
         ]),
         pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
           pw.Text(balance > 0 ? (is57mm ? 'Due:' : 'Balance Due:') : balance < 0 ? (is57mm ? 'Refund:' : 'Refund Due:') : 'Balance:', style: ts(bold:true)),
-          pw.Text('$pdfCurr ${money(balance.abs(), compact: is57mm)}', style: ts(bold:true)),
+          pw.Text(formatMoney(balance.abs(), decimals: is57mm ? 0 : 2), style: ts(bold:true)),
         ]),
         pw.Text(isSettled ? 'Payment Status: Settled' : 'Payment Status: Pending', style: ts()),
         pw.SizedBox(height: is57mm ? 18 : 30),
@@ -1395,7 +1441,7 @@ class _MainShellState extends State<MainShell> {
       ]),
     ),
     Expanded(child: ListView(padding: EdgeInsets.zero, children: [
-      ListTile(leading: const Icon(Icons.account_balance_wallet), title: const Text('Payment Ledger', style: TextStyle(fontWeight: FontWeight.bold)), onTap: () => _nav(const PaymentLedgerScreen())),
+      ListTile(leading: const Icon(Icons.account_balance_wallet), title: const Text('Payment Ledger'), onTap: () => _nav(const PaymentLedgerScreen())),
       ListTile(leading: const Icon(Icons.history), title: const Text('Payment History'), onTap: () => _nav(const PaymentHistoryScreen())),
       const Divider(height: 1),
       ListTile(leading: const Icon(Icons.store),        title: const Text('Business Info'),     onTap: () => _nav(const BusinessInfoScreen())),
@@ -1467,7 +1513,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           leading: const Icon(Icons.account_balance_wallet, color: Colors.orange),
           title: const Text('Pending Collections', style: TextStyle(fontWeight: FontWeight.w700)),
           subtitle: const Text('Outstanding amount from returned invoices'),
-          trailing: Text('$curr${_pendingCollections.toStringAsFixed(0)}',
+          trailing: Text(formatMoney(_pendingCollections, decimals: 0),
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.orange)),
           onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PaymentLedgerScreen())),
         ),
@@ -1491,7 +1537,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
                 title: Text((c['name'] as String?) ?? '', style: const TextStyle(fontWeight: FontWeight.w600)),
                 subtitle: Text('Invoices: ${c['invoices']}'),
-                trailing: Text('$curr${((c['revenue'] as double?) ?? 0.0).toStringAsFixed(0)}',
+                trailing: Text(formatMoney((c['revenue'] as double?) ?? 0.0, decimals: 0),
                     style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
               ),
             );
@@ -1585,8 +1631,8 @@ class _SettleGroupDialogState extends State<_SettleGroupDialog> {
       title: Text(isRefund ? 'Record Refund' : 'Record Payment'),
       content: Form(key: formKey, child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(isRefund
-            ? 'Refund Due to Customer: $curr${absBalance.toStringAsFixed(2)}'
-            : 'Total Remaining Balance: $curr${absBalance.toStringAsFixed(2)}'),
+            ? 'Refund Due to Customer: ${formatMoney(absBalance)}'
+            : 'Total Remaining Balance: ${formatMoney(absBalance)}'),
         const SizedBox(height: 16),
         TextFormField(
           controller: payC,
@@ -1756,12 +1802,12 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
               const SizedBox(height: 8),
               Text('Out: ${DatabaseHelper.formatDateString(g.checkoutDate)}'),
               const Divider(),
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Billed:'), Text('$curr${g.calculateTotalCost().toStringAsFixed(2)}')]),
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Paid:'), Text('- $curr${g.advance.toStringAsFixed(2)}')]),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Billed:'), Text(formatMoney(g.calculateTotalCost()))]),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Paid:'), Text('- ${formatMoney(g.advance)}')]),
               const SizedBox(height: 4),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 Text(g.balance < 0 ? 'Refund Due:' : 'Amount Due:', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                Text('$curr${g.balance.abs().toStringAsFixed(2)}', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: g.balance < 0 ? Colors.green : Colors.orange)),
+                Text(formatMoney(g.balance, absolute: true), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: g.balance < 0 ? Colors.green : Colors.orange)),
               ]),
               const SizedBox(height: 16),
               SizedBox(width: double.infinity, child: ElevatedButton.icon(
@@ -1855,10 +1901,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
     if (raw.isEmpty) return '';
     try {
       final dt = DateTime.parse(raw);
-      final h12 = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
-      final meridiem = dt.hour >= 12 ? 'PM' : 'AM';
-      final mm = dt.minute.toString().padLeft(2, '0');
-      return '$h12:$mm $meridiem';
+      return formatTimeByPreference(dt);
     } catch (_) {
       return '';
     }
@@ -1980,7 +2023,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                               children: [
                                 Text('Total Payments', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
                                 const SizedBox(height: 2),
-                                Text('$curr${_totalPayments.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                                Text(formatMoney(_totalPayments), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
                               ],
                             ),
                           ),
@@ -1990,7 +2033,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                               children: [
                                 Text('Total Refunds', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
                                 const SizedBox(height: 2),
-                                Text('$curr${_totalRefunds.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
+                                Text(formatMoney(_totalRefunds), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
                               ],
                             ),
                           ),
@@ -2059,7 +2102,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                             ),
                             const SizedBox(width: 8),
                             Text(
-                              '${isRefund ? '-' : '+'}$curr${amount.abs().toStringAsFixed(2)}',
+                              '${isRefund ? '-' : '+'}${formatMoney(amount, absolute: true)}',
                               style: TextStyle(fontWeight: FontWeight.bold, color: amountColor),
                             ),
                           ],
@@ -2455,31 +2498,36 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    body: Column(children: [
-      _SearchBar(controller: _searchCtrl, hint: 'Search by contractor or item...', onClear: () { _searchCtrl.clear(); _load(); }, onChanged: _onSearch),
-      Expanded(child: _groups.isEmpty
-          ? const Center(child: Text('No active rentals.'))
-          : RefreshIndicator(onRefresh: _load, child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 80),
-        itemCount: _groups.length,
-        itemBuilder: (_, i) => _buildCard(_groups[i]),
-      ))),
-    ]),
-    floatingActionButton: FloatingActionButton.extended(
-      icon: const Icon(Icons.add), label: const Text('New Rental'),
-      onPressed: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => const NewOrderScreen())); if (mounted) _load(); },
-    ),
-  );
+  Widget build(BuildContext context) {
+    final compact = appSettingsNotifier.cardDensity == 'compact';
+    return Scaffold(
+      body: Column(children: [
+        _SearchBar(controller: _searchCtrl, hint: 'Search by contractor or item...', onClear: () { _searchCtrl.clear(); _load(); }, onChanged: _onSearch),
+        Expanded(child: _groups.isEmpty
+            ? const Center(child: Text('No active rentals.'))
+            : RefreshIndicator(onRefresh: _load, child: ListView.builder(
+          padding: EdgeInsets.fromLTRB(12, compact ? 8 : 12, 12, 80),
+          itemCount: _groups.length,
+          itemBuilder: (_, i) => _buildCard(_groups[i]),
+        ))),
+      ]),
+      floatingActionButton: FloatingActionButton.extended(
+        icon: const Icon(Icons.add), label: const Text('New Rental'),
+        onPressed: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => const NewOrderScreen())); if (mounted) _load(); },
+      ),
+    );
+  }
 
   Widget _buildCard(RentalGroup g) {
     DateTime checkoutDt; try { checkoutDt = DateTime.parse(g.checkoutDate); } catch (_) { checkoutDt = DateTime.now(); }
+    final compact = appSettingsNotifier.cardDensity == 'compact';
+    final dividerHeight = compact ? 10.0 : 16.0;
     final overdueDays = appSettingsNotifier.overdueDays;
     final isOverdue = DateTime.now().difference(checkoutDt).inDays > overdueDays;
     final totalCost = g.calculateTotalCost(); final balance = totalCost - g.advance;
     final dayCount = DateTime.now().difference(checkoutDt).inDays;
     return Card(
-      margin: const EdgeInsets.only(bottom: 10),
+      margin: EdgeInsets.only(bottom: compact ? 8 : 10),
       clipBehavior: Clip.antiAlias,
       child: Container(
         decoration: isOverdue
@@ -2488,7 +2536,10 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
         child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           // Row 1: Contractor name + phone(s) + edit button
           Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
-            if (isOverdue) const Padding(padding: EdgeInsets.only(right: 6), child: Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 18)),
+            if (isOverdue) Padding(
+              padding: EdgeInsets.only(right: compact ? 4 : 6),
+              child: Icon(Icons.warning_amber_rounded, color: Colors.orange, size: compact ? 16 : 18),
+            ),
             Expanded(child: Text.rich(
               TextSpan(children: [
                 TextSpan(text: g.contractor, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
@@ -2499,13 +2550,23 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
               ]),
               overflow: TextOverflow.ellipsis,
             )),
-            IconButton(icon: const Icon(Icons.edit_outlined, size: 20), tooltip: 'Edit', onPressed: () => _editGroup(g)),
+            IconButton(
+              icon: Icon(Icons.edit_outlined, size: compact ? 18 : 20),
+              tooltip: 'Edit',
+              visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
+              padding: EdgeInsets.zero,
+              constraints: BoxConstraints.tightFor(width: compact ? 30 : 36, height: compact ? 30 : 36),
+              onPressed: () => _editGroup(g),
+            ),
           ]),
           // Row 2: Site address
           if (g.address.isNotEmpty)
-            Padding(padding: const EdgeInsets.only(top: 2), child: Text('Site: ${g.address}', style: TextStyle(fontSize: 13, color: Theme.of(context).textTheme.bodySmall?.color))),
+            Padding(
+              padding: EdgeInsets.only(top: compact ? 1 : 2),
+              child: Text('Site: ${g.address}', style: TextStyle(fontSize: 13, color: Theme.of(context).textTheme.bodySmall?.color)),
+            ),
           // Row 3: Invoice # + Checkout date + days pill inline
-          Padding(padding: const EdgeInsets.only(top: 2), child: Row(children: [
+          Padding(padding: EdgeInsets.only(top: compact ? 1 : 2), child: Row(children: [
             Expanded(child: Text.rich(
               TextSpan(
                 style: const TextStyle(fontSize: 12),
@@ -2528,26 +2589,39 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
               overflow: TextOverflow.ellipsis,
             )),
           ])),
-          const Divider(height: 16),
+          Divider(height: dividerHeight),
           // Items list
           ...g.items.map((r) {
             final isRet = r['returned'] == 1;
-            return Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Row(children: [
-              Icon(isRet ? Icons.check_circle : Icons.radio_button_checked, size: 16, color: isRet ? Colors.green : Colors.redAccent),
-              const SizedBox(width: 8),
-              Expanded(child: Text('${r['itemName']} x ${r['qty']} @ $curr${((r['rentalRate'] as num?)?.toDouble()??0.0).toStringAsFixed(2)}', style: TextStyle(fontSize: 13, color: isRet ? Colors.grey : null))),
+            return Padding(padding: EdgeInsets.symmetric(vertical: compact ? 2 : 4), child: Row(children: [
+              Icon(isRet ? Icons.check_circle : Icons.radio_button_checked, size: compact ? 14 : 16, color: isRet ? Colors.green : Colors.redAccent),
+              SizedBox(width: compact ? 6 : 8),
+              Expanded(child: Text('${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))}', style: TextStyle(fontSize: 13, color: isRet ? Colors.grey : null))),
               if (isRet) Text('Returned ${DatabaseHelper.formatDateString(r['returnDate'] as String?)}', style: const TextStyle(color: Colors.green, fontSize: 11)),
             ]));
           }),
-          if (g.notes.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4), child: Text('Note: ${g.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12))),
-          const Divider(height: 16),
+          if (g.notes.isNotEmpty) Padding(
+            padding: EdgeInsets.only(top: compact ? 2 : 4),
+            child: Text('Note: ${g.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12)),
+          ),
+          Divider(height: dividerHeight),
           Row(children: [
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Live Cost: $curr${totalCost.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.w600)),
-              Row(children: [Text('Advance: $curr${g.advance.toStringAsFixed(2)}'), _PaymentLabel(g.paymentMethod)]),
-              Text('Balance: $curr${balance.toStringAsFixed(2)}', style: TextStyle(color: balance>0?Colors.orangeAccent:Colors.greenAccent, fontWeight: FontWeight.bold)),
+              Text('Live Cost: ${formatMoney(totalCost)}', style: const TextStyle(fontWeight: FontWeight.w600)),
+              Row(children: [Text('Advance: ${formatMoney(g.advance)}'), _PaymentLabel(g.paymentMethod)]),
+              Text('Balance: ${formatMoney(balance)}', style: TextStyle(color: balance>0?Colors.orangeAccent:Colors.greenAccent, fontWeight: FontWeight.bold)),
             ])),
-            ElevatedButton.icon(icon: const Icon(Icons.check_circle_outline, size: 18), label: const Text('Return Items'), onPressed: () => _handleReturn(g)),
+            ElevatedButton.icon(
+              icon: Icon(Icons.check_circle_outline, size: compact ? 16 : 18),
+              label: const Text('Return Items'),
+              style: ElevatedButton.styleFrom(
+                padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 14, vertical: compact ? 8 : 10),
+                minimumSize: Size(0, compact ? 32 : 38),
+                tapTargetSize: compact ? MaterialTapTargetSize.shrinkWrap : MaterialTapTargetSize.padded,
+                visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
+              ),
+              onPressed: () => _handleReturn(g),
+            ),
           ]),
         ])),
       ),
@@ -2707,18 +2781,18 @@ class _HistoryTabState extends State<HistoryTab> {
             // Items list
             ...g.items.map((r) => Padding(padding: const EdgeInsets.only(bottom: 4), child: Row(children: [
               const Icon(Icons.check_circle, size: 14, color: Colors.green), const SizedBox(width: 8),
-              Expanded(child: Text('${r['itemName']} x ${r['qty']} @ $curr${((r['rentalRate'] as num?)?.toDouble()??0.0).toStringAsFixed(2)}', style: const TextStyle(fontSize: 13))),
+              Expanded(child: Text('${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))}', style: const TextStyle(fontSize: 13))),
               Text(DatabaseHelper.formatDateString(r['returnDate'] as String?), style: const TextStyle(fontSize: 11, color: Colors.grey)),
             ]))),
             if (g.notes.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4, bottom: 4), child: Text('Note: ${g.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12))),
             const Divider(height: 16),
-            Text('Total Billed: $curr${totalCost.toStringAsFixed(2)}'),
-            Text('Paid: $curr${g.advance.toStringAsFixed(2)}'),
+            Text('Total Billed: ${formatMoney(totalCost)}'),
+            Text('Paid: ${formatMoney(g.advance)}'),
             Row(
               children: [
                 Expanded(
                   child: Text(
-                    g.isSettled ? 'Settled: Balance Paid' : 'Final Balance: $curr${balance.toStringAsFixed(2)}',
+                    g.isSettled ? 'Settled: Balance Paid' : 'Final Balance: ${formatMoney(balance)}',
                     style: TextStyle(color: g.isSettled ? Colors.grey : (balance>0?Colors.orange:Colors.green), fontWeight: FontWeight.bold),
                   ),
                 ),
@@ -3021,7 +3095,7 @@ class _CustomersManagementScreenState extends State<CustomersManagementScreen> {
                         border: Border.all(color: Colors.orange, width: 0.8),
                       ),
                       child: Text(
-                        'Owes $curr${owed.toStringAsFixed(0)}',
+                        'Owes ${formatMoney(owed, decimals: 0)}',
                         style: const TextStyle(fontSize: 11, color: Colors.orange, fontWeight: FontWeight.bold),
                       ),
                     ),
@@ -3195,11 +3269,11 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
             physics: const NeverScrollableScrollPhysics(),
             crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 1.75,
             children: [
-              _MiniStatCard(label: 'Lifetime Billed', value: '$curr${totalSpent.toStringAsFixed(0)}', icon: Icons.receipt_long, color: Colors.blue),
+              _MiniStatCard(label: 'Lifetime Billed', value: formatMoney(totalSpent, decimals: 0), icon: Icons.receipt_long, color: Colors.blue),
               _MiniStatCard(label: 'Total Invoices',  value: '$totalInvoices', icon: Icons.folder_copy, color: Colors.purple),
               _MiniStatCard(label: 'Active Items',    value: '$activeRentals', icon: Icons.handshake,   color: Colors.orange),
-              if (owedBalance > 0)   _MiniStatCard(label: 'Amount Due',  value: '$curr${owedBalance.toStringAsFixed(0)}',   icon: Icons.payments, color: Colors.red),
-              if (refundBalance > 0) _MiniStatCard(label: 'Refund Due',  value: '$curr${refundBalance.toStringAsFixed(0)}', icon: Icons.undo,     color: Colors.green),
+              if (owedBalance > 0)   _MiniStatCard(label: 'Amount Due',  value: formatMoney(owedBalance, decimals: 0),   icon: Icons.payments, color: Colors.red),
+              if (refundBalance > 0) _MiniStatCard(label: 'Refund Due',  value: formatMoney(refundBalance, decimals: 0), icon: Icons.undo,     color: Colors.green),
             ],
           ),
 
@@ -3222,8 +3296,8 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
                   Text(owedBalance > 0 ? 'Outstanding Balance' : 'Refund Pending',
                       style: TextStyle(fontWeight: FontWeight.bold, color: owedBalance > 0 ? Colors.orange : Colors.green)),
                   Text(owedBalance > 0
-                      ? 'This customer owes $curr${owedBalance.toStringAsFixed(2)}'
-                      : 'You owe this customer $curr${refundBalance.toStringAsFixed(2)}',
+                      ? 'This customer owes ${formatMoney(owedBalance)}'
+                      : 'You owe this customer ${formatMoney(refundBalance)}',
                       style: const TextStyle(fontSize: 13)),
                 ])),
               ])),
@@ -3290,21 +3364,21 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
                           size: 13, color: r['returned'] == 1 ? Colors.green : Colors.redAccent),
                       const SizedBox(width: 6),
                       Expanded(child: Text(
-                        '${r['itemName']} x ${r['qty']} @ $curr${((r['rentalRate'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(2)}/day',
+                        '${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble() ?? 0.0))}/day',
                         style: TextStyle(fontSize: 13, color: r['returned'] == 1 ? Colors.grey : null),
                       )),
                     ]),
                   )),
                   const Divider(height: 12),
                   // Financials
-                  Text('Billed: $curr${totalCost.toStringAsFixed(2)}', style: const TextStyle(fontSize: 13)),
+                  Text('Billed: ${formatMoney(totalCost)}', style: const TextStyle(fontSize: 13)),
                   _PaymentBreakdownLine(totalPaid: g.advance, payments: payments, fallbackMethod: g.paymentMethod, fontSize: 13),
                   const SizedBox(height: 2),
                   Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                     Text(
                       g.isSettled ? 'Settled'
-                          : balance > 0 ? 'Due: $curr${balance.toStringAsFixed(2)}'
-                          : balance < 0 ? 'Refund: $curr${balance.abs().toStringAsFixed(2)}'
+                          : balance > 0 ? 'Due: ${formatMoney(balance)}'
+                          : balance < 0 ? 'Refund: ${formatMoney(balance, absolute: true)}'
                           : 'Clear',
                       style: TextStyle(
                         fontSize: 13, fontWeight: FontWeight.bold,
@@ -3658,8 +3732,8 @@ class _FinalInvoicesScreenState extends State<FinalInvoicesScreen> {
                   style: const TextStyle(fontWeight: FontWeight.bold)),
               subtitle: Text(
                 'Invoice #${g.orderId}  •  Returned: ${_lastReturnDate(g)}\n'
-                    'Billed: $curr${billed.toStringAsFixed(0)}  •  '
-                    '${balance > 0 ? 'Due' : balance < 0 ? 'Refund' : 'Clear'}: $curr${balance.abs().toStringAsFixed(0)}',
+                    'Billed: ${formatMoney(billed, decimals: 0)}  •  '
+                    '${balance > 0 ? 'Due' : balance < 0 ? 'Refund' : 'Clear'}: ${formatMoney(balance, decimals: 0, absolute: true)}',
               ),
               isThreeLine: true,
               trailing: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -3704,13 +3778,13 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen> {
           return Card(margin:const EdgeInsets.only(bottom:8), child:ListTile(
             leading: const Icon(Icons.inventory_2_outlined),
             title: Text(r['itemName']??'', style:const TextStyle(fontWeight:FontWeight.bold)),
-            subtitle: Text('Qty: $qty  *  Rate: $curr${rate.toStringAsFixed(2)}/day\nCheckout: ${DatabaseHelper.formatDateString(r['checkoutDate'] as String?)}'),
+            subtitle: Text('Qty: $qty  *  Rate: ${formatMoney(rate)}/day\nCheckout: ${DatabaseHelper.formatDateString(r['checkoutDate'] as String?)}'),
             isThreeLine: true,
-            trailing: Text('$curr${(qty*rate).toStringAsFixed(2)}', style:const TextStyle(fontWeight:FontWeight.bold)),
+            trailing: Text(formatMoney((qty*rate)), style:const TextStyle(fontWeight:FontWeight.bold)),
           ));
         })),
         Container(width:double.infinity, color:Theme.of(context).colorScheme.surfaceContainerHighest, padding:const EdgeInsets.symmetric(horizontal:16,vertical:12),
-            child:Text('Grand Total: $curr${grandTotal.toStringAsFixed(2)}/day', style:const TextStyle(fontSize:16,fontWeight:FontWeight.bold), textAlign:TextAlign.right)),
+            child:Text('Grand Total: ${formatMoney(grandTotal)}/day', style:const TextStyle(fontSize:16,fontWeight:FontWeight.bold), textAlign:TextAlign.right)),
       ]),
     );
   }
@@ -3875,6 +3949,75 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ).then((_) => ctrl.dispose());
   }
 
+  void _showDateFormatDialog() {
+    final s = appSettingsNotifier;
+    const formats = ['dd/MMM/yyyy', 'dd/MM/yyyy', 'MM/dd/yyyy', 'yyyy-MM-dd'];
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Date Format'),
+        children: formats.map((f) => ListTile(
+          title: Text(f),
+          trailing: s.dateFormat == f ? const Icon(Icons.check, color: Colors.amber) : null,
+          onTap: () {
+            s.setDateFormat(f);
+            Navigator.pop(ctx);
+          },
+        )).toList(),
+      ),
+    );
+  }
+
+  void _showTimeFormatDialog() {
+    final s = appSettingsNotifier;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Time Format'),
+        children: [
+          ListTile(
+            title: const Text('12-hour (AM/PM)'),
+            trailing: s.timeFormat == '12h' ? const Icon(Icons.check, color: Colors.amber) : null,
+            onTap: () {
+              s.setTimeFormat('12h');
+              Navigator.pop(ctx);
+            },
+          ),
+          ListTile(
+            title: const Text('24-hour'),
+            trailing: s.timeFormat == '24h' ? const Icon(Icons.check, color: Colors.amber) : null,
+            onTap: () {
+              s.setTimeFormat('24h');
+              Navigator.pop(ctx);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showPrivacyDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Privacy & Data'),
+        content: const SingleChildScrollView(
+          child: Text(
+            'Rental Manager is designed for offline-first use.\n\n'
+            '- Your business data is stored locally on your device database.\n'
+            '- The app does not require internet for normal operation.\n'
+            '- Payment and customer records stay on your device unless you export a backup manually.\n'
+            '- Keep your backup files secure, because they contain your app data.\n\n'
+            'You control your data: export, restore, and deletion actions are initiated by you.',
+          ),
+        ),
+        actions: [
+          ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+        ],
+      ),
+    );
+  }
+
   // ---- section header ----
   Widget _sectionHeader(String title) => Padding(
     padding: const EdgeInsets.fromLTRB(16, 24, 16, 6),
@@ -4028,30 +4171,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           onChanged: s.setNotifyAnniversary,
         ),
 
-        const Divider(height: 1),
-
-        // ====================================
-        // BACKUP & DATA
-        // ====================================
-        _sectionHeader('BACKUP & DATA'),
-
-        ListTile(
-          leading: const Icon(Icons.schedule_outlined, color: Colors.amber),
-          title: const Text('Auto-Backup Schedule'),
-          subtitle: const Text('Automatic database backup to local storage'),
-          trailing: DropdownButton<String>(
-            value: s.autoBackupSchedule,
-            underline: const SizedBox(),
-            items: const [
-              DropdownMenuItem(value: 'off',     child: Text('Off')),
-              DropdownMenuItem(value: 'daily',   child: Text('Daily')),
-              DropdownMenuItem(value: 'weekly',  child: Text('Weekly')),
-              DropdownMenuItem(value: 'monthly', child: Text('Monthly')),
-            ],
-            onChanged: (v) { if (v != null) s.setAutoBackupSchedule(v); },
-          ),
-        ),
-        _infoBox('Background scheduling will be activated in a future update. Manual backup is available via the drawer menu.', color: Colors.amber[800]),
 
         const Divider(height: 1, indent: 16, endIndent: 16),
         Padding(
@@ -4079,7 +4198,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ListTile(
           leading: const Icon(Icons.language, color: Colors.amber),
           title: const Text('Language'),
-          subtitle: const Text('More languages coming soon'),
+          subtitle: Text(s.language == 'Hindi' ? 'Hindi (India)' : 'English (US)'),
           trailing: DropdownButton<String>(
             value: s.language,
             underline: const SizedBox(),
@@ -4089,6 +4208,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
             onChanged: (v) { if (v != null) s.setLanguage(v); },
           ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.date_range_outlined, color: Colors.amber),
+          title: const Text('Date Format'),
+          subtitle: Text('Currently: ${s.dateFormat}'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _showDateFormatDialog,
+        ),
+        ListTile(
+          leading: const Icon(Icons.access_time, color: Colors.amber),
+          title: const Text('Time Format'),
+          subtitle: Text(s.timeFormat == '24h' ? '24-hour' : '12-hour (AM/PM)'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _showTimeFormatDialog,
         ),
 
         const Divider(height: 1),
@@ -4102,6 +4235,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           leading: Icon(Icons.construction, color: Colors.amber),
           title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)),
           subtitle: Text('Version 2.0.0  |  Database v17'),
+        ),
+        ListTile(
+          leading: const Icon(Icons.privacy_tip_outlined, color: Colors.amber),
+          title: const Text('Privacy & Data'),
+          subtitle: const Text('Offline-first data handling and user control'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _showPrivacyDialog,
         ),
         const SizedBox(height: 40),
       ]),
