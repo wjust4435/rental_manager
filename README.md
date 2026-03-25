@@ -60,6 +60,7 @@ It handles inventory, customers, orders, proforma, final invoices, payment ledge
 - Customer directory with search and profile details.
 - Customer profile shows rental history and lifetime stats.
 - Business info is stored and used in PDFs.
+- Tax profile can be configured (`No Tax`, `GST`, `VAT`, `Sales Tax`, `Consumption Tax`) with inclusive/exclusive mode and tax registration number.
 - UPI details can be included in PDF with QR code.
 
 ### Settings
@@ -95,12 +96,13 @@ It handles inventory, customers, orders, proforma, final invoices, payment ledge
 ## Database
 
 - Main local file: `siteyard_v3.db`
-- Current schema version in app: `v17`
+- Current schema version in app: `v18`
 - Includes `payment_logs` table for Payment History events.
 
 ## Android Permissions (Current Behavior)
 
-- Network permissions are explicitly removed in manifests (`INTERNET`, `ACCESS_NETWORK_STATE`).
+- Release build removes network permissions (`INTERNET`, `ACCESS_NETWORK_STATE`) to enforce offline production behavior.
+- Debug/profile builds keep localhost internet access for Flutter run/debug tooling.
 - Notifications are used for local reminders.
 - Storage/file access is handled through system file pickers for backup/restore.
 

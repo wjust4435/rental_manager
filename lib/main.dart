@@ -401,6 +401,38 @@ class _RentalManagerAppState extends State<RentalManagerApp> {
 const List<String> kPaymentMethods    = ['Cash', 'UPI', 'Bank'];
 const List<String> kSortOptions       = ['Date (Newest)', 'Date (Oldest)', 'Highest Balance'];
 const List<String> kLedgerFilterOptions = ['All', 'Amount Due', 'Refund Due'];
+const List<String> kTaxProfiles = [
+  'No Tax',
+  'India (GST)',
+  'USA (Sales Tax)',
+  'UK (VAT)',
+  'Germany (VAT)',
+  'Japan (Consumption Tax)',
+  'China (VAT)',
+  'Custom',
+];
+
+Map<String, dynamic> taxProfileDefaults(String profile) {
+  switch (profile) {
+    case 'India (GST)':
+      return {'taxType': 'gst', 'taxRate': 18.0, 'taxMode': 'exclusive'};
+    case 'USA (Sales Tax)':
+      return {'taxType': 'sales', 'taxRate': 0.0, 'taxMode': 'exclusive'};
+    case 'UK (VAT)':
+      return {'taxType': 'vat', 'taxRate': 20.0, 'taxMode': 'exclusive'};
+    case 'Germany (VAT)':
+      return {'taxType': 'vat', 'taxRate': 19.0, 'taxMode': 'exclusive'};
+    case 'Japan (Consumption Tax)':
+      return {'taxType': 'consumption', 'taxRate': 10.0, 'taxMode': 'exclusive'};
+    case 'China (VAT)':
+      return {'taxType': 'vat', 'taxRate': 13.0, 'taxMode': 'exclusive'};
+    case 'No Tax':
+      return {'taxType': 'none', 'taxRate': 0.0, 'taxMode': 'exclusive'};
+    case 'Custom':
+    default:
+      return {'taxType': 'none', 'taxRate': 0.0, 'taxMode': 'exclusive'};
+  }
+}
 
 // =================================================
 // Shared Helper Widgets & Functions
@@ -532,7 +564,7 @@ void _applySort(List<RentalGroup> list, String mode) {
 // Database Helper
 // =================================================
 class DatabaseHelper {
-  static const int _dbVersion = 17;
+  static const int _dbVersion = 18;
 
   static Future<Database> getDatabase() async {
     final dir  = await getApplicationDocumentsDirectory();
@@ -544,8 +576,8 @@ class DatabaseHelper {
         await db.execute("CREATE TABLE customers(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,phone TEXT,phone2 TEXT DEFAULT '',email TEXT DEFAULT '',address TEXT,notes TEXT DEFAULT '',joinedDate TEXT DEFAULT '',isBlacklisted INTEGER DEFAULT 0)");
         await db.execute("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,customerId INTEGER,customerName TEXT,createdDate TEXT)");
         await db.execute("CREATE TABLE payment_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,orderId INTEGER,fallbackRentalId INTEGER,amount REAL NOT NULL,method TEXT DEFAULT '',paidAt TEXT DEFAULT '')");
-        await db.execute("CREATE TABLE business_info(id INTEGER PRIMARY KEY,name TEXT DEFAULT '',phone TEXT DEFAULT '',phone2 TEXT DEFAULT '',email TEXT DEFAULT '',address TEXT DEFAULT '',upiId TEXT DEFAULT '',upiName TEXT DEFAULT '')");
-        await db.insert('business_info', {'id':1,'name':'','phone':'','phone2':'','email':'','address':'','upiId':'','upiName':''});
+        await db.execute("CREATE TABLE business_info(id INTEGER PRIMARY KEY,name TEXT DEFAULT '',phone TEXT DEFAULT '',phone2 TEXT DEFAULT '',email TEXT DEFAULT '',address TEXT DEFAULT '',upiId TEXT DEFAULT '',upiName TEXT DEFAULT '',taxProfile TEXT DEFAULT 'No Tax',taxType TEXT DEFAULT 'none',taxRate REAL DEFAULT 0,taxMode TEXT DEFAULT 'exclusive',taxRegNo TEXT DEFAULT '')");
+        await db.insert('business_info', {'id':1,'name':'','phone':'','phone2':'','email':'','address':'','upiId':'','upiName':'','taxProfile':'No Tax','taxType':'none','taxRate':0.0,'taxMode':'exclusive','taxRegNo':''});
         await db.execute("CREATE INDEX IF NOT EXISTS idx_items_name ON items(name)");
         await db.execute("CREATE INDEX IF NOT EXISTS idx_rentals_checkout ON rentals(checkoutDate)");
         await db.execute("CREATE INDEX IF NOT EXISTS idx_rentals_returned ON rentals(returned)");
@@ -614,6 +646,15 @@ class DatabaseHelper {
               });
             }
           } catch (_) {}
+        }
+        if (oldV < 18) {
+          for (final sql in [
+            "ALTER TABLE business_info ADD COLUMN taxProfile TEXT DEFAULT 'No Tax'",
+            "ALTER TABLE business_info ADD COLUMN taxType TEXT DEFAULT 'none'",
+            "ALTER TABLE business_info ADD COLUMN taxRate REAL DEFAULT 0",
+            "ALTER TABLE business_info ADD COLUMN taxMode TEXT DEFAULT 'exclusive'",
+            "ALTER TABLE business_info ADD COLUMN taxRegNo TEXT DEFAULT ''",
+          ]) { try { await db.execute(sql); } catch (_) {} }
         }
       },
     );
@@ -1007,12 +1048,99 @@ class DatabaseHelper {
 
   static Future<Map<String, dynamic>> getBusinessInfo() async {
     final rows = await (await getDatabase()).query('business_info', where:'id=?', whereArgs:[1]);
-    if (rows.isEmpty) return {'name':'','phone':'','phone2':'','email':'','address':'','upiId':'','upiName':''};
+    if (rows.isEmpty) {
+      return {
+        'name':'','phone':'','phone2':'','email':'','address':'','upiId':'','upiName':'',
+        'taxProfile':'No Tax','taxType':'none','taxRate':0.0,'taxMode':'exclusive','taxRegNo':'',
+      };
+    }
     return rows.first;
   }
 
-  static Future<void> saveBusinessInfo(String name, String phone, String phone2, String email, String address, String upiId, String upiName) async =>
-      (await getDatabase()).update('business_info', {'name':name,'phone':phone,'phone2':phone2,'email':email,'address':address,'upiId':upiId,'upiName':upiName}, where:'id=?', whereArgs:[1]);
+  static Future<void> saveBusinessInfo(
+    String name,
+    String phone,
+    String phone2,
+    String email,
+    String address,
+    String upiId,
+    String upiName, {
+    String taxProfile = 'No Tax',
+    String taxType = 'none',
+    double taxRate = 0.0,
+    String taxMode = 'exclusive',
+    String taxRegNo = '',
+  }) async =>
+      (await getDatabase()).update('business_info', {
+        'name':name,
+        'phone':phone,
+        'phone2':phone2,
+        'email':email,
+        'address':address,
+        'upiId':upiId,
+        'upiName':upiName,
+        'taxProfile':taxProfile,
+        'taxType':taxType,
+        'taxRate':taxRate,
+        'taxMode':taxMode,
+        'taxRegNo':taxRegNo,
+      }, where:'id=?', whereArgs:[1]);
+
+  static Map<String, dynamic> _taxSettingsFromBiz(Map<String, dynamic> biz) {
+    final typeRaw = (biz['taxType'] as String? ?? 'none').trim().toLowerCase();
+    final modeRaw = (biz['taxMode'] as String? ?? 'exclusive').trim().toLowerCase();
+    final rateRaw = (biz['taxRate'] as num?)?.toDouble() ?? double.tryParse((biz['taxRate'] ?? '').toString()) ?? 0.0;
+    final type = {'none','gst','vat','sales','consumption'}.contains(typeRaw) ? typeRaw : 'none';
+    final mode = modeRaw == 'inclusive' ? 'inclusive' : 'exclusive';
+    final rate = rateRaw.clamp(0.0, 100.0);
+    final enabled = type != 'none' && rate > 0;
+    final regNo = (biz['taxRegNo'] as String? ?? '').trim();
+    return {
+      'type': type,
+      'mode': mode,
+      'rate': rate,
+      'enabled': enabled,
+      'regNo': regNo,
+      'label': _taxLabel(type),
+      'regLabel': _taxRegLabel(type),
+    };
+  }
+
+  static String _taxLabel(String type) {
+    switch (type) {
+      case 'gst': return 'GST';
+      case 'vat': return 'VAT';
+      case 'sales': return 'Sales Tax';
+      case 'consumption': return 'Consumption Tax';
+      default: return 'Tax';
+    }
+  }
+
+  static String _taxRegLabel(String type) {
+    switch (type) {
+      case 'gst': return 'GSTIN';
+      case 'vat': return 'VAT No.';
+      case 'sales': return 'Sales Tax ID';
+      case 'consumption': return 'Tax Reg. No.';
+      default: return 'Tax Reg. No.';
+    }
+  }
+
+  static Map<String, double> _taxBreakdown(double subtotal, Map<String, dynamic> tax) {
+    final enabled = tax['enabled'] == true;
+    final mode = (tax['mode'] as String?) ?? 'exclusive';
+    final rate = (tax['rate'] as num?)?.toDouble() ?? 0.0;
+    if (!enabled || rate <= 0) {
+      return {'taxableBase': subtotal, 'taxAmount': 0.0, 'grandTotal': subtotal};
+    }
+    if (mode == 'inclusive') {
+      final taxableBase = subtotal / (1 + (rate / 100.0));
+      final taxAmount = subtotal - taxableBase;
+      return {'taxableBase': taxableBase, 'taxAmount': taxAmount, 'grandTotal': subtotal};
+    }
+    final taxAmount = subtotal * (rate / 100.0);
+    return {'taxableBase': subtotal, 'taxAmount': taxAmount, 'grandTotal': subtotal + taxAmount};
+  }
 
   static DateTime? _safeParseDate(dynamic s) {
     if (s == null) return null;
@@ -1049,6 +1177,13 @@ class DatabaseHelper {
 
     String s(String k) => (biz[k] as String?) ?? '';
     final bizName=s('name'),bizPhone=s('phone'),bizPhone2=s('phone2'),bizEmail=s('email'),bizAddress=s('address'),bizUpi=s('upiId'),bizUpiName=s('upiName');
+    final tax = _taxSettingsFromBiz(biz);
+    final taxEnabled = tax['enabled'] == true;
+    final taxLabel = (tax['label'] as String?) ?? 'Tax';
+    final taxRate = (tax['rate'] as num?)?.toDouble() ?? 0.0;
+    final taxMode = (tax['mode'] as String?) ?? 'exclusive';
+    final taxRegNo = (tax['regNo'] as String?) ?? '';
+    final taxRegLabel = (tax['regLabel'] as String?) ?? 'Tax Reg. No.';
     final upiString = 'upi://pay?pa=$bizUpi&pn=${Uri.encodeComponent(bizUpiName)}&cu=INR';
     final advance = rentals.fold(0.0, (sum, r) => sum + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0));
 
@@ -1069,6 +1204,8 @@ class DatabaseHelper {
           if (bizPhone.isNotEmpty || bizPhone2.isNotEmpty) pw.Text('Ph: $bizPhone${bizPhone2.isNotEmpty?' / $bizPhone2':''}', style:ts()),
           if (bizEmail.isNotEmpty)   pw.Text(bizEmail, style:ts()),
           if (bizAddress.isNotEmpty) pw.Text(bizAddress, style:ts()),
+          if (taxEnabled) pw.Text('$taxLabel: ${taxRate.toStringAsFixed(2)}% (${taxMode == 'inclusive' ? 'Inclusive' : 'Exclusive'})', style: ts()),
+          if (taxEnabled && taxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $taxRegNo', style: ts()),
           if (bizUpi.isNotEmpty)     pw.Text('UPI: $bizUpi', style:ts()),
           pw.Divider(),
           pw.Text('PROFORMA', style:ts(d:2,bold:true)), pw.SizedBox(height:4),
@@ -1125,9 +1262,15 @@ class DatabaseHelper {
     final fontItalic  = fonts['italic']!;
     String s(String k) => (biz[k] as String?) ?? '';
     final bizName=s('name'),bizPhone=s('phone'),bizPhone2=s('phone2'),bizEmail=s('email'),bizAddress=s('address'),bizUpi=s('upiId'),bizUpiName=s('upiName');
+    final tax = _taxSettingsFromBiz(biz);
+    final taxEnabled = tax['enabled'] == true;
+    final taxLabel = (tax['label'] as String?) ?? 'Tax';
+    final taxRegLabel = (tax['regLabel'] as String?) ?? 'Tax Reg. No.';
+    final taxRegNo = (tax['regNo'] as String?) ?? '';
+    final taxRate = (tax['rate'] as num?)?.toDouble() ?? 0.0;
     final upiString = 'upi://pay?pa=$bizUpi&pn=${Uri.encodeComponent(bizUpiName)}&cu=INR';
 
-    double totalBilled = 0.0;
+    double lineSubtotal = 0.0;
     final lineData = <List<String>>[];
     DateTime? finalReturnDate;
     for (final r in rentals) {
@@ -1136,7 +1279,7 @@ class DatabaseHelper {
       final days = _rentalChargeDays(r);
       final lineTotal = rate * qty * days;
       final returnText = formatDateString(r['returnDate'] as String?);
-      totalBilled += lineTotal;
+      lineSubtotal += lineTotal;
       lineData.add([
         '${(r['itemName'] ?? '').toString()} | Return: ${returnText.isEmpty ? 'Pending' : returnText}',
         qty.toString(),
@@ -1151,7 +1294,11 @@ class DatabaseHelper {
     }
 
     final advance = rentals.fold(0.0, (sum, r) => sum + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0));
-    final balance = totalBilled - advance;
+    final totals = _taxBreakdown(lineSubtotal, tax);
+    final taxableBase = totals['taxableBase'] ?? lineSubtotal;
+    final taxAmount = totals['taxAmount'] ?? 0.0;
+    final grandTotal = totals['grandTotal'] ?? lineSubtotal;
+    final balance = grandTotal - advance;
     final isSettled = rentals.every((r) => (r['isSettled'] as int? ?? 0) == 1);
     final finalReturnText = finalReturnDate == null ? 'Pending' : formatDateFromDt(finalReturnDate);
 
@@ -1242,6 +1389,7 @@ class DatabaseHelper {
         if (bizPhone.isNotEmpty || bizPhone2.isNotEmpty) pw.Text('Ph: $bizPhone${bizPhone2.isNotEmpty?' / $bizPhone2':''}', style:ts()),
         if (bizEmail.isNotEmpty)   pw.Text(bizEmail, style:ts()),
         if (bizAddress.isNotEmpty) pw.Text(bizAddress, style:ts()),
+        if (taxEnabled && taxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $taxRegNo', style: ts()),
         if (bizUpi.isNotEmpty)     pw.Text('UPI: $bizUpi', style:ts()),
         pw.Divider(),
         pw.Text('FINAL INVOICE', style:ts(d:2,bold:true)),
@@ -1278,8 +1426,16 @@ class DatabaseHelper {
         ],
         pw.Divider(),
         pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text(is57mm ? 'Total:' : 'Total Billed:', style: ts(bold:true)),
-          pw.Text(formatMoney(totalBilled, decimals: is57mm ? 0 : 2), style: ts(bold:true)),
+          pw.Text(is57mm ? 'Subtotal:' : 'Subtotal:', style: ts(bold:true)),
+          pw.Text(formatMoney(taxableBase, decimals: is57mm ? 0 : 2), style: ts(bold:true)),
+        ]),
+        if (taxEnabled) pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+          pw.Text('$taxLabel ${taxRate.toStringAsFixed(2)}%:', style: ts()),
+          pw.Text(formatMoney(taxAmount, decimals: is57mm ? 0 : 2), style: ts()),
+        ]),
+        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+          pw.Text(is57mm ? 'Total:' : 'Total (Incl. Tax):', style: ts(bold:true)),
+          pw.Text(formatMoney(grandTotal, decimals: is57mm ? 0 : 2), style: ts(bold:true)),
         ]),
         pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
           pw.Text(is57mm ? 'Advance:' : 'Advance Paid:', style: ts()),
@@ -2831,12 +2987,55 @@ class BusinessInfoScreen extends StatefulWidget {
 class _BusinessInfoScreenState extends State<BusinessInfoScreen> {
   final _formKey = GlobalKey<FormState>();
   final _nameC = TextEditingController(), _phoneC = TextEditingController(), _phone2C = TextEditingController(),
-      _emailC = TextEditingController(), _addressC = TextEditingController(), _upiC = TextEditingController(), _upiNameC = TextEditingController();
+      _emailC = TextEditingController(), _addressC = TextEditingController(), _upiC = TextEditingController(), _upiNameC = TextEditingController(),
+      _taxRateC = TextEditingController(), _taxRegNoC = TextEditingController();
+  String _taxProfile = 'No Tax';
+  String _taxType = 'none';
+  String _taxMode = 'exclusive';
+
+  String _taxTypeLabel(String type) {
+    switch (type) {
+      case 'gst': return 'GST';
+      case 'vat': return 'VAT';
+      case 'sales': return 'Sales Tax';
+      case 'consumption': return 'Consumption Tax';
+      default: return 'No Tax';
+    }
+  }
+
+  String _taxRegLabel(String type) {
+    switch (type) {
+      case 'gst': return 'GSTIN';
+      case 'vat': return 'VAT No.';
+      case 'sales': return 'Sales Tax ID';
+      case 'consumption': return 'Tax Reg. No.';
+      default: return 'Tax Registration No.';
+    }
+  }
+
+  String _formatRateText(double value) {
+    if (value == value.roundToDouble()) return value.toStringAsFixed(0);
+    return value.toStringAsFixed(2);
+  }
+
+  void _applyTaxProfile(String profile) {
+    final defaults = taxProfileDefaults(profile);
+    setState(() {
+      _taxProfile = profile;
+      if (profile != 'Custom') {
+        _taxType = defaults['taxType'] as String? ?? 'none';
+        _taxMode = defaults['taxMode'] as String? ?? 'exclusive';
+        final rate = (defaults['taxRate'] as num?)?.toDouble() ?? 0.0;
+        _taxRateC.text = _formatRateText(rate);
+      }
+      if (_taxType == 'none') _taxRegNoC.clear();
+    });
+  }
 
   @override
   void initState() { super.initState(); _load(); }
   @override
-  void dispose() { for (final c in [_nameC,_phoneC,_phone2C,_emailC,_addressC,_upiC,_upiNameC]) { c.dispose(); } super.dispose(); }
+  void dispose() { for (final c in [_nameC,_phoneC,_phone2C,_emailC,_addressC,_upiC,_upiNameC,_taxRateC,_taxRegNoC]) { c.dispose(); } super.dispose(); }
 
   Future<void> _load() async {
     final info = await DatabaseHelper.getBusinessInfo();
@@ -2849,6 +3048,14 @@ class _BusinessInfoScreenState extends State<BusinessInfoScreen> {
       _addressC.text = (info['address'] as String?) ?? '';
       _upiC.text     = (info['upiId']   as String?) ?? '';
       _upiNameC.text = (info['upiName'] as String?) ?? '';
+      final profile = (info['taxProfile'] as String? ?? 'No Tax').trim();
+      _taxProfile = kTaxProfiles.contains(profile) ? profile : 'Custom';
+      _taxType = (info['taxType'] as String? ?? 'none').trim().toLowerCase();
+      if (!['none','gst','vat','sales','consumption'].contains(_taxType)) _taxType = 'none';
+      _taxMode = ((info['taxMode'] as String? ?? 'exclusive').trim().toLowerCase() == 'inclusive') ? 'inclusive' : 'exclusive';
+      final taxRate = (info['taxRate'] as num?)?.toDouble() ?? double.tryParse((info['taxRate'] ?? '').toString()) ?? 0.0;
+      _taxRateC.text = _formatRateText(taxRate);
+      _taxRegNoC.text = (info['taxRegNo'] as String? ?? '').trim();
     });
   }
 
@@ -2872,6 +3079,91 @@ class _BusinessInfoScreenState extends State<BusinessInfoScreen> {
       const SizedBox(height: 12),
       TextFormField(controller: _addressC, decoration: const InputDecoration(labelText:'Address', border:OutlineInputBorder(), prefixIcon:Icon(Icons.location_on)), maxLines: 2),
       const SizedBox(height: 24),
+      const Text('Tax Setup', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber)),
+      const SizedBox(height: 12),
+      DropdownButtonFormField<String>(
+        initialValue: _taxProfile,
+        decoration: const InputDecoration(labelText: 'Tax Profile', border: OutlineInputBorder(), prefixIcon: Icon(Icons.public)),
+        items: kTaxProfiles.map((p) => DropdownMenuItem(value: p, child: Text(p))).toList(),
+        onChanged: (v) { if (v != null) _applyTaxProfile(v); },
+      ),
+      if (_taxProfile == 'Custom') ...[
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          initialValue: _taxType,
+          decoration: const InputDecoration(labelText: 'Tax Type', border: OutlineInputBorder(), prefixIcon: Icon(Icons.receipt_long)),
+          items: const [
+            DropdownMenuItem(value: 'none', child: Text('No Tax')),
+            DropdownMenuItem(value: 'gst', child: Text('GST')),
+            DropdownMenuItem(value: 'vat', child: Text('VAT')),
+            DropdownMenuItem(value: 'sales', child: Text('Sales Tax')),
+            DropdownMenuItem(value: 'consumption', child: Text('Consumption Tax')),
+          ],
+          onChanged: (v) {
+            if (v == null) return;
+            setState(() {
+              _taxType = v;
+              if (_taxType == 'none') _taxRegNoC.clear();
+            });
+          },
+        ),
+      ],
+      const SizedBox(height: 12),
+      Row(children: [
+        Expanded(
+          child: TextFormField(
+            controller: _taxRateC,
+            enabled: _taxType != 'none',
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(
+              labelText: '${_taxTypeLabel(_taxType)} Rate %',
+              border: const OutlineInputBorder(),
+              prefixIcon: const Icon(Icons.percent),
+            ),
+            validator: (v) {
+              if (_taxType == 'none') return null;
+              final n = double.tryParse((v ?? '').trim());
+              if (n == null) return 'Invalid rate';
+              if (n < 0 || n > 100) return 'Use 0 to 100';
+              return null;
+            },
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: DropdownButtonFormField<String>(
+            initialValue: _taxMode,
+            decoration: const InputDecoration(labelText: 'Tax Mode', border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 'exclusive', child: Text('Exclusive')),
+              DropdownMenuItem(value: 'inclusive', child: Text('Inclusive')),
+            ],
+            onChanged: _taxType == 'none' ? null : (v) {
+              if (v == null) return;
+              setState(() => _taxMode = v);
+            },
+          ),
+        ),
+      ]),
+      if (_taxType != 'none') ...[
+        const SizedBox(height: 12),
+        TextFormField(
+          controller: _taxRegNoC,
+          decoration: InputDecoration(
+            labelText: _taxRegLabel(_taxType),
+            border: const OutlineInputBorder(),
+            prefixIcon: const Icon(Icons.badge_outlined),
+          ),
+        ),
+      ],
+      const SizedBox(height: 8),
+      Text(
+        _taxType == 'none'
+            ? 'No tax will be applied in final invoice totals.'
+            : 'Final invoices will use ${_taxTypeLabel(_taxType)} (${_taxMode == 'inclusive' ? 'inclusive' : 'exclusive'}) at saved rate.',
+        style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color),
+      ),
+      const SizedBox(height: 24),
       const Text('Payment Details (Invoice QR)', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber)),
       const SizedBox(height: 12),
       TextFormField(controller: _upiC,     decoration: const InputDecoration(labelText:'UPI ID (e.g. 9999999999@ybl)', border:OutlineInputBorder(), prefixIcon:Icon(Icons.qr_code_2))),
@@ -2883,7 +3175,24 @@ class _BusinessInfoScreenState extends State<BusinessInfoScreen> {
         onPressed: () async {
           if (!_formKey.currentState!.validate()) return;
           final messenger = ScaffoldMessenger.of(context); final nav = Navigator.of(context);
-          await DatabaseHelper.saveBusinessInfo(_nameC.text.trim(), _phoneC.text.trim(), _phone2C.text.trim(), _emailC.text.trim(), _addressC.text.trim(), _upiC.text.trim(), _upiNameC.text.trim());
+          final effectiveType = _taxType;
+          final effectiveRate = effectiveType == 'none' ? 0.0 : (double.tryParse(_taxRateC.text.trim()) ?? 0.0);
+          final effectiveMode = effectiveType == 'none' ? 'exclusive' : _taxMode;
+          final effectiveRegNo = effectiveType == 'none' ? '' : _taxRegNoC.text.trim();
+          await DatabaseHelper.saveBusinessInfo(
+            _nameC.text.trim(),
+            _phoneC.text.trim(),
+            _phone2C.text.trim(),
+            _emailC.text.trim(),
+            _addressC.text.trim(),
+            _upiC.text.trim(),
+            _upiNameC.text.trim(),
+            taxProfile: _taxProfile,
+            taxType: effectiveType,
+            taxRate: effectiveRate,
+            taxMode: effectiveMode,
+            taxRegNo: effectiveRegNo,
+          );
           if (!mounted) return;
           messenger.showSnackBar(const SnackBar(content: Text('Business info saved'))); nav.pop();
         },
@@ -4234,7 +4543,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const ListTile(
           leading: Icon(Icons.construction, color: Colors.amber),
           title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: Text('Version 2.0.0  |  Database v17'),
+          subtitle: Text('Version 2.0.0  |  Database v18'),
         ),
         ListTile(
           leading: const Icon(Icons.privacy_tip_outlined, color: Colors.amber),
