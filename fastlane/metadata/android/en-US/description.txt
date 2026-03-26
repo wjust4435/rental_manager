@@ -1,0 +1,1 @@
+Offline rental tracking app for orders, invoices, payments, and customer records.
