@@ -1,4 +1,15 @@
-﻿import 'package:flutter/material.dart';
+﻿// Rental Manager
+// Copyright (C) 2026 wjust4435
+//
+// This program is free software: you can redistribute
+// it and/or modify it under the terms of the GNU
+// General Public License as published by the Free
+// Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// See <https://www.gnu.org/licenses/> for details.
+
+import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';

@@ -3,6 +3,13 @@
 Offline-first Flutter Android app to manage rentals of any item type.  
 It handles inventory, customers, orders, proforma, final invoices, payment ledger, and payment history in one place.
 
+## License
+
+Rental Manager is free software licensed under the
+GNU General Public License v3.0 or later.
+
+See [LICENSE](LICENSE) for full details.
+
 ## What The App Does
 
 - Tracks inventory stock (`Total`, `Out`, `Free`) with category and search support.

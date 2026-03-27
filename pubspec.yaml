@@ -3,6 +3,16 @@ description: Offline rental and inventory manager for any item type
 publish_to: none
 version: 2.2.0+11
 
+# ---------------------------------------------------------------------------
+# License: GNU General Public License v3.0 or later (GPL-3.0-or-later)
+# Copyright (C) 2026 wjust4435
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# See <https://www.gnu.org/licenses/> for full details.
+# ---------------------------------------------------------------------------
+
 environment:
   sdk: '>=3.3.0 <4.0.0'
 
