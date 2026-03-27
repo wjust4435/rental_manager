@@ -1,1 +1,0 @@
-Offline rental tracking for orders, invoices, payments, and customers.

@@ -1,0 +1,13 @@
+Rental Manager is an offline-first app to manage your entire rental business without any internet dependency.
+
+Features:
+* Manage customers with full contact details and rental history
+* Create orders and generate proforma and final invoice PDFs
+* Track inventory items, quantities, and availability
+* Payment Ledger to view outstanding balances per customer
+* Payment History with payment and refund records
+* Business profile configuration for invoices
+* Local backup and restore support
+* Customizable settings: theme, compact cards, date/time format, and notifications
+
+Designed for small businesses that rent any type of items and need simple, reliable, fully offline record keeping.
