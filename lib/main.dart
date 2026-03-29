@@ -24,6 +24,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/intl.dart';
+import 'package:share_plus/share_plus.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -70,19 +71,20 @@ class ThemeModeNotifier extends ChangeNotifier {
 class AppSettingsNotifier extends ChangeNotifier {
   String _currencySymbol     = '\u20B9';
   int    _overdueDays        = 30;
-  String _cardDensity        = 'comfortable'; // 'comfortable' | 'compact'
-  String _fontSize           = 'medium';      // 'small' | 'medium' | 'large'
-  String _dateFormat         = 'dd/MMM/yyyy'; // 'dd/MMM/yyyy' | 'dd/MM/yyyy' | 'MM/dd/yyyy' | 'yyyy-MM-dd'
-  String _timeFormat         = '12h';         // '12h' | '24h'
-  String _firstDayOfWeek     = 'Monday';      // 'Monday' | 'Sunday'
-  bool   _showTopCustomersByRevenue = true;
+  String _cardDensity        = 'comfortable';
+  String _fontSize           = 'medium';
+  String _dateFormat         = 'dd/MMM/yyyy';
+  String _timeFormat         = '12h';
+  String _firstDayOfWeek     = 'Monday';
+  bool   _showTopCustomersByRevenue = false;
   bool   _showPaymentHistoryTime = true;
+  bool   _showPdfSignatures  = true;
   bool   _notifyOverdue      = true;
   bool   _notifyPendingPayments = true;
   bool   _notifySummary      = false;
   bool   _notifyRefundWait   = true;
   bool   _notifyAnniversary  = false;
-  String _language           = 'English';     // 'English' | 'Hindi'
+  String _language           = 'English';
 
   String get currencySymbol      => _currencySymbol;
   int    get overdueDays         => _overdueDays;
@@ -93,6 +95,7 @@ class AppSettingsNotifier extends ChangeNotifier {
   String get firstDayOfWeek      => _firstDayOfWeek;
   bool   get showTopCustomersByRevenue => _showTopCustomersByRevenue;
   bool   get showPaymentHistoryTime => _showPaymentHistoryTime;
+  bool   get showPdfSignatures   => _showPdfSignatures;
   bool   get notifyOverdue       => _notifyOverdue;
   bool   get notifyPendingPayments => _notifyPendingPayments;
   bool   get notifySummary       => _notifySummary;
@@ -106,8 +109,7 @@ class AppSettingsNotifier extends ChangeNotifier {
   AppSettingsNotifier() { _load(); }
 
   String _normalizeLanguage(String? v) {
-    if (v == 'Hindi' || v == 'हिंदी' || v == 'à¤¹à¤¿à¤‚à¤¦à¥€') return 'Hindi';
-    return 'English';
+    return 'English'; // Forced English for now as requested
   }
 
   Future<void> _load() async {
@@ -119,8 +121,9 @@ class AppSettingsNotifier extends ChangeNotifier {
     _dateFormat           = p.getString('dateFormat')           ?? 'dd/MMM/yyyy';
     _timeFormat           = p.getString('timeFormat')           ?? '12h';
     _firstDayOfWeek       = p.getString('firstDayOfWeek')       ?? 'Monday';
-    _showTopCustomersByRevenue = p.getBool('showTopCustomersByRevenue') ?? true;
+    _showTopCustomersByRevenue = p.getBool('showTopCustomersByRevenue') ?? false;
     _showPaymentHistoryTime = p.getBool('showPaymentHistoryTime') ?? true;
+    _showPdfSignatures    = p.getBool('showPdfSignatures')      ?? true;
     _notifyOverdue        = p.getBool('notifyOverdue')          ?? true;
     _notifyPendingPayments= p.getBool('notifyPendingPayments')  ?? true;
     _notifySummary        = p.getBool('notifySummary')          ?? false;
@@ -141,6 +144,7 @@ class AppSettingsNotifier extends ChangeNotifier {
     await p.setString('firstDayOfWeek',      _firstDayOfWeek);
     await p.setBool('showTopCustomersByRevenue', _showTopCustomersByRevenue);
     await p.setBool('showPaymentHistoryTime', _showPaymentHistoryTime);
+    await p.setBool('showPdfSignatures',     _showPdfSignatures);
     await p.setBool('notifyOverdue',         _notifyOverdue);
     await p.setBool('notifyPendingPayments', _notifyPendingPayments);
     await p.setBool('notifySummary',         _notifySummary);
@@ -158,6 +162,7 @@ class AppSettingsNotifier extends ChangeNotifier {
   Future<void> setFirstDayOfWeek(String v)       async { _firstDayOfWeek      = v; notifyListeners(); await _save(); }
   Future<void> setShowTopCustomersByRevenue(bool v) async { _showTopCustomersByRevenue = v; notifyListeners(); await _save(); }
   Future<void> setShowPaymentHistoryTime(bool v) async { _showPaymentHistoryTime = v; notifyListeners(); await _save(); }
+  Future<void> setShowPdfSignatures(bool v)      async { _showPdfSignatures   = v; notifyListeners(); await _save(); }
   Future<void> setNotifyOverdue(bool v)          async { _notifyOverdue       = v; notifyListeners(); await _save(); }
   Future<void> setNotifyPendingPayments(bool v)  async { _notifyPendingPayments = v; notifyListeners(); await _save(); }
   Future<void> setNotifySummary(bool v)          async { _notifySummary       = v; notifyListeners(); await _save(); }
@@ -206,11 +211,22 @@ class NotificationService {
       return true;
     }
 
-    if (s.notifyOverdue        && await once('overdue'))     await _checkOverdue(s.overdueDays);
-    if (s.notifyPendingPayments && await once('pending'))    await _checkPendingPayments();
-    if (s.notifyRefundWait     && await once('refund'))      await _checkRefundWait();
-    if (s.notifyAnniversary    && await once('anniversary')) await _checkAnniversaries();
-    if (s.notifySummary        && await once('summary'))     await _checkSummary(s.overdueDays);
+    // 1. Determine if we even need to run the heavy rental query today
+    final needsGroups = (s.notifyPendingPayments && prefs.getString('notif_pending') != today) ||
+        (s.notifyRefundWait      && prefs.getString('notif_refund') != today) ||
+        (s.notifySummary         && prefs.getString('notif_summary') != today);
+
+    // 2. Fetch and group rentals exactly ONCE if needed
+    List<RentalGroup>? cachedGroups;
+    if (needsGroups) {
+      cachedGroups = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
+    }
+
+    if (s.notifyOverdue         && await once('overdue'))     await _checkOverdue(s.overdueDays);
+    if (s.notifyPendingPayments && await once('pending'))     await _checkPendingPayments(cachedGroups!);
+    if (s.notifyRefundWait      && await once('refund'))      await _checkRefundWait(cachedGroups!);
+    if (s.notifyAnniversary     && await once('anniversary')) await _checkAnniversaries();
+    if (s.notifySummary         && await once('summary'))     await _checkSummary(s.overdueDays, cachedGroups!);
   }
 
   static Future<void> _checkOverdue(int days) async {
@@ -229,8 +245,7 @@ class NotificationService {
     );
   }
 
-  static Future<void> _checkPendingPayments() async {
-    final groups  = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
+  static Future<void> _checkPendingPayments(List<RentalGroup> groups) async {
     final pending = groups.where((g) => g.isFullyReturned && !g.isSettled && g.balance > 0).toList();
     if (pending.isEmpty) return;
     final total = pending.fold(0.0, (sum, g) => sum + g.balance);
@@ -241,8 +256,7 @@ class NotificationService {
     );
   }
 
-  static Future<void> _checkRefundWait() async {
-    final groups  = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
+  static Future<void> _checkRefundWait(List<RentalGroup> groups) async {
     final refunds = groups.where((g) => g.isFullyReturned && !g.isSettled && g.balance < 0).toList();
     if (refunds.isEmpty) return;
     await _show(
@@ -276,10 +290,9 @@ class NotificationService {
     await _show(_idAnniversary, 'Rental Milestone', body);
   }
 
-  static Future<void> _checkSummary(int overdueDays) async {
+  static Future<void> _checkSummary(int overdueDays, List<RentalGroup> groups) async {
     final stats  = await DatabaseHelper.getDashboardStats(overdueDays: overdueDays);
     final active = stats['activeRentals'] ?? 0;
-    final groups = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
     final pendingTotal = groups
         .where((g) => g.isFullyReturned && !g.isSettled && g.balance > 0)
         .fold(0.0, (sum, g) => sum + g.balance);
@@ -575,7 +588,7 @@ void _applySort(List<RentalGroup> list, String mode) {
 // Database Helper
 // =================================================
 class DatabaseHelper {
-  static const int _dbVersion = 18;
+  static const int _dbVersion = 20;
 
   static Future<Database> getDatabase() async {
     final dir  = await getApplicationDocumentsDirectory();
@@ -583,7 +596,7 @@ class DatabaseHelper {
     return openDatabase(path, version: _dbVersion,
       onCreate: (db, v) async {
         await db.execute("CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,category TEXT DEFAULT 'General',total INTEGER NOT NULL DEFAULT 0,rented INTEGER DEFAULT 0,notes TEXT DEFAULT '')");
-        await db.execute("CREATE TABLE rentals(id INTEGER PRIMARY KEY AUTOINCREMENT,itemId INTEGER,orderId INTEGER,contractor TEXT,phone TEXT,phone2 TEXT DEFAULT '',address TEXT,advanceDeposit REAL DEFAULT 0,qty INTEGER,checkoutDate TEXT,rentalRate REAL DEFAULT 0,returned INTEGER DEFAULT 0,returnDate TEXT,notes TEXT DEFAULT '',isSettled INTEGER DEFAULT 0,paymentMethod TEXT DEFAULT '')");
+        await db.execute("CREATE TABLE rentals(id INTEGER PRIMARY KEY AUTOINCREMENT,itemId INTEGER,orderId INTEGER,contractor TEXT,phone TEXT,phone2 TEXT DEFAULT '',address TEXT,advanceDeposit REAL DEFAULT 0,discount REAL DEFAULT 0,qty INTEGER,checkoutDate TEXT,rentalRate REAL DEFAULT 0,returned INTEGER DEFAULT 0,returnDate TEXT,notes TEXT DEFAULT '',isSettled INTEGER DEFAULT 0,paymentMethod TEXT DEFAULT '',penaltyFee REAL DEFAULT 0)");
         await db.execute("CREATE TABLE customers(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,phone TEXT,phone2 TEXT DEFAULT '',email TEXT DEFAULT '',address TEXT,notes TEXT DEFAULT '',joinedDate TEXT DEFAULT '',isBlacklisted INTEGER DEFAULT 0)");
         await db.execute("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,customerId INTEGER,customerName TEXT,createdDate TEXT)");
         await db.execute("CREATE TABLE payment_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,orderId INTEGER,fallbackRentalId INTEGER,amount REAL NOT NULL,method TEXT DEFAULT '',paidAt TEXT DEFAULT '')");
@@ -630,11 +643,10 @@ class DatabaseHelper {
             "CREATE INDEX IF NOT EXISTS idx_payment_logs_fallback ON payment_logs(fallbackRentalId)",
           ]) { try { await db.execute(sql); } catch (_) {} }
 
-          // Backfill one payment record per legacy group so old data still shows a method.
           try {
             final rows = await db.rawQuery(
               "SELECT id, orderId, advanceDeposit, paymentMethod, checkoutDate "
-              "FROM rentals WHERE advanceDeposit != 0 ORDER BY id ASC",
+                  "FROM rentals WHERE advanceDeposit != 0 ORDER BY id ASC",
             );
             final seen = <String>{};
             for (final r in rows) {
@@ -667,6 +679,12 @@ class DatabaseHelper {
             "ALTER TABLE business_info ADD COLUMN taxRegNo TEXT DEFAULT ''",
           ]) { try { await db.execute(sql); } catch (_) {} }
         }
+        if (oldV < 19) {
+          try { await db.execute("ALTER TABLE rentals ADD COLUMN discount REAL DEFAULT 0"); } catch (_) {}
+        }
+        if (oldV < 20) {
+          try { await db.execute("ALTER TABLE rentals ADD COLUMN penaltyFee REAL DEFAULT 0"); } catch (_) {}
+        }
       },
     );
   }
@@ -676,7 +694,6 @@ class DatabaseHelper {
   static String isoDate(DateTime dt) => dt.toIso8601String().split('T')[0];
   static String isoNow() => isoDate(DateTime.now());
 
-  // Load bundled Roboto fonts from assets for fully offline PDF rendering.
   static Future<Map<String, pw.Font>> _loadPdfFonts() async {
     final regular = pw.Font.ttf(await rootBundle.load('assets/fonts/Roboto-Regular.ttf'));
     final bold = pw.Font.ttf(await rootBundle.load('assets/fonts/Roboto-Bold.ttf'));
@@ -722,10 +739,10 @@ class DatabaseHelper {
 
     final rows = totals.entries
         .map((e) => <String, dynamic>{
-              'name': e.key,
-              'revenue': e.value,
-              'invoices': invoices[e.key] ?? 0,
-            })
+      'name': e.key,
+      'revenue': e.value,
+      'invoices': invoices[e.key] ?? 0,
+    })
         .toList();
 
     rows.sort((a, b) => (b['revenue'] as double).compareTo(a['revenue'] as double));
@@ -793,22 +810,40 @@ class DatabaseHelper {
     await db.transaction((txn) async {
       for (final ret in returns) {
         final rental = ret['rental'] as Map<String, dynamic>;
-        final returnQty = ret['qty'] as int;
-        if (returnQty <= 0) continue;
-        final rentalId = rental['id'] as int; final itemId = rental['itemId'] as int; final currentQty = rental['qty'] as int;
+        final goodQty = ret['goodQty'] as int;
+        final damagedQty = ret['damagedQty'] as int;
+        final penalty = ret['penalty'] as double;
+        final totalReturnQty = goodQty + damagedQty;
+
+        if (totalReturnQty <= 0) continue;
+
+        final rentalId = rental['id'] as int;
+        final itemId = rental['itemId'] as int;
+        final currentQty = rental['qty'] as int;
+
         final rented = (await txn.query('items', columns:['rented'], where:'id=?', whereArgs:[itemId])).firstOrNull?['rented'] as int? ?? 0;
-        await txn.rawUpdate('UPDATE items SET rented=rented-? WHERE id=?', [returnQty.clamp(0,rented), itemId]);
-        if (returnQty >= currentQty) {
-          await txn.rawUpdate('UPDATE rentals SET returned=1,returnDate=? WHERE id=?', [returnDate, rentalId]);
+
+        // 1. Both good and damaged items are no longer "rented out"
+        await txn.rawUpdate('UPDATE items SET rented=rented-? WHERE id=?', [totalReturnQty.clamp(0,rented), itemId]);
+
+        // 2. If items were destroyed/lost, permanently remove them from inventory total
+        if (damagedQty > 0) {
+          await txn.rawUpdate('UPDATE items SET total=total-? WHERE id=?', [damagedQty, itemId]);
+        }
+
+        if (totalReturnQty >= currentQty) {
+          // Fully returned the line item
+          await txn.rawUpdate('UPDATE rentals SET returned=1, returnDate=?, penaltyFee=? WHERE id=?', [returnDate, penalty, rentalId]);
         } else {
-          await txn.insert('rentals', {'itemId':itemId,'orderId':rental['orderId'],'contractor':rental['contractor'],'phone':rental['phone']??'','phone2':rental['phone2']??'','address':rental['address'],'advanceDeposit':0.0,'qty':returnQty,'checkoutDate':rental['checkoutDate'],'rentalRate':rental['rentalRate'],'returned':1,'returnDate':returnDate,'notes':rental['notes'],'isSettled':rental['isSettled']??0,'paymentMethod':rental['paymentMethod']??''});
-          await txn.rawUpdate('UPDATE rentals SET qty=qty-? WHERE id=?', [returnQty, rentalId]);
+          // Partially returned the line item - split the record
+          await txn.insert('rentals', {'itemId':itemId,'orderId':rental['orderId'],'contractor':rental['contractor'],'phone':rental['phone']??'','phone2':rental['phone2']??'','address':rental['address'],'advanceDeposit':0.0,'discount':0.0,'qty':totalReturnQty,'checkoutDate':rental['checkoutDate'],'rentalRate':rental['rentalRate'],'returned':1,'returnDate':returnDate,'notes':rental['notes'],'isSettled':rental['isSettled']??0,'paymentMethod':rental['paymentMethod']??'', 'penaltyFee': penalty});
+          await txn.rawUpdate('UPDATE rentals SET qty=qty-? WHERE id=?', [totalReturnQty, rentalId]);
         }
       }
     });
   }
 
-  static Future<void> addPaymentToRentalGroup(int firstId, double amount, bool isFull, List<int> allIds, {String paymentMethod = ''}) async {
+  static Future<void> addPaymentToRentalGroup(int firstId, double amount, bool isFull, List<int> allIds, {String paymentMethod = '', double discountAmount = 0.0}) async {
     final db = await getDatabase();
     await db.transaction((txn) async {
       if (amount.abs() > 0.0001) {
@@ -822,7 +857,7 @@ class DatabaseHelper {
           'paidAt': DateTime.now().toIso8601String(),
         });
       }
-      await txn.rawUpdate('UPDATE rentals SET advanceDeposit=advanceDeposit+?,paymentMethod=? WHERE id=?', [amount, paymentMethod, firstId]);
+      await txn.rawUpdate('UPDATE rentals SET advanceDeposit=advanceDeposit+?, discount=discount+?, paymentMethod=? WHERE id=?', [amount, discountAmount, paymentMethod, firstId]);
       if (isFull) { for (final id in allIds) { await txn.rawUpdate('UPDATE rentals SET isSettled=1 WHERE id=?', [id]); } }
     });
   }
@@ -937,7 +972,7 @@ class DatabaseHelper {
         if (rows.isEmpty) throw Exception('Item not found');
         final total = rows.first['total'] as int? ?? 0; final rented = rows.first['rented'] as int? ?? 0;
         if (qty > (total - rented)) throw Exception('Not enough stock for item $itemId');
-        await txn.insert('rentals', {'itemId':itemId,'contractor':it['contractor']??'','phone':it['phone']??'','phone2':it['phone2']??'','address':it['address']??'','advanceDeposit':it['advanceDeposit']??0.0,'rentalRate':rate,'qty':qty,'checkoutDate':it['checkoutDate']??isoNow(),'orderId':orderId,'returned':0,'notes':it['notes']??'','isSettled':0,'paymentMethod':it['paymentMethod']??''});
+        await txn.insert('rentals', {'itemId':itemId,'contractor':it['contractor']??'','phone':it['phone']??'','phone2':it['phone2']??'','address':it['address']??'','advanceDeposit':it['advanceDeposit']??0.0,'discount':it['discount']??0.0,'rentalRate':rate,'qty':qty,'checkoutDate':it['checkoutDate']??isoNow(),'orderId':orderId,'returned':0,'notes':it['notes']??'','isSettled':0,'paymentMethod':it['paymentMethod']??''});
         await txn.update('items', {'rented':rented+qty}, where:'id=?', whereArgs:[itemId]);
       }
       if (initialAdvance.abs() > 0.0001) {
@@ -974,7 +1009,7 @@ class DatabaseHelper {
       final placeholders = List.filled(orderIds.length, '?').join(',');
       final result = await db.rawQuery(
         "SELECT id, orderId, fallbackRentalId, amount, method, paidAt "
-        "FROM payment_logs WHERE orderId IN ($placeholders) ORDER BY paidAt ASC, id ASC",
+            "FROM payment_logs WHERE orderId IN ($placeholders) ORDER BY paidAt ASC, id ASC",
         orderIds.toList(),
       );
       rows.addAll(result.map((r) => Map<String, dynamic>.from(r)));
@@ -984,7 +1019,7 @@ class DatabaseHelper {
       final placeholders = List.filled(fallbackIds.length, '?').join(',');
       final result = await db.rawQuery(
         "SELECT id, orderId, fallbackRentalId, amount, method, paidAt "
-        "FROM payment_logs WHERE fallbackRentalId IN ($placeholders) ORDER BY paidAt ASC, id ASC",
+            "FROM payment_logs WHERE fallbackRentalId IN ($placeholders) ORDER BY paidAt ASC, id ASC",
         fallbackIds.toList(),
       );
       rows.addAll(result.map((r) => Map<String, dynamic>.from(r)));
@@ -1031,8 +1066,8 @@ class DatabaseHelper {
     if (s.isNotEmpty) {
       where.add(
         "(COALESCE(o.customerName, r.contractor, '') LIKE ? "
-        "OR COALESCE(p.method, '') LIKE ? "
-        "OR CAST(COALESCE(p.orderId, p.fallbackRentalId) AS TEXT) LIKE ?)",
+            "OR COALESCE(p.method, '') LIKE ? "
+            "OR CAST(COALESCE(p.orderId, p.fallbackRentalId) AS TEXT) LIKE ?)",
       );
       args.addAll(['%$s%', '%$s%', '%$s%']);
     }
@@ -1040,13 +1075,14 @@ class DatabaseHelper {
     final whereSql = where.isEmpty ? '' : 'WHERE ${where.join(' AND ')}';
     final rows = await db.rawQuery(
       "SELECT p.id, p.orderId, p.fallbackRentalId, p.amount, p.method, p.paidAt, "
-      "COALESCE(o.customerName, r.contractor, '') AS customerName, "
-      "COALESCE(o.createdDate, r.checkoutDate, '') AS baseDate "
-      "FROM payment_logs p "
-      "LEFT JOIN orders o ON p.orderId = o.id "
-      "LEFT JOIN rentals r ON p.fallbackRentalId = r.id "
-      "$whereSql "
-      "ORDER BY p.paidAt DESC, p.id DESC",
+          "COALESCE(o.customerName, r.contractor, '') AS customerName, "
+          "COALESCE(o.createdDate, r.checkoutDate, '') AS baseDate, "
+          "(SELECT MIN(id) FROM payment_logs p2 WHERE COALESCE(p2.orderId, -1) = COALESCE(p.orderId, -1) AND COALESCE(p2.fallbackRentalId, -1) = COALESCE(p.fallbackRentalId, -1)) AS firstLogId "
+          "FROM payment_logs p "
+          "LEFT JOIN orders o ON p.orderId = o.id "
+          "LEFT JOIN rentals r ON p.fallbackRentalId = r.id "
+          "$whereSql "
+          "ORDER BY p.paidAt DESC, p.id DESC",
       args,
     );
     return rows.map((r) => Map<String, dynamic>.from(r)).toList();
@@ -1069,19 +1105,19 @@ class DatabaseHelper {
   }
 
   static Future<void> saveBusinessInfo(
-    String name,
-    String phone,
-    String phone2,
-    String email,
-    String address,
-    String upiId,
-    String upiName, {
-    String taxProfile = 'No Tax',
-    String taxType = 'none',
-    double taxRate = 0.0,
-    String taxMode = 'exclusive',
-    String taxRegNo = '',
-  }) async =>
+      String name,
+      String phone,
+      String phone2,
+      String email,
+      String address,
+      String upiId,
+      String upiName, {
+        String taxProfile = 'No Tax',
+        String taxType = 'none',
+        double taxRate = 0.0,
+        String taxMode = 'exclusive',
+        String taxRegNo = '',
+      }) async =>
       (await getDatabase()).update('business_info', {
         'name':name,
         'phone':phone,
@@ -1185,6 +1221,7 @@ class DatabaseHelper {
     final fontRegular = fonts['regular']!;
     final fontBold    = fonts['bold']!;
     final fontItalic  = fonts['italic']!;
+    final showSigs    = appSettingsNotifier.showPdfSignatures;
 
     String s(String k) => (biz[k] as String?) ?? '';
     final bizName=s('name'),bizPhone=s('phone'),bizPhone2=s('phone2'),bizEmail=s('email'),bizAddress=s('address'),bizUpi=s('upiId'),bizUpiName=s('upiName');
@@ -1240,8 +1277,12 @@ class DatabaseHelper {
           if (advance > 0) pw.Text('Advance Paid: ${formatMoney(advance)}', style:ts()),
           pw.Text('Note: This is a Proforma (estimated rental summary).', style:ts(d:-1, italic:true)),
           pw.SizedBox(height:6), pw.Text('Thank you for your business!', style:ts(italic:true)),
-          pw.SizedBox(height:40), pw.Align(alignment:pw.Alignment.center, child:sigLine('Customer Signature')),
-          pw.SizedBox(height:40), pw.Align(alignment:pw.Alignment.center, child:sigLine('Vendor Signature')),
+
+          if (showSigs) ...[
+            pw.SizedBox(height:40), pw.Align(alignment:pw.Alignment.center, child:sigLine('Customer Signature')),
+            pw.SizedBox(height:40), pw.Align(alignment:pw.Alignment.center, child:sigLine('Vendor Signature')),
+          ],
+
           if (bizUpi.isNotEmpty) ...[
             pw.SizedBox(height:30),
             pw.Center(child:pw.Column(crossAxisAlignment:pw.CrossAxisAlignment.center, children:[
@@ -1263,6 +1304,11 @@ class DatabaseHelper {
     final rentals = await getRentalsByOrder(orderId);
     if (rentals.isEmpty) throw Exception('No rentals found for order');
     final biz = await getBusinessInfo();
+
+    // Fetch logs to show itemized payments
+    final pMap = await getPaymentLogsForGroups([RentalGroup(orderId: orderId, items: rentals)]);
+    final logs = pMap.values.firstOrNull ?? [];
+
     final is57mm = pageSize == '57mm';
     final format = is57mm ? const PdfPageFormat(57*PdfPageFormat.mm, 220*PdfPageFormat.mm, marginAll:4*PdfPageFormat.mm) : PdfPageFormat.a4;
     final fs = is57mm ? 8.0 : 11.0;
@@ -1271,6 +1317,8 @@ class DatabaseHelper {
     final fontRegular = fonts['regular']!;
     final fontBold    = fonts['bold']!;
     final fontItalic  = fonts['italic']!;
+    final showSigs    = appSettingsNotifier.showPdfSignatures;
+
     String s(String k) => (biz[k] as String?) ?? '';
     final bizName=s('name'),bizPhone=s('phone'),bizPhone2=s('phone2'),bizEmail=s('email'),bizAddress=s('address'),bizUpi=s('upiId'),bizUpiName=s('upiName');
     final tax = _taxSettingsFromBiz(biz);
@@ -1304,12 +1352,22 @@ class DatabaseHelper {
       }
     }
 
-    final advance = rentals.fold(0.0, (sum, r) => sum + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0));
+    final discount = rentals.fold(0.0, (sum, r) => sum + ((r['discount'] as num?)?.toDouble() ?? 0.0));
     final totals = _taxBreakdown(lineSubtotal, tax);
     final taxableBase = totals['taxableBase'] ?? lineSubtotal;
     final taxAmount = totals['taxAmount'] ?? 0.0;
     final grandTotal = totals['grandTotal'] ?? lineSubtotal;
-    final balance = grandTotal - advance;
+
+    double totalPaid = 0.0;
+    if (logs.isNotEmpty) {
+      for (final l in logs) {
+        totalPaid += (l['amount'] as num).toDouble();
+      }
+    } else {
+      totalPaid = rentals.fold(0.0, (sum, r) => sum + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0));
+    }
+
+    final balance = grandTotal - discount - totalPaid;
     final isSettled = rentals.every((r) => (r['isSettled'] as int? ?? 0) == 1);
     final finalReturnText = finalReturnDate == null ? 'Pending' : formatDateFromDt(finalReturnDate);
 
@@ -1367,9 +1425,9 @@ class DatabaseHelper {
               ),
               columnWidths: {
                 0: const pw.FlexColumnWidth(1.1),
-                1: const pw.FlexColumnWidth(2.5),
+                1: const pw.FlexColumnWidth(2.0),
                 2: const pw.FlexColumnWidth(1.1),
-                3: const pw.FlexColumnWidth(1.5),
+                3: const pw.FlexColumnWidth(2.0),
               },
               children: [
                 pw.TableRow(children: [
@@ -1448,19 +1506,49 @@ class DatabaseHelper {
           pw.Text(is57mm ? 'Total:' : 'Total (Incl. Tax):', style: ts(bold:true)),
           pw.Text(formatMoney(grandTotal, decimals: is57mm ? 0 : 2), style: ts(bold:true)),
         ]),
-        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text(is57mm ? 'Advance:' : 'Advance Paid:', style: ts()),
-          pw.Text('- ${formatMoney(advance, decimals: is57mm ? 0 : 2)}', style: ts()),
+
+        // --- NEW: Discount Section ---
+        if (discount > 0) pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+          pw.Text('Discount:', style: ts()),
+          pw.Text('- ${formatMoney(discount, decimals: is57mm ? 0 : 2)}', style: ts()),
         ]),
+
+// --- NEW: Itemized Payments Section ---
+        if (logs.isNotEmpty) ...[
+          // First payment is listed as Advance
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+            pw.Text(is57mm ? 'Advance:' : 'Advance Paid:', style: ts()),
+            pw.Text('- ${formatMoney(logs.first['amount'] as double, decimals: is57mm ? 0 : 2)}', style: ts()),
+          ]),
+          // Subsequent payments and refunds
+          for (int i = 1; i < logs.length; i++)
+            pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+              pw.Text((logs[i]['amount'] as num) < 0
+                  ? 'Refunded ${((logs[i]['method'] as String?) ?? '').isEmpty ? '' : logs[i]['method']}:'
+                  : 'Paid ${((logs[i]['method'] as String?) ?? '').isEmpty ? 'Payment' : logs[i]['method']}:', style: ts()),
+              pw.Text(((logs[i]['amount'] as num) < 0 ? '+ ' : '- ') + formatMoney((logs[i]['amount'] as num).abs(), decimals: is57mm ? 0 : 2), style: ts()),
+            ]),
+        ] else if (totalPaid > 0) ...[
+          // Fallback for old records
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+            pw.Text(is57mm ? 'Advance:' : 'Advance Paid:', style: ts()),
+            pw.Text('- ${formatMoney(totalPaid, decimals: is57mm ? 0 : 2)}', style: ts()),
+          ]),
+        ],
+
         pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
           pw.Text(balance > 0 ? (is57mm ? 'Due:' : 'Balance Due:') : balance < 0 ? (is57mm ? 'Refund:' : 'Refund Due:') : 'Balance:', style: ts(bold:true)),
           pw.Text(formatMoney(balance.abs(), decimals: is57mm ? 0 : 2), style: ts(bold:true)),
         ]),
         pw.Text(isSettled ? 'Payment Status: Settled' : 'Payment Status: Pending', style: ts()),
-        pw.SizedBox(height: is57mm ? 18 : 30),
-        pw.Align(alignment: pw.Alignment.center, child: sigLine('Customer Signature')),
-        pw.SizedBox(height: is57mm ? 18 : 30),
-        pw.Align(alignment: pw.Alignment.center, child: sigLine('Vendor Signature')),
+
+        if (showSigs) ...[
+          pw.SizedBox(height: is57mm ? 18 : 30),
+          pw.Align(alignment: pw.Alignment.center, child: sigLine('Customer Signature')),
+          pw.SizedBox(height: is57mm ? 18 : 30),
+          pw.Align(alignment: pw.Alignment.center, child: sigLine('Vendor Signature')),
+        ],
+
         pw.SizedBox(height:8),
         pw.Text('This is the final invoice based on actual return dates.', style:ts(d:-1, italic:true)),
         if (bizUpi.isNotEmpty) ...[
@@ -1522,7 +1610,8 @@ class RentalGroup {
       ? 'o:$orderId'
       : 'f:${fallbackId ?? (items.firstOrNull?['id'] as int? ?? 0)}';
   double get advance => items.fold(0.0, (s, r) => s + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0));
-  double get balance => calculateTotalCost() - advance;
+  double get discount => items.fold(0.0, (s, r) => s + ((r['discount'] as num?)?.toDouble() ?? 0.0));
+  double get balance => calculateTotalCost() - advance - discount;
 
   double calculateTotalCost() {
     double total = 0.0;
@@ -1572,9 +1661,12 @@ class _MainShellState extends State<MainShell> {
   @override
   void initState() {
     super.initState();
-    // Run notification checks each time the app is opened.
-    // Each check fires at most once per day per category.
-    NotificationService.checkAndNotify();
+    // Defer notification checks so the main thread can render the Dashboard first
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) NotificationService.checkAndNotify();
+      });
+    });
   }
 
   void _nav(Widget screen) { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (_) => screen)); }
@@ -1695,31 +1787,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
           onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PaymentLedgerScreen())),
         ),
       ),
-      if (showTopCustomers) ...[
-        const SizedBox(height: 14),
-        const Text('Top Customers By Revenue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        if (_topCustomers.isEmpty)
-          const Card(child: ListTile(title: Text('No customer revenue data yet.')))
-        else
-          ..._topCustomers.asMap().entries.map((e) {
-            final rank = e.key + 1;
-            final c = e.value;
-            return Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              child: ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: Colors.amber.withValues(alpha: 0.2),
-                  child: Text('$rank', style: const TextStyle(fontWeight: FontWeight.bold)),
-                ),
-                title: Text((c['name'] as String?) ?? '', style: const TextStyle(fontWeight: FontWeight.w600)),
-                subtitle: Text('Invoices: ${c['invoices']}'),
-                trailing: Text(formatMoney((c['revenue'] as double?) ?? 0.0, decimals: 0),
-                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
-              ),
-            );
-          }),
-      ],
       if ((_stats['overdue'] ?? 0) > 0) ...[
         const SizedBox(height: 20),
         Row(children: [
@@ -1747,6 +1814,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _QuickAction(icon:Icons.request_quote,         label:'Invoice',    onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const FinalInvoicesScreen()))),
         _QuickAction(icon:Icons.people,                label:'Customers',  onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const CustomersManagementScreen()))),
       ]),
+      if (showTopCustomers) ...[
+        const SizedBox(height: 20),
+        const Text('Top Customers By Revenue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        if (_topCustomers.isEmpty)
+          const Card(child: ListTile(title: Text('No customer revenue data yet.')))
+        else
+          ..._topCustomers.asMap().entries.map((e) {
+            final rank = e.key + 1;
+            final c = e.value;
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: Colors.amber.withValues(alpha: 0.2),
+                  child: Text('$rank', style: const TextStyle(fontWeight: FontWeight.bold)),
+                ),
+                title: Text((c['name'] as String?) ?? '', style: const TextStyle(fontWeight: FontWeight.w600)),
+                subtitle: Text('Invoices: ${c['invoices']}'),
+                trailing: Text(formatMoney((c['revenue'] as double?) ?? 0.0, decimals: 0),
+                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+              ),
+            );
+          }),
+      ],
     ]));
   }
 }
@@ -1787,18 +1879,31 @@ class _SettleGroupDialog extends StatefulWidget {
 
 class _SettleGroupDialogState extends State<_SettleGroupDialog> {
   late final TextEditingController payC;
+  late final TextEditingController discC;
   late final GlobalKey<FormState> formKey;
   String method = kPaymentMethods.first;
+  String discountType = 'None';
 
   @override
   void initState() {
     super.initState();
     formKey = GlobalKey<FormState>();
     payC = TextEditingController(text: widget.group.balance.abs().toStringAsFixed(2));
+    discC = TextEditingController();
   }
 
   @override
-  void dispose() { payC.dispose(); super.dispose(); }
+  void dispose() { payC.dispose(); discC.dispose(); super.dispose(); }
+
+  double _calculateDiscountAmount(double maxAllowed) {
+    if (discountType == 'None') return 0.0;
+    final val = double.tryParse(discC.text) ?? 0.0;
+    if (val <= 0) return 0.0;
+    if (discountType == 'Percentage') {
+      return (maxAllowed * (val / 100)).clamp(0.0, maxAllowed);
+    }
+    return val.clamp(0.0, maxAllowed);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1806,29 +1911,74 @@ class _SettleGroupDialogState extends State<_SettleGroupDialog> {
     final absBalance = widget.group.balance.abs();
     return AlertDialog(
       title: Text(isRefund ? 'Record Refund' : 'Record Payment'),
-      content: Form(key: formKey, child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(isRefund
-            ? 'Refund Due to Customer: ${formatMoney(absBalance)}'
-            : 'Total Remaining Balance: ${formatMoney(absBalance)}'),
-        const SizedBox(height: 16),
-        TextFormField(
-          controller: payC,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: InputDecoration(labelText: isRefund ? 'Amount Refunded ($curr)' : 'Amount Paid ($curr)', border: const OutlineInputBorder()),
-          validator: (v) { final val = double.tryParse(v??''); if (val==null||val<=0) return 'Invalid amount'; if (val>absBalance) return 'Cannot exceed ${isRefund ? 'refund amount' : 'balance'}'; return null; },
-        ),
-        const SizedBox(height: 16),
-        DropdownButtonFormField<String>(
-          initialValue: method,
-          decoration: const InputDecoration(labelText: 'Payment Method', border: OutlineInputBorder(), prefixIcon: Icon(Icons.payment)),
-          items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
-          onChanged: (v) { if (v != null) setState(() => method = v); },
-        ),
-      ])),
+      content: SingleChildScrollView(
+        child: Form(key: formKey, child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(isRefund
+              ? 'Refund Due to Customer: ${formatMoney(absBalance)}'
+              : 'Total Remaining Balance: ${formatMoney(absBalance)}'),
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: payC,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(labelText: isRefund ? 'Amount Refunded ($curr)' : 'Amount Paid ($curr)', border: const OutlineInputBorder()),
+            validator: (v) {
+              final val = double.tryParse(v??'');
+              if (val==null||val<0) return 'Invalid amount';
+              return null;
+            },
+          ),
+          const SizedBox(height: 16),
+          DropdownButtonFormField<String>(
+            initialValue: method,
+            decoration: const InputDecoration(labelText: 'Payment Method', border: OutlineInputBorder(), prefixIcon: Icon(Icons.payment)),
+            items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
+            onChanged: (v) { if (v != null) setState(() => method = v); },
+          ),
+
+          const SizedBox(height: 24),
+          const Text('Apply Discount (Optional)', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber)),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            initialValue: discountType,
+            decoration: const InputDecoration(labelText: 'Discount Type', border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 'None', child: Text('None')),
+              DropdownMenuItem(value: 'Flat', child: Text('Flat Rate')),
+              DropdownMenuItem(value: 'Percentage', child: Text('Percentage (%)')),
+            ],
+            onChanged: (v) { if (v != null) setState(() => discountType = v); },
+          ),
+          if (discountType != 'None') ...[
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: discC,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                  labelText: discountType == 'Percentage' ? 'Discount %' : 'Discount ($curr)',
+                  border: const OutlineInputBorder()
+              ),
+            ),
+          ],
+        ])),
+      ),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('Cancel')),
         ElevatedButton(
-          onPressed: () { if (formKey.currentState!.validate()) Navigator.pop(context, {'amount': payC.text, 'method': method}); },
+          onPressed: () {
+            if (formKey.currentState!.validate()) {
+              final paidAmt = double.tryParse(payC.text) ?? 0.0;
+              final discAmt = _calculateDiscountAmount(absBalance);
+              if (paidAmt + discAmt > absBalance + 0.01) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Payment/Refund + Discount cannot exceed the balance.')));
+                return;
+              }
+              Navigator.pop(context, {
+                'amount': paidAmt.toString(),
+                'method': method,
+                'discount': discAmt.toString(),
+              });
+            }
+          },
           child: Text(isRefund ? 'Confirm Refund' : 'Save Payment'),
         ),
       ],
@@ -1904,11 +2054,22 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
       builder: (_) => _SettleGroupDialog(group: group),
     );
     if (result == null || !mounted) return;
+
     final amount = double.parse(result['amount']!);
     final method = result['method']!;
-    final isFull = amount >= absBalance - 0.01;
+    final discount = double.parse(result['discount']!);
+
+    final isFull = (amount + discount) >= absBalance - 0.01;
     final adjustedAmount = isRefund ? -amount : amount;
-    await DatabaseHelper.addPaymentToRentalGroup(group.items.first['id'] as int, adjustedAmount, isFull, group.items.map((i) => i['id'] as int).toList(), paymentMethod: method);
+
+    await DatabaseHelper.addPaymentToRentalGroup(
+        group.items.first['id'] as int,
+        adjustedAmount,
+        isFull,
+        group.items.map((i) => i['id'] as int).toList(),
+        paymentMethod: method,
+        discountAmount: discount
+    );
     if (!mounted) return;
     _load();
     messenger.showSnackBar(SnackBar(content: Text(isFull
@@ -1981,6 +2142,7 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
               const Divider(),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Billed:'), Text(formatMoney(g.calculateTotalCost()))]),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Paid:'), Text('- ${formatMoney(g.advance)}')]),
+              if (g.discount > 0) Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Discount Applied:'), Text('- ${formatMoney(g.discount)}')]),
               const SizedBox(height: 4),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 Text(g.balance < 0 ? 'Refund Due:' : 'Amount Due:', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -1989,7 +2151,7 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
               const SizedBox(height: 16),
               SizedBox(width: double.infinity, child: ElevatedButton.icon(
                 icon: Icon(g.balance < 0 ? Icons.undo : Icons.payment),
-                label: Text(g.balance < 0 ? 'Record Refund' : 'Record Payment'),
+                label: Text(g.balance < 0 ? 'Record Refund/Discount' : 'Record Payment/Discount'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: g.balance < 0 ? Colors.green.withValues(alpha: 0.2) : Colors.orange.withValues(alpha: 0.2),
                   foregroundColor: g.balance < 0 ? Colors.greenAccent : Colors.orangeAccent,
@@ -2229,8 +2391,8 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                     final ref = orderId != null
                         ? 'Invoice #$orderId'
                         : fallbackId != null
-                            ? 'Record #$fallbackId'
-                            : 'Record';
+                        ? 'Record #$fallbackId'
+                        : 'Record';
                     final timeText = _formatTimeText(
                       (r['paidAt'] as String? ?? ''),
                       (r['baseDate'] as String? ?? ''),
@@ -2244,6 +2406,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                         ? '$ref  |  $dateText  |  $timeText'
                         : '$ref  |  $dateText';
                     final amountColor = isRefund ? Colors.orange : Colors.green;
+                    final isAdvance = !isRefund && (r['id'] == r['firstLogId']);
 
                     return Card(
                       margin: const EdgeInsets.only(bottom: 8),
@@ -2270,7 +2433,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                                     spacing: 6,
                                     runSpacing: 4,
                                     children: [
-                                      _tag(isRefund ? 'Refund' : 'Payment', amountColor),
+                                      _tag(isRefund ? 'Refund' : (isAdvance ? 'Advance' : 'Payment'), amountColor),
                                       _tag(method.isEmpty ? 'Method: N/A' : 'Method: $method', Colors.blueGrey),
                                     ],
                                   ),
@@ -2426,7 +2589,7 @@ class _StockChip extends StatelessWidget {
 }
 
 // =================================================
-// Partial Return Dialog
+// Advanced / Partial Return Dialog
 // =================================================
 class _PartialReturnDialog extends StatefulWidget {
   final List<Map<String, dynamic>> activeItems;
@@ -2437,23 +2600,54 @@ class _PartialReturnDialog extends StatefulWidget {
 }
 
 class _PartialReturnDialogState extends State<_PartialReturnDialog> {
-  final Map<int, TextEditingController> _ctrl = {};
+  final Map<int, TextEditingController> _goodCtrl = {};
+  final Map<int, TextEditingController> _lostCtrl = {};
+  final Map<int, TextEditingController> _penaltyCtrl = {};
   DateTime _returnDate = DateTime.now();
 
   @override
-  void initState() { super.initState(); for (final r in widget.activeItems) { _ctrl[r['id'] as int] = TextEditingController(text: '0'); } }
+  void initState() {
+    super.initState();
+    for (final r in widget.activeItems) {
+      final id = r['id'] as int;
+      _goodCtrl[id] = TextEditingController(text: r['qty'].toString()); // Default to all good
+      _lostCtrl[id] = TextEditingController(text: '0');
+      _penaltyCtrl[id] = TextEditingController(text: '0');
+    }
+  }
+
   @override
-  void dispose() { for (final c in _ctrl.values) { c.dispose(); } super.dispose(); }
+  void dispose() {
+    for (final c in [..._goodCtrl.values, ..._lostCtrl.values, ..._penaltyCtrl.values]) { c.dispose(); }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Partial Return'),
+    title: const Text('Advanced Return'),
     content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
-      const Text('Enter the quantity to return for each item:'), const SizedBox(height: 16),
-      ...widget.activeItems.map((r) => Padding(padding: const EdgeInsets.only(bottom: 12), child: Row(children: [
-        Expanded(child: Text('${r['itemName']}\n(Max: ${r['qty']})', style: const TextStyle(fontSize: 14))),
-        SizedBox(width: 80, child: TextField(controller: _ctrl[r['id'] as int], keyboardType: TextInputType.number, decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true), textAlign: TextAlign.center)),
-      ]))),
+      const Text('Specify returned quantities and any damage penalties.'),
+      const SizedBox(height: 16),
+      ...widget.activeItems.map((r) {
+        final id = r['id'] as int;
+        return Card(
+          margin: const EdgeInsets.only(bottom: 12),
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('${r['itemName']} (Rented: ${r['qty']})', style: const TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 10),
+              Row(children: [
+                Expanded(child: TextField(controller: _goodCtrl[id], keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Good Qty', border: OutlineInputBorder(), isDense: true))),
+                const SizedBox(width: 8),
+                Expanded(child: TextField(controller: _lostCtrl[id], keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Damaged/Lost', border: OutlineInputBorder(), isDense: true))),
+              ]),
+              const SizedBox(height: 8),
+              TextField(controller: _penaltyCtrl[id], keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: InputDecoration(labelText: 'Penalty Fee ($curr)', border: const OutlineInputBorder(), isDense: true, prefixIcon: const Icon(Icons.money, size: 18))),
+            ]),
+          ),
+        );
+      }),
       const Divider(),
       Row(children: [
         Expanded(child: Text('Return Date:\n${DatabaseHelper.formatDateFromDt(_returnDate)}', style: const TextStyle(fontSize: 14))),
@@ -2470,9 +2664,22 @@ class _PartialReturnDialogState extends State<_PartialReturnDialog> {
           final returns = <Map<String, dynamic>>[];
           final messenger = ScaffoldMessenger.of(context);
           for (final r in widget.activeItems) {
-            final id = r['id'] as int; final q = int.tryParse(_ctrl[id]?.text ?? '0') ?? 0;
-            if (q > (r['qty'] as int)) { messenger.showSnackBar(SnackBar(content: Text('Cannot return more than rented for ${r['itemName']}'))); return; }
-            if (q > 0) returns.add({'rental': r, 'qty': q});
+            final id = r['id'] as int;
+            final good = int.tryParse(_goodCtrl[id]?.text ?? '0') ?? 0;
+            final lost = int.tryParse(_lostCtrl[id]?.text ?? '0') ?? 0;
+            final penalty = double.tryParse(_penaltyCtrl[id]?.text ?? '0') ?? 0.0;
+            final total = good + lost;
+
+            if (total > (r['qty'] as int)) {
+              messenger.showSnackBar(SnackBar(content: Text('Cannot return more than rented for ${r['itemName']}')));
+              return;
+            }
+            if (total > 0) {
+              returns.add({'rental': r, 'goodQty': good, 'damagedQty': lost, 'penalty': penalty});
+            } else if (penalty > 0) {
+              messenger.showSnackBar(const SnackBar(content: Text('You must return at least 1 item to apply a penalty here.')));
+              return;
+            }
           }
           if (returns.isEmpty) { messenger.showSnackBar(const SnackBar(content: Text('Enter at least one quantity to return'))); return; }
           Navigator.pop(context, {'returns': returns, 'date': DatabaseHelper.isoDate(_returnDate)});
@@ -2701,7 +2908,7 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
     final dividerHeight = compact ? 10.0 : 16.0;
     final overdueDays = appSettingsNotifier.overdueDays;
     final isOverdue = DateTime.now().difference(checkoutDt).inDays > overdueDays;
-    final totalCost = g.calculateTotalCost(); final balance = totalCost - g.advance;
+    final totalCost = g.calculateTotalCost(); final balance = totalCost - g.advance - g.discount;
     final dayCount = DateTime.now().difference(checkoutDt).inDays;
     return Card(
       margin: EdgeInsets.only(bottom: compact ? 8 : 10),
@@ -2817,6 +3024,7 @@ class HistoryTab extends StatefulWidget {
 
 class _HistoryTabState extends State<HistoryTab> {
   List<RentalGroup> _groups = [];
+  Map<String, List<Map<String, dynamic>>> _paymentLogsByGroup = {};
   final _searchCtrl = TextEditingController();
   Timer? _debounce;
   String _sortMode = kSortOptions.first;
@@ -2830,9 +3038,11 @@ class _HistoryTabState extends State<HistoryTab> {
     final all = groupRentalsByInvoice(await DatabaseHelper.getAllRentals(search: _searchCtrl.text));
     final history = all.where((g) => g.isFullyReturned).toList();
     _applySort(history, _sortMode);
+    final paymentMap = await DatabaseHelper.getPaymentLogsForGroups(history);
     if (!mounted) return;
     setState(() {
       _groups = history;
+      _paymentLogsByGroup = paymentMap;
     });
   }
 
@@ -2908,7 +3118,20 @@ class _HistoryTabState extends State<HistoryTab> {
         padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
         itemCount: _groups.length,
         itemBuilder: (_, i) {
-          final g = _groups[i]; final totalCost = g.calculateTotalCost(); final balance = totalCost - g.advance;
+          final g = _groups[i]; final totalCost = g.calculateTotalCost(); final balance = totalCost - g.advance - g.discount;
+          final payments = _paymentLogsByGroup[g.paymentGroupKey] ?? const <Map<String, dynamic>>[];
+
+          double initialAdvance = 0.0;
+          double laterPaid = 0.0;
+          if (payments.isNotEmpty) {
+            initialAdvance = (payments.first['amount'] as num?)?.toDouble() ?? 0.0;
+            for (int j = 1; j < payments.length; j++) {
+              laterPaid += (payments[j]['amount'] as num?)?.toDouble() ?? 0.0;
+            }
+          } else {
+            initialAdvance = g.advance;
+          }
+
           return Card(margin: const EdgeInsets.only(bottom: 8), child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             // Row 1: Contractor name + phone(s) + PAID badge + delete
             Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
@@ -2964,7 +3187,9 @@ class _HistoryTabState extends State<HistoryTab> {
             if (g.notes.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4, bottom: 4), child: Text('Note: ${g.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12))),
             const Divider(height: 16),
             Text('Total Billed: ${formatMoney(totalCost)}'),
-            Text('Paid: ${formatMoney(g.advance)}'),
+            Text('Advance: ${formatMoney(initialAdvance)}'),
+            if (laterPaid != 0) Text('Paid Later: ${formatMoney(laterPaid)}'),
+            if (g.discount != 0) Text('Discount: ${formatMoney(g.discount)}'),
             Row(
               children: [
                 Expanded(
@@ -3652,7 +3877,7 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
           else
             ..._history.map((g) {
               final totalCost = g.calculateTotalCost();
-              final balance   = totalCost - g.advance;
+              final balance   = totalCost - g.advance - g.discount;
               final isActive  = !g.isFullyReturned;
               final payments = _paymentLogsByGroup[g.paymentGroupKey] ?? const <Map<String, dynamic>>[];
               return Card(
@@ -3703,6 +3928,8 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
                   // Financials
                   Text('Billed: ${formatMoney(totalCost)}', style: const TextStyle(fontSize: 13)),
                   _PaymentBreakdownLine(totalPaid: g.advance, payments: payments, fallbackMethod: g.paymentMethod, fontSize: 13),
+                  if (g.discount > 0) const SizedBox(height: 2),
+                  if (g.discount > 0) Text('Discount: ${formatMoney(g.discount)}', style: const TextStyle(fontSize: 13)),
                   const SizedBox(height: 2),
                   Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                     Text(
@@ -4108,7 +4335,7 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen> {
           return Card(margin:const EdgeInsets.only(bottom:8), child:ListTile(
             leading: const Icon(Icons.inventory_2_outlined),
             title: Text(r['itemName']??'', style:const TextStyle(fontWeight:FontWeight.bold)),
-            subtitle: Text('Qty: $qty  *  Rate: ${formatMoney(rate)}/day\nCheckout: ${DatabaseHelper.formatDateString(r['checkoutDate'] as String?)}'),
+            subtitle: Text('Qty: $qty  * Rate: ${formatMoney(rate)}/day\nCheckout: ${DatabaseHelper.formatDateString(r['checkoutDate'] as String?)}'),
             isThreeLine: true,
             trailing: Text(formatMoney((qty*rate)), style:const TextStyle(fontWeight:FontWeight.bold)),
           ));
@@ -4334,11 +4561,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         content: const SingleChildScrollView(
           child: Text(
             'Rental Manager is designed for offline-first use.\n\n'
-            '- Your business data is stored locally on your device database.\n'
-            '- The app does not require internet for normal operation.\n'
-            '- Payment and customer records stay on your device unless you export a backup manually.\n'
-            '- Keep your backup files secure, because they contain your app data.\n\n'
-            'You control your data: export, restore, and deletion actions are initiated by you.',
+                '- Your business data is stored locally on your device database.\n'
+                '- The app does not require internet for normal operation.\n'
+                '- Payment and customer records stay on your device unless you export a backup manually.\n'
+                '- Keep your backup files secure, because they contain your app data.\n\n'
+                'You control your data: export, restore, and deletion actions are initiated by you.',
           ),
         ),
         actions: [
@@ -4458,6 +4685,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           onTap: _showOverdueDaysDialog,
         ),
 
+        _switchSettingTile(
+            icon: Icons.draw_outlined,
+            color: Colors.amber,
+            title: 'PDF Signatures',
+            subtitle: 'Show customer and vendor signature lines on PDFs',
+            value: s.showPdfSignatures,
+            onChanged: s.setShowPdfSignatures
+        ),
+
         const Divider(height: 1),
 
         // ====================================
@@ -4465,8 +4701,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // ====================================
         _sectionHeader('DASHBOARD'),
 
-        _switchSettingTile(icon: Icons.leaderboard_outlined, color: Colors.orange, title: 'Top Customers by Revenue', subtitle: 'Show/hide Top 5 revenue list on dashboard', value: s.showTopCustomersByRevenue, onChanged: s.setShowTopCustomersByRevenue),
-        _switchSettingTile(icon: Icons.history, color: Colors.orange, title: 'Payment History Time Stamp', subtitle: 'Show/hide time (AM/PM) in Payment History entries', value: s.showPaymentHistoryTime, onChanged: s.setShowPaymentHistoryTime),
+        _switchSettingTile(icon: Icons.leaderboard_outlined, color: Colors.amber, title: 'Top Customers by Revenue', subtitle: 'Show/hide Top 5 revenue list on dashboard', value: s.showTopCustomersByRevenue, onChanged: s.setShowTopCustomersByRevenue),
+        _switchSettingTile(icon: Icons.history, color: Colors.amber, title: 'Payment History Time Stamp', subtitle: 'Show/hide time (AM/PM) in Payment History entries', value: s.showPaymentHistoryTime, onChanged: s.setShowPaymentHistoryTime),
 
         const Divider(height: 1),
 
@@ -4475,10 +4711,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // ====================================
         _sectionHeader('NOTIFICATIONS'),
 
-        _switchSettingTile(icon: Icons.alarm_on, color: Colors.orange, title: 'Overdue Rental Alert', subtitle: 'Alert when a rental exceeds ${s.overdueDays} days', value: s.notifyOverdue, onChanged: s.setNotifyOverdue),
-        _switchSettingTile(icon: Icons.payments_outlined, color: Colors.orange, title: 'Pending Payment Reminder', subtitle: 'Remind about unsettled returned invoices', value: s.notifyPendingPayments, onChanged: s.setNotifyPendingPayments),
-        _switchSettingTile(icon: Icons.undo, color: Colors.orange, title: 'Refund Wait Alert', subtitle: 'Alert when a customer has been waiting too long for a refund', value: s.notifyRefundWait, onChanged: s.setNotifyRefundWait),
-        _switchSettingTile(icon: Icons.event_note_outlined, color: Colors.orange, title: 'Rental Anniversary Alert', subtitle: 'Notify on milestone days - 7, 14, 30, 60...', value: s.notifyAnniversary, onChanged: s.setNotifyAnniversary),
+        _switchSettingTile(icon: Icons.alarm_on, color: Colors.amber, title: 'Overdue Rental Alert', subtitle: 'Alert when a rental exceeds ${s.overdueDays} days', value: s.notifyOverdue, onChanged: s.setNotifyOverdue),
+        _switchSettingTile(icon: Icons.payments_outlined, color: Colors.amber, title: 'Pending Payment Reminder', subtitle: 'Remind about unsettled returned invoices', value: s.notifyPendingPayments, onChanged: s.setNotifyPendingPayments),
+        _switchSettingTile(icon: Icons.undo, color: Colors.amber, title: 'Refund Wait Alert', subtitle: 'Alert when a customer has been waiting too long for a refund', value: s.notifyRefundWait, onChanged: s.setNotifyRefundWait),
+        _switchSettingTile(icon: Icons.event_note_outlined, color: Colors.amber, title: 'Rental Anniversary Alert', subtitle: 'Notify on milestone days - 7, 14, 30, 60...', value: s.notifyAnniversary, onChanged: s.setNotifyAnniversary),
 
 
         const Divider(height: 1, indent: 16, endIndent: 16),
@@ -4507,7 +4743,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             underline: const SizedBox(),
             items: const [
               DropdownMenuItem(value: 'English', child: Text('English')),
-              DropdownMenuItem(value: 'Hindi',   child: Text('Hindi')),
+              // Hindi temporarily removed as per user request
             ],
             onChanged: (v) { if (v != null) s.setLanguage(v); },
           ),
@@ -4537,7 +4773,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const ListTile(
           leading: Icon(Icons.construction, color: Colors.amber),
           title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: Text('Version 2.2.0  |  Database v18'),
+          subtitle: Text('Version 2.4.0  |  Database v20'),
         ),
         ListTile(
           leading: const Icon(Icons.privacy_tip_outlined, color: Colors.amber),
@@ -4545,6 +4781,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           subtitle: const Text('Offline-first data handling and user control'),
           trailing: const Icon(Icons.chevron_right),
           onTap: _showPrivacyDialog,
+        ),
+        ListTile(
+          leading: const Icon(Icons.share, color: Colors.amber),
+          title: const Text('Tell a Friend'),
+          subtitle: const Text('Share the app with others'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Share.share('Check out Rental Manager, a great offline tool for tracking inventory and invoices: https://gitlab.com/wjust4435/rental_manager');
+          },
         ),
         const SizedBox(height: 40),
       ]),
