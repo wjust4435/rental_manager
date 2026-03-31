@@ -13,7 +13,6 @@ import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:async';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -21,7 +20,7 @@ import 'package:printing/printing.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
@@ -85,8 +84,10 @@ class AppSettingsNotifier extends ChangeNotifier {
   bool   _notifyRefundWait   = true;
   bool   _notifyAnniversary  = false;
   String _language           = 'English';
+  String _appIcon            = 'default'; // ← NEW
 
   String get currencySymbol      => _currencySymbol;
+  String get appIcon             => _appIcon;     // ← NEW
   int    get overdueDays         => _overdueDays;
   String get cardDensity         => _cardDensity;
   String get fontSize            => _fontSize;
@@ -130,6 +131,7 @@ class AppSettingsNotifier extends ChangeNotifier {
     _notifyRefundWait     = p.getBool('notifyRefundWait')       ?? true;
     _notifyAnniversary    = p.getBool('notifyAnniversary')      ?? false;
     _language             = _normalizeLanguage(p.getString('language'));
+    _appIcon              = p.getString('appIcon')              ?? 'default';
     notifyListeners();
   }
 
@@ -169,6 +171,7 @@ class AppSettingsNotifier extends ChangeNotifier {
   Future<void> setNotifyRefundWait(bool v)       async { _notifyRefundWait    = v; notifyListeners(); await _save(); }
   Future<void> setNotifyAnniversary(bool v)      async { _notifyAnniversary   = v; notifyListeners(); await _save(); }
   Future<void> setLanguage(String v)             async { _language            = _normalizeLanguage(v); notifyListeners(); await _save(); }
+  Future<void> setAppIcon(String v)              async { _appIcon             = v; notifyListeners(); await _save(); } // ← NEW
 }
 
 // =================================================
@@ -3188,7 +3191,7 @@ class _HistoryTabState extends State<HistoryTab> {
             const Divider(height: 16),
             Text('Total Billed: ${formatMoney(totalCost)}'),
             Text('Advance: ${formatMoney(initialAdvance)}'),
-            if (laterPaid != 0) Text('Paid Later: ${formatMoney(laterPaid)}'),
+            if (laterPaid != 0) Text('Payments: ${formatMoney(laterPaid)}'),
             if (g.discount != 0) Text('Discount: ${formatMoney(g.discount)}'),
             Row(
               children: [
@@ -4373,7 +4376,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _rebuild() { if (mounted) setState(() {}); }
 
-  // ---- dialog helpers ----
+// ---- dialog helpers ----
+
+  static const _iconChannel = MethodChannel('com.wjust4435.rental_manager/icon');
+
+  Future<void> _changeAppIcon(String iconKey) async {
+    final s = appSettingsNotifier;
+    final messenger = ScaffoldMessenger.of(context);
+
+    try {
+      await _iconChannel.invokeMethod('setIcon', {'iconKey': iconKey});
+      await s.setAppIcon(iconKey);
+
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(iconKey == 'default'
+                ? 'App icon reset to default.'
+                : 'App icon changed successfully.'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Failed to change icon: $e')),
+        );
+      }
+    }
+  }
+
+  void _showAppIconDialog() {
+    final s = appSettingsNotifier;
+    final icons = [
+      {'name': 'Default Icon', 'key': 'default'},
+      {'name': 'Icon Variant 1', 'key': 'icon1'},
+      {'name': 'Icon Variant 2', 'key': 'icon2'},
+      {'name': 'Icon Variant 3', 'key': 'icon3'},
+    ];
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Choose App Icon'),
+        children: icons.map((icon) => ListTile(
+          leading: const Icon(Icons.app_shortcut, color: Colors.amber),
+          title: Text(icon['name']!),
+          trailing: s.appIcon == icon['key'] ? const Icon(Icons.check, color: Colors.amber) : null,
+          onTap: () {
+            Navigator.pop(ctx);
+            _changeAppIcon(icon['key']!);
+          },
+        )).toList(),
+      ),
+    );
+  }
 
   void _showCardDensityDialog() {
     final s = appSettingsNotifier;
@@ -4626,7 +4684,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // ====================================
         _sectionHeader('APPEARANCE'),
 
-        // Theme
+// Theme
         ListTile(
           leading: Icon(
             tm == ThemeMode.light ? Icons.light_mode :
@@ -4640,6 +4698,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             tm == ThemeMode.system ? ThemeMode.light :
             tm == ThemeMode.light  ? ThemeMode.dark  : ThemeMode.system,
           ),
+        ),
+
+        // App Icon Picker (NEW)
+        ListTile(
+          leading: const Icon(Icons.app_shortcut, color: Colors.amber),
+          title: const Text('App Icon'),
+          subtitle: const Text('Change home screen icon'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _showAppIconDialog,
         ),
 
         // Card Density
@@ -4796,3 +4863,4 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 }
+
