@@ -25,7 +25,7 @@ dependencies:
   shared_preferences: ^2.3.2
   flutter_local_notifications: ^17.2.4
   fl_chart: ^0.70.0
-  share_plus: ^10.1.2        # ← NEW: Required for native sharing menu
+  share_plus: ^10.1.2
 
 dev_dependencies:
   flutter_test:
