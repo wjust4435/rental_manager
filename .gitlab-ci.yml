@@ -1,8 +1,9 @@
 image: ghcr.io/cirruslabs/flutter:stable
 
 variables:
-  # This MUST match the path in your build.gradle.kts
-  SECURE_FILES_DOWNLOAD_PATH: './.gitlab/secure_files/'
+  SECURE_FILES_DOWNLOAD_PATH: './android/app/'
+  # Using the tag for the filename (e.g., v2.5.0)
+  APP_VERSION: $CI_COMMIT_TAG
 
 stages:
   - build
@@ -13,16 +14,21 @@ build_job:
   script:
     - echo "Fetching secure keystore..."
     - curl -sL https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer | bash
-    - echo "Building Signed APK..."
+    - echo "Building Split APKs for $APP_VERSION..."
     - flutter pub get
-    - flutter build apk --release
+    - flutter build apk --release --split-per-abi
+    - echo "Renaming files for professional distribution..."
+    - cd build/app/outputs/flutter-apk/
+    - mv app-armeabi-v7a-release.apk "Rental_Manager_${APP_VERSION}_armeabi-v7a.apk"
+    - mv app-arm64-v8a-release.apk "Rental_Manager_${APP_VERSION}_arm64-v8a.apk"
+    - mv app-x86_64-release.apk "Rental_Manager_${APP_VERSION}_x86_64.apk"
   artifacts:
     paths:
-      - build/app/outputs/flutter-apk/app-release.apk
+      # This captures all our newly named APKs
+      - build/app/outputs/flutter-apk/Rental_Manager_*.apk
     expire_in: 7 days
   rules:
     - if: $CI_COMMIT_TAG
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 release_job:
   stage: deploy
@@ -31,15 +37,18 @@ release_job:
     - job: build_job
       artifacts: true
   script:
-    - echo "Creating official GitLab Release..."
+    - echo "Creating Release for $APP_VERSION..."
   release:
-    name: "Release $CI_COMMIT_TAG"
-    description: "Rental Manager v2.5.0"
+    name: "Rental Manager $APP_VERSION"
+    description: "Official release for version $APP_VERSION. Smaller file sizes via architecture splitting."
     tag_name: "$CI_COMMIT_TAG"
     assets:
       links:
-        - name: "Rental Manager APK"
-          url: "${CI_PROJECT_URL}/-/jobs/${CI_JOB_ID}/artifacts/raw/build/app/outputs/flutter-apk/app-release.apk"
+        - name: "ARM 64-bit (Modern Phones)"
+          url: "${CI_PROJECT_URL}/-/jobs/${CI_JOB_ID}/artifacts/raw/build/app/outputs/flutter-apk/Rental_Manager_${CI_COMMIT_TAG}_arm64-v8a.apk"
+        - name: "ARM 32-bit (Older Phones)"
+          url: "${CI_PROJECT_URL}/-/jobs/${CI_JOB_ID}/artifacts/raw/build/app/outputs/flutter-apk/Rental_Manager_${CI_COMMIT_TAG}_armeabi-v7a.apk"
+        - name: "x86_64 (Emulators/Tablets)"
+          url: "${CI_PROJECT_URL}/-/jobs/${CI_JOB_ID}/artifacts/raw/build/app/outputs/flutter-apk/Rental_Manager_${CI_COMMIT_TAG}_x86_64.apk"
   rules:
     - if: $CI_COMMIT_TAG
-      
