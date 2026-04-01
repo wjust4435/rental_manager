@@ -27,9 +27,28 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        release {
+            // This logic allows local building AND GitLab CI building
+            if (System.getenv("CI")) {
+                // GitLab CI Path (Standard for Secure Files)
+                storeFile file("${System.getenv("CI_PROJECT_DIR")}/.gitlab/secure_files/rental_manager_release.jks")
+                storePassword System.getenv("KEYSTORE_PASSWORD")
+                keyAlias System.getenv("KEY_ALIAS")
+                keyPassword System.getenv("KEY_PASSWORD")
+            } else {
+                // Local Build Path (Optional: only if you keep a key.properties locally)
+                storeFile file("your_local_path_here")
+                storePassword "your_local_password"
+                keyAlias "rental_manager_alias"
+                keyPassword "your_local_password"
+            }
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig signingConfigs.release // Switched from debug to release
         }
     }
 
