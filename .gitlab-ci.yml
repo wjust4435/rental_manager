@@ -1,19 +1,19 @@
 image: ghcr.io/cirruslabs/flutter:stable
 
+variables:
+  # This MUST match the path in your build.gradle.kts
+  SECURE_FILES_DOWNLOAD_PATH: './.gitlab/secure_files/'
+
 stages:
   - build
   - deploy
-
-variables:
-  # This tells the downloader where to put your .jks file
-  SECURE_FILES_DOWNLOAD_PATH: './android/app/'
 
 build_job:
   stage: build
   script:
     - echo "Fetching secure keystore..."
     - curl -sL https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer | bash
-    - echo "Building Signed APK for v2.5.0..."
+    - echo "Building Signed APK..."
     - flutter pub get
     - flutter build apk --release
   artifacts:
@@ -21,8 +21,8 @@ build_job:
       - build/app/outputs/flutter-apk/app-release.apk
     expire_in: 7 days
   rules:
-    - if: $CI_COMMIT_TAG # Runs when you push a tag like v2.5.0
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH # Runs on every push to main
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 release_job:
   stage: deploy
@@ -34,11 +34,11 @@ release_job:
     - echo "Creating official GitLab Release..."
   release:
     name: "Release $CI_COMMIT_TAG"
-    description: "Rental Manager v2.5.0 - Database Schema v21"
+    description: "Rental Manager v2.5.0"
     tag_name: "$CI_COMMIT_TAG"
     assets:
       links:
         - name: "Rental Manager APK"
           url: "${CI_PROJECT_URL}/-/jobs/${CI_JOB_ID}/artifacts/raw/build/app/outputs/flutter-apk/app-release.apk"
   rules:
-    - if: $CI_COMMIT_TAG # Only creates a 'Release' page when you push a tag
+    - if: $CI_COMMIT_TAG
