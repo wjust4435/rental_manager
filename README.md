@@ -100,11 +100,12 @@ See [LICENSE](LICENSE) for full details.
 | Paths         | `path_provider`                           |
 | Fonts         | Local assets: `assets/fonts/Roboto-*.ttf` |
 
-## Database
 
+## Database Architecture
 - Main local file: `siteyard_v3.db`
-- Current schema version in app: `v18`
+- Current schema version in app: `v21`
 - Includes `payment_logs` table for Payment History events.
+- Upgraded to support advanced tracking (`discount`, `penaltyFee`, and `badDebt`).
 
 ## Android Permissions (Current Behavior)
 
