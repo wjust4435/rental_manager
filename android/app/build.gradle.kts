@@ -16,7 +16,7 @@ android {
     }
 
     kotlinOptions {
-        // Updated to use the recommended string format for jvmTarget
+        // Updated to use the correct string format to resolve the jvmTarget deprecation
         jvmTarget = "17"
     }
 
@@ -29,17 +29,18 @@ android {
     }
 
     signingConfigs {
+        // Use create() to explicitly define the release configuration in Kotlin DSL
         create("release") {
-            // Fix: Kotlin requires explicit null check for String to Boolean conversion
+            // Check for CI environment variable properly to fix the Boolean type mismatch
             if (System.getenv("CI") != null) {
-                // Fix: Use '=' for assignments in Kotlin DSL
                 val projectDir = System.getenv("CI_PROJECT_DIR")
+                // Use '=' for assignments to fix the "Expecting an element" errors
                 storeFile = file("$projectDir/.gitlab/secure_files/rental_manager_release.jks")
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("KEY_ALIAS")
                 keyPassword = System.getenv("KEY_PASSWORD")
             } else {
-                // Local Build Path
+                // Local Build Path [cite: 8]
                 storeFile = file("your_local_path_here")
                 storePassword = "your_local_password"
                 keyAlias = "rental_manager_alias"
@@ -50,7 +51,7 @@ android {
 
     buildTypes {
         release {
-            // Fix: Use the correct reference to the signingConfig created above
+            // Fixes the unresolved reference for signingConfigs [cite: 9]
             signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             isShrinkResources = false
