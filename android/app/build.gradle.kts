@@ -1,4 +1,7 @@
-﻿plugins {
+﻿import java.util.Properties
+import java.io.FileInputStream
+
+plugins {
     id("com.android.application")
     id("kotlin-android")
     id("dev.flutter.flutter-gradle-plugin")
@@ -16,7 +19,8 @@ android {
     }
 
     kotlinOptions {
-        // Updated to use the correct string format to resolve the jvmTarget deprecation
+        // Suppressing the warning for now as this is the standard Flutter setup
+        @Suppress("DEPRECATION")
         jvmTarget = "17"
     }
 
@@ -29,29 +33,31 @@ android {
     }
 
     signingConfigs {
-        // Use create() to explicitly define the release configuration in Kotlin DSL
         create("release") {
-            // Check for CI environment variable properly to fix the Boolean type mismatch
             if (System.getenv("CI") != null) {
+                // GitLab CI logic
                 val projectDir = System.getenv("CI_PROJECT_DIR")
-                // Use '=' for assignments to fix the "Expecting an element" errors
                 storeFile = file("$projectDir/.gitlab/secure_files/rental_manager_release.jks")
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("KEY_ALIAS")
                 keyPassword = System.getenv("KEY_PASSWORD")
             } else {
-                // Local Build Path [cite: 8]
-                storeFile = file("your_local_path_here")
-                storePassword = "your_local_password"
-                keyAlias = "rental_manager_alias"
-                keyPassword = "your_local_password"
+                // Local Build Logic
+                val keystorePropertiesFile = rootProject.file("key.properties")
+                val keystoreProperties = Properties()
+                if (keystorePropertiesFile.exists()) {
+                    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+                    storeFile = file(keystoreProperties.getProperty("storeFile"))
+                    storePassword = keystoreProperties.getProperty("storePassword")
+                    keyAlias = keystoreProperties.getProperty("keyAlias")
+                    keyPassword = keystoreProperties.getProperty("keyPassword")
+                }
             }
         }
     }
 
     buildTypes {
         release {
-            // Fixes the unresolved reference for signingConfigs [cite: 9]
             signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             isShrinkResources = false
