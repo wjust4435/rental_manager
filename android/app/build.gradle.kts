@@ -16,7 +16,8 @@ android {
     }
 
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17.toString()
+        // Updated to use the recommended string format for jvmTarget
+        jvmTarget = "17"
     }
 
     defaultConfig {
@@ -28,27 +29,31 @@ android {
     }
 
     signingConfigs {
-        release {
-            // This logic allows local building AND GitLab CI building
-            if (System.getenv("CI")) {
-                // GitLab CI Path (Standard for Secure Files)
-                storeFile file("${System.getenv("CI_PROJECT_DIR")}/.gitlab/secure_files/rental_manager_release.jks")
-                storePassword System.getenv("KEYSTORE_PASSWORD")
-                keyAlias System.getenv("KEY_ALIAS")
-                keyPassword System.getenv("KEY_PASSWORD")
+        create("release") {
+            // Fix: Kotlin requires explicit null check for String to Boolean conversion
+            if (System.getenv("CI") != null) {
+                // Fix: Use '=' for assignments in Kotlin DSL
+                val projectDir = System.getenv("CI_PROJECT_DIR")
+                storeFile = file("$projectDir/.gitlab/secure_files/rental_manager_release.jks")
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
             } else {
-                // Local Build Path (Optional: only if you keep a key.properties locally)
-                storeFile file("your_local_path_here")
-                storePassword "your_local_password"
-                keyAlias "rental_manager_alias"
-                keyPassword "your_local_password"
+                // Local Build Path
+                storeFile = file("your_local_path_here")
+                storePassword = "your_local_password"
+                keyAlias = "rental_manager_alias"
+                keyPassword = "your_local_password"
             }
         }
     }
 
     buildTypes {
         release {
-            signingConfig signingConfigs.release // Switched from debug to release
+            // Fix: Use the correct reference to the signingConfig created above
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 
