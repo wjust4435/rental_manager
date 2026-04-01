@@ -10,9 +10,12 @@ stages:          # List of stages for jobs, and their order of execution
   - test
   - deploy
 
-build-job:       # This job runs in the build stage, which runs first.
+build-job:
   stage: build
   script:
+    - echo "Downloading secure files..."
+    # This line is the missing link - it pulls your .jks from the GitLab vault
+    - curl -sL https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer | bash
     - echo "Compiling the code..."
     - flutter pub get
     - flutter build apk --release
