@@ -89,16 +89,16 @@ See [LICENSE](LICENSE) for full details.
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Framework | Flutter (Dart), Material 3 |
-| Database | SQLite via `sqflite` |
-| PDF | `pdf` + `printing` |
-| Local Storage | `shared_preferences` |
-| Notifications | `flutter_local_notifications` |
-| File Picking | `file_picker` |
-| Paths | `path_provider` |
-| Fonts | Local assets: `assets/fonts/Roboto-*.ttf` |
+| Layer         | Technology                                |
+|---------------|-------------------------------------------|
+| Framework     | Flutter (Dart), Material 3                |
+| Database      | SQLite via `sqflite`                      |
+| PDF           | `pdf` + `printing`                        |
+| Local Storage | `shared_preferences`                      |
+| Notifications | `flutter_local_notifications`             |
+| File Picking  | `file_picker`                             |
+| Paths         | `path_provider`                           |
+| Fonts         | Local assets: `assets/fonts/Roboto-*.ttf` |
 
 ## Database
 
@@ -116,23 +116,10 @@ See [LICENSE](LICENSE) for full details.
 ## Getting Started
 
 ```bash
-git clone https://gitlab.com/wjust4435/rental_manager.git
+git clone [https://gitlab.com/wjust4435/rental_manager.git](https://gitlab.com/wjust4435/rental_manager.git)
 cd rental_manager
 flutter clean
 flutter pub get
 flutter run
-```
 
-## Build
-
-```bash
 flutter build apk --release
-```
-
-## License
-
-MIT (see `LICENSE` file).
-
-## Privacy
-
-See `PRIVACY.md` for offline data-handling policy.

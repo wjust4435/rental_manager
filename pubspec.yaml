@@ -1,16 +1,11 @@
 name: rental_manager
 description: Offline rental and inventory manager for any item type
 publish_to: none
-version: 2.2.0+11
+version: 2.5.0+12
 
 # ---------------------------------------------------------------------------
 # License: GNU General Public License v3.0 or later (GPL-3.0-or-later)
 # Copyright (C) 2026 wjust4435
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-# See <https://www.gnu.org/licenses/> for full details.
 # ---------------------------------------------------------------------------
 
 environment:
@@ -29,7 +24,8 @@ dependencies:
   printing: ^5.13.2
   shared_preferences: ^2.3.2
   flutter_local_notifications: ^17.2.4
-  fl_chart: ^0.70.0          # ← NEW: monthly revenue chart coming soon
+  fl_chart: ^0.70.0
+  share_plus: ^10.1.2
 
 dev_dependencies:
   flutter_test:
@@ -39,7 +35,7 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   fonts:
-    - family: Roboto  # Roboto fonts
+    - family: Roboto
       fonts:
         - asset: assets/fonts/Roboto-Regular.ttf
         - asset: assets/fonts/Roboto-Italic.ttf

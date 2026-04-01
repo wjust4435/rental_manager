@@ -1,19 +1,14 @@
-﻿// Rental Manager
+﻿//---------------------------------------------------------------------
+// Rental Manager
 // Copyright (C) 2026 wjust4435
-//
-// This program is free software: you can redistribute
-// it and/or modify it under the terms of the GNU
-// General Public License as published by the Free
-// Software Foundation, either version 3 of the
-// License, or (at your option) any later version.
-//
-// See <https://www.gnu.org/licenses/> for details.
+// License: GNU General Public License v3.0 or later (GPL-3.0-or-later)
+//---------------------------------------------------------------------
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'; // Added for debugPrint
 import 'package:sqflite/sqflite.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:async';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -21,9 +16,10 @@ import 'package:printing/printing.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/intl.dart';
+import 'package:share_plus/share_plus.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -70,21 +66,24 @@ class ThemeModeNotifier extends ChangeNotifier {
 class AppSettingsNotifier extends ChangeNotifier {
   String _currencySymbol     = '\u20B9';
   int    _overdueDays        = 30;
-  String _cardDensity        = 'comfortable'; // 'comfortable' | 'compact'
-  String _fontSize           = 'medium';      // 'small' | 'medium' | 'large'
-  String _dateFormat         = 'dd/MMM/yyyy'; // 'dd/MMM/yyyy' | 'dd/MM/yyyy' | 'MM/dd/yyyy' | 'yyyy-MM-dd'
-  String _timeFormat         = '12h';         // '12h' | '24h'
-  String _firstDayOfWeek     = 'Monday';      // 'Monday' | 'Sunday'
-  bool   _showTopCustomersByRevenue = true;
+  String _cardDensity        = 'comfortable';
+  String _fontSize           = 'medium';
+  String _dateFormat         = 'dd/MMM/yyyy';
+  String _timeFormat         = '12h';
+  String _firstDayOfWeek     = 'Monday';
+  bool   _showTopCustomersByRevenue = false;
   bool   _showPaymentHistoryTime = true;
+  bool   _showPdfSignatures  = true;
   bool   _notifyOverdue      = true;
   bool   _notifyPendingPayments = true;
   bool   _notifySummary      = false;
   bool   _notifyRefundWait   = true;
   bool   _notifyAnniversary  = false;
-  String _language           = 'English';     // 'English' | 'Hindi'
+  String _language           = 'English';
+  String _appIcon            = 'default'; // ← NEW
 
   String get currencySymbol      => _currencySymbol;
+  String get appIcon             => _appIcon;     // ← NEW
   int    get overdueDays         => _overdueDays;
   String get cardDensity         => _cardDensity;
   String get fontSize            => _fontSize;
@@ -93,6 +92,7 @@ class AppSettingsNotifier extends ChangeNotifier {
   String get firstDayOfWeek      => _firstDayOfWeek;
   bool   get showTopCustomersByRevenue => _showTopCustomersByRevenue;
   bool   get showPaymentHistoryTime => _showPaymentHistoryTime;
+  bool   get showPdfSignatures   => _showPdfSignatures;
   bool   get notifyOverdue       => _notifyOverdue;
   bool   get notifyPendingPayments => _notifyPendingPayments;
   bool   get notifySummary       => _notifySummary;
@@ -106,8 +106,7 @@ class AppSettingsNotifier extends ChangeNotifier {
   AppSettingsNotifier() { _load(); }
 
   String _normalizeLanguage(String? v) {
-    if (v == 'Hindi' || v == 'हिंदी' || v == 'à¤¹à¤¿à¤‚à¤¦à¥€') return 'Hindi';
-    return 'English';
+    return 'English'; // Forced English for now as requested
   }
 
   Future<void> _load() async {
@@ -119,14 +118,16 @@ class AppSettingsNotifier extends ChangeNotifier {
     _dateFormat           = p.getString('dateFormat')           ?? 'dd/MMM/yyyy';
     _timeFormat           = p.getString('timeFormat')           ?? '12h';
     _firstDayOfWeek       = p.getString('firstDayOfWeek')       ?? 'Monday';
-    _showTopCustomersByRevenue = p.getBool('showTopCustomersByRevenue') ?? true;
+    _showTopCustomersByRevenue = p.getBool('showTopCustomersByRevenue') ?? false;
     _showPaymentHistoryTime = p.getBool('showPaymentHistoryTime') ?? true;
+    _showPdfSignatures    = p.getBool('showPdfSignatures')      ?? true;
     _notifyOverdue        = p.getBool('notifyOverdue')          ?? true;
     _notifyPendingPayments= p.getBool('notifyPendingPayments')  ?? true;
     _notifySummary        = p.getBool('notifySummary')          ?? false;
     _notifyRefundWait     = p.getBool('notifyRefundWait')       ?? true;
     _notifyAnniversary    = p.getBool('notifyAnniversary')      ?? false;
     _language             = _normalizeLanguage(p.getString('language'));
+    _appIcon              = p.getString('appIcon')              ?? 'default';
     notifyListeners();
   }
 
@@ -141,12 +142,14 @@ class AppSettingsNotifier extends ChangeNotifier {
     await p.setString('firstDayOfWeek',      _firstDayOfWeek);
     await p.setBool('showTopCustomersByRevenue', _showTopCustomersByRevenue);
     await p.setBool('showPaymentHistoryTime', _showPaymentHistoryTime);
+    await p.setBool('showPdfSignatures',     _showPdfSignatures);
     await p.setBool('notifyOverdue',         _notifyOverdue);
     await p.setBool('notifyPendingPayments', _notifyPendingPayments);
     await p.setBool('notifySummary',         _notifySummary);
     await p.setBool('notifyRefundWait',      _notifyRefundWait);
     await p.setBool('notifyAnniversary',     _notifyAnniversary);
     await p.setString('language',            _language);
+    await p.setString('appIcon',             _appIcon);
   }
 
   Future<void> setCurrencySymbol(String v)      async { _currencySymbol      = v; notifyListeners(); await _save(); }
@@ -158,12 +161,14 @@ class AppSettingsNotifier extends ChangeNotifier {
   Future<void> setFirstDayOfWeek(String v)       async { _firstDayOfWeek      = v; notifyListeners(); await _save(); }
   Future<void> setShowTopCustomersByRevenue(bool v) async { _showTopCustomersByRevenue = v; notifyListeners(); await _save(); }
   Future<void> setShowPaymentHistoryTime(bool v) async { _showPaymentHistoryTime = v; notifyListeners(); await _save(); }
+  Future<void> setShowPdfSignatures(bool v)      async { _showPdfSignatures   = v; notifyListeners(); await _save(); }
   Future<void> setNotifyOverdue(bool v)          async { _notifyOverdue       = v; notifyListeners(); await _save(); }
   Future<void> setNotifyPendingPayments(bool v)  async { _notifyPendingPayments = v; notifyListeners(); await _save(); }
   Future<void> setNotifySummary(bool v)          async { _notifySummary       = v; notifyListeners(); await _save(); }
   Future<void> setNotifyRefundWait(bool v)       async { _notifyRefundWait    = v; notifyListeners(); await _save(); }
   Future<void> setNotifyAnniversary(bool v)      async { _notifyAnniversary   = v; notifyListeners(); await _save(); }
   Future<void> setLanguage(String v)             async { _language            = _normalizeLanguage(v); notifyListeners(); await _save(); }
+  Future<void> setAppIcon(String v)              async { _appIcon             = v; notifyListeners(); await _save(); } // ← NEW
 }
 
 // =================================================
@@ -190,9 +195,21 @@ class NotificationService {
       requestSoundPermission: true,
     );
     await _plugin.initialize(const InitializationSettings(android: android, iOS: ios));
-    await _plugin
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-        ?.requestNotificationsPermission();
+
+    // Request notification permission with error handling
+    try {
+      final granted = await _plugin
+          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+          ?.requestNotificationsPermission();
+
+      if (granted == false) {
+        // Permission denied - notifications will not work
+        // You could show a dialog here if needed, but keeping it silent for now
+        debugPrint('Notification permission denied by user');
+      }
+    } catch (e) {
+      debugPrint('Failed to request notification permission: $e');
+    }
   }
 
   static Future<void> checkAndNotify() async {
@@ -206,11 +223,22 @@ class NotificationService {
       return true;
     }
 
-    if (s.notifyOverdue        && await once('overdue'))     await _checkOverdue(s.overdueDays);
-    if (s.notifyPendingPayments && await once('pending'))    await _checkPendingPayments();
-    if (s.notifyRefundWait     && await once('refund'))      await _checkRefundWait();
-    if (s.notifyAnniversary    && await once('anniversary')) await _checkAnniversaries();
-    if (s.notifySummary        && await once('summary'))     await _checkSummary(s.overdueDays);
+    // 1. Determine if we even need to run the heavy rental query today
+    final needsGroups = (s.notifyPendingPayments && prefs.getString('notif_pending') != today) ||
+        (s.notifyRefundWait      && prefs.getString('notif_refund') != today) ||
+        (s.notifySummary         && prefs.getString('notif_summary') != today);
+
+    // 2. Fetch and group rentals exactly ONCE if needed
+    List<RentalGroup>? cachedGroups;
+    if (needsGroups) {
+      cachedGroups = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
+    }
+
+    if (s.notifyOverdue         && await once('overdue'))     await _checkOverdue(s.overdueDays);
+    if (s.notifyPendingPayments && await once('pending'))     await _checkPendingPayments(cachedGroups!);
+    if (s.notifyRefundWait      && await once('refund'))      await _checkRefundWait(cachedGroups!);
+    if (s.notifyAnniversary     && await once('anniversary')) await _checkAnniversaries();
+    if (s.notifySummary         && await once('summary'))     await _checkSummary(s.overdueDays, cachedGroups!);
   }
 
   static Future<void> _checkOverdue(int days) async {
@@ -229,8 +257,7 @@ class NotificationService {
     );
   }
 
-  static Future<void> _checkPendingPayments() async {
-    final groups  = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
+  static Future<void> _checkPendingPayments(List<RentalGroup> groups) async {
     final pending = groups.where((g) => g.isFullyReturned && !g.isSettled && g.balance > 0).toList();
     if (pending.isEmpty) return;
     final total = pending.fold(0.0, (sum, g) => sum + g.balance);
@@ -241,8 +268,7 @@ class NotificationService {
     );
   }
 
-  static Future<void> _checkRefundWait() async {
-    final groups  = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
+  static Future<void> _checkRefundWait(List<RentalGroup> groups) async {
     final refunds = groups.where((g) => g.isFullyReturned && !g.isSettled && g.balance < 0).toList();
     if (refunds.isEmpty) return;
     await _show(
@@ -276,10 +302,9 @@ class NotificationService {
     await _show(_idAnniversary, 'Rental Milestone', body);
   }
 
-  static Future<void> _checkSummary(int overdueDays) async {
+  static Future<void> _checkSummary(int overdueDays, List<RentalGroup> groups) async {
     final stats  = await DatabaseHelper.getDashboardStats(overdueDays: overdueDays);
     final active = stats['activeRentals'] ?? 0;
-    final groups = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
     final pendingTotal = groups
         .where((g) => g.isFullyReturned && !g.isSettled && g.balance > 0)
         .fold(0.0, (sum, g) => sum + g.balance);
@@ -485,61 +510,7 @@ class _PaymentLabel extends StatelessWidget {
   }
 }
 
-class _PaymentBreakdownLine extends StatelessWidget {
-  final double totalPaid;
-  final List<Map<String, dynamic>> payments;
-  final String fallbackMethod;
-  final double fontSize;
 
-  const _PaymentBreakdownLine({
-    required this.totalPaid,
-    required this.payments,
-    required this.fallbackMethod,
-    this.fontSize = 13,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final methodTotals = <String, double>{};
-    for (final p in payments) {
-      final method = (p['method'] as String? ?? '').trim();
-      final amount = (p['amount'] as num?)?.toDouble() ?? 0.0;
-      if (amount.abs() < 0.0001) continue;
-      final key = method.isEmpty ? 'Payment' : method;
-      methodTotals[key] = (methodTotals[key] ?? 0.0) + amount;
-    }
-
-    final loggedSum = methodTotals.values.fold<double>(0.0, (s, v) => s + v);
-    final diff = totalPaid - loggedSum;
-
-    if (methodTotals.isEmpty && totalPaid.abs() > 0.0001) {
-      final key = fallbackMethod.trim().isEmpty ? 'Payment' : fallbackMethod.trim();
-      methodTotals[key] = totalPaid;
-    } else if (methodTotals.isNotEmpty && diff.abs() > 0.009) {
-      final base = fallbackMethod.trim().isEmpty ? 'Adjustment' : '${fallbackMethod.trim()} Adj.';
-      methodTotals[base] = (methodTotals[base] ?? 0.0) + diff;
-    }
-
-    final sign = totalPaid < 0 ? '-' : '';
-    final paidText = 'Paid: $sign${formatMoney(totalPaid, absolute: true)}';
-    final parts = methodTotals.entries.map((e) {
-      final partSign = e.value < 0 ? '-' : '';
-      return '${e.key}: $partSign${formatMoney(e.value, absolute: true)}';
-    }).toList();
-
-    final style = TextStyle(fontSize: fontSize);
-    final paidStyle = TextStyle(fontSize: fontSize, fontWeight: FontWeight.bold);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        ...parts.map((p) => Text(p, style: style)),
-        if (parts.isNotEmpty) const SizedBox(height: 2),
-        Text(paidText, style: paidStyle),
-      ],
-    );
-  }
-}
 
 Future<bool> _confirmDialog(BuildContext context, {required String title, required String message, String confirmLabel = 'Delete'}) async {
   final result = await showDialog<bool>(
@@ -575,7 +546,7 @@ void _applySort(List<RentalGroup> list, String mode) {
 // Database Helper
 // =================================================
 class DatabaseHelper {
-  static const int _dbVersion = 18;
+  static const int _dbVersion = 21;
 
   static Future<Database> getDatabase() async {
     final dir  = await getApplicationDocumentsDirectory();
@@ -583,7 +554,7 @@ class DatabaseHelper {
     return openDatabase(path, version: _dbVersion,
       onCreate: (db, v) async {
         await db.execute("CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,category TEXT DEFAULT 'General',total INTEGER NOT NULL DEFAULT 0,rented INTEGER DEFAULT 0,notes TEXT DEFAULT '')");
-        await db.execute("CREATE TABLE rentals(id INTEGER PRIMARY KEY AUTOINCREMENT,itemId INTEGER,orderId INTEGER,contractor TEXT,phone TEXT,phone2 TEXT DEFAULT '',address TEXT,advanceDeposit REAL DEFAULT 0,qty INTEGER,checkoutDate TEXT,rentalRate REAL DEFAULT 0,returned INTEGER DEFAULT 0,returnDate TEXT,notes TEXT DEFAULT '',isSettled INTEGER DEFAULT 0,paymentMethod TEXT DEFAULT '')");
+        await db.execute("CREATE TABLE rentals(id INTEGER PRIMARY KEY AUTOINCREMENT,itemId INTEGER,orderId INTEGER,contractor TEXT,phone TEXT,phone2 TEXT DEFAULT '',address TEXT,advanceDeposit REAL DEFAULT 0,discount REAL DEFAULT 0,badDebt REAL DEFAULT 0,qty INTEGER,checkoutDate TEXT,rentalRate REAL DEFAULT 0,returned INTEGER DEFAULT 0,returnDate TEXT,notes TEXT DEFAULT '',isSettled INTEGER DEFAULT 0,paymentMethod TEXT DEFAULT '',penaltyFee REAL DEFAULT 0)");
         await db.execute("CREATE TABLE customers(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,phone TEXT,phone2 TEXT DEFAULT '',email TEXT DEFAULT '',address TEXT,notes TEXT DEFAULT '',joinedDate TEXT DEFAULT '',isBlacklisted INTEGER DEFAULT 0)");
         await db.execute("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,customerId INTEGER,customerName TEXT,createdDate TEXT)");
         await db.execute("CREATE TABLE payment_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,orderId INTEGER,fallbackRentalId INTEGER,amount REAL NOT NULL,method TEXT DEFAULT '',paidAt TEXT DEFAULT '')");
@@ -630,11 +601,10 @@ class DatabaseHelper {
             "CREATE INDEX IF NOT EXISTS idx_payment_logs_fallback ON payment_logs(fallbackRentalId)",
           ]) { try { await db.execute(sql); } catch (_) {} }
 
-          // Backfill one payment record per legacy group so old data still shows a method.
           try {
             final rows = await db.rawQuery(
               "SELECT id, orderId, advanceDeposit, paymentMethod, checkoutDate "
-              "FROM rentals WHERE advanceDeposit != 0 ORDER BY id ASC",
+                  "FROM rentals WHERE advanceDeposit != 0 ORDER BY id ASC",
             );
             final seen = <String>{};
             for (final r in rows) {
@@ -667,8 +637,45 @@ class DatabaseHelper {
             "ALTER TABLE business_info ADD COLUMN taxRegNo TEXT DEFAULT ''",
           ]) { try { await db.execute(sql); } catch (_) {} }
         }
+        if (oldV < 19) {
+          try { await db.execute("ALTER TABLE rentals ADD COLUMN discount REAL DEFAULT 0"); } catch (_) {}
+        }
+        if (oldV < 20) {
+          try { await db.execute("ALTER TABLE rentals ADD COLUMN penaltyFee REAL DEFAULT 0"); } catch (_) {}
+        }
+        if (oldV < 21) {
+          try { await db.execute("ALTER TABLE rentals ADD COLUMN badDebt REAL DEFAULT 0"); } catch (_) {}
+        }
       },
     );
+  }
+
+  static Future<void> writeOffBadDebt(int firstId, double amount, List<int> allIds) async {
+    final db = await getDatabase();
+    await db.transaction((txn) async {
+      await txn.rawUpdate('UPDATE rentals SET badDebt=badDebt+? WHERE id=?', [amount, firstId]);
+      for (final id in allIds) { await txn.rawUpdate('UPDATE rentals SET isSettled=1 WHERE id=?', [id]); }
+    });
+  }
+
+  static Future<void> recoverBadDebt(int firstId, double amount, String method, List<int> allIds, bool isFullyRecovered) async {
+    final db = await getDatabase();
+    await db.transaction((txn) async {
+      final head = (await txn.query('rentals', columns: ['orderId'], where: 'id=?', whereArgs: [firstId], limit: 1)).firstOrNull;
+      final orderId = head?['orderId'] as int?;
+      await txn.insert('payment_logs', {
+        'orderId': orderId,
+        'fallbackRentalId': orderId == null ? firstId : null,
+        'amount': amount,
+        'method': method,
+        'paidAt': DateTime.now().toIso8601String(),
+      });
+      // Convert bad debt back into a proper advance/payment so it balances out
+      await txn.rawUpdate('UPDATE rentals SET badDebt=MAX(0, badDebt-?), advanceDeposit=advanceDeposit+? WHERE id=?', [amount, amount, firstId]);
+      if (isFullyRecovered) {
+        for (final id in allIds) { await txn.rawUpdate('UPDATE rentals SET isSettled=1 WHERE id=?', [id]); }
+      }
+    });
   }
 
   static String formatDateFromDt(DateTime dt) => formatDateByPreference(dt);
@@ -676,16 +683,23 @@ class DatabaseHelper {
   static String isoDate(DateTime dt) => dt.toIso8601String().split('T')[0];
   static String isoNow() => isoDate(DateTime.now());
 
-  // Load bundled Roboto fonts from assets for fully offline PDF rendering.
+// Cache fonts to avoid reloading on every PDF generation
+  static Map<String, pw.Font>? _cachedFonts;
+
   static Future<Map<String, pw.Font>> _loadPdfFonts() async {
+    if (_cachedFonts != null) return _cachedFonts!;
+
     final regular = pw.Font.ttf(await rootBundle.load('assets/fonts/Roboto-Regular.ttf'));
     final bold = pw.Font.ttf(await rootBundle.load('assets/fonts/Roboto-Bold.ttf'));
     final italic = pw.Font.ttf(await rootBundle.load('assets/fonts/Roboto-Italic.ttf'));
-    return {
+
+    _cachedFonts = {
       'regular': regular,
       'bold': bold,
       'italic': italic,
     };
+
+    return _cachedFonts!;
   }
 
   static Future<Map<String, int>> getDashboardStats({int overdueDays = 30}) async {
@@ -722,10 +736,10 @@ class DatabaseHelper {
 
     final rows = totals.entries
         .map((e) => <String, dynamic>{
-              'name': e.key,
-              'revenue': e.value,
-              'invoices': invoices[e.key] ?? 0,
-            })
+      'name': e.key,
+      'revenue': e.value,
+      'invoices': invoices[e.key] ?? 0,
+    })
         .toList();
 
     rows.sort((a, b) => (b['revenue'] as double).compareTo(a['revenue'] as double));
@@ -793,22 +807,40 @@ class DatabaseHelper {
     await db.transaction((txn) async {
       for (final ret in returns) {
         final rental = ret['rental'] as Map<String, dynamic>;
-        final returnQty = ret['qty'] as int;
-        if (returnQty <= 0) continue;
-        final rentalId = rental['id'] as int; final itemId = rental['itemId'] as int; final currentQty = rental['qty'] as int;
+        final goodQty = ret['goodQty'] as int;
+        final damagedQty = ret['damagedQty'] as int;
+        final penalty = ret['penalty'] as double;
+        final totalReturnQty = goodQty + damagedQty;
+
+        if (totalReturnQty <= 0) continue;
+
+        final rentalId = rental['id'] as int;
+        final itemId = rental['itemId'] as int;
+        final currentQty = rental['qty'] as int;
+
         final rented = (await txn.query('items', columns:['rented'], where:'id=?', whereArgs:[itemId])).firstOrNull?['rented'] as int? ?? 0;
-        await txn.rawUpdate('UPDATE items SET rented=rented-? WHERE id=?', [returnQty.clamp(0,rented), itemId]);
-        if (returnQty >= currentQty) {
-          await txn.rawUpdate('UPDATE rentals SET returned=1,returnDate=? WHERE id=?', [returnDate, rentalId]);
+
+        // 1. Both good and damaged items are no longer "rented out"
+        await txn.rawUpdate('UPDATE items SET rented=rented-? WHERE id=?', [totalReturnQty.clamp(0,rented), itemId]);
+
+        // 2. If items were destroyed/lost, permanently remove them from inventory total
+        if (damagedQty > 0) {
+          await txn.rawUpdate('UPDATE items SET total=total-? WHERE id=?', [damagedQty, itemId]);
+        }
+
+        if (totalReturnQty >= currentQty) {
+          // Fully returned the line item
+          await txn.rawUpdate('UPDATE rentals SET returned=1, returnDate=?, penaltyFee=? WHERE id=?', [returnDate, penalty, rentalId]);
         } else {
-          await txn.insert('rentals', {'itemId':itemId,'orderId':rental['orderId'],'contractor':rental['contractor'],'phone':rental['phone']??'','phone2':rental['phone2']??'','address':rental['address'],'advanceDeposit':0.0,'qty':returnQty,'checkoutDate':rental['checkoutDate'],'rentalRate':rental['rentalRate'],'returned':1,'returnDate':returnDate,'notes':rental['notes'],'isSettled':rental['isSettled']??0,'paymentMethod':rental['paymentMethod']??''});
-          await txn.rawUpdate('UPDATE rentals SET qty=qty-? WHERE id=?', [returnQty, rentalId]);
+          // Partially returned the line item - split the record
+          await txn.insert('rentals', {'itemId':itemId,'orderId':rental['orderId'],'contractor':rental['contractor'],'phone':rental['phone']??'','phone2':rental['phone2']??'','address':rental['address'],'advanceDeposit':0.0,'discount':0.0,'qty':totalReturnQty,'checkoutDate':rental['checkoutDate'],'rentalRate':rental['rentalRate'],'returned':1,'returnDate':returnDate,'notes':rental['notes'],'isSettled':rental['isSettled']??0,'paymentMethod':rental['paymentMethod']??'', 'penaltyFee': penalty});
+          await txn.rawUpdate('UPDATE rentals SET qty=qty-? WHERE id=?', [totalReturnQty, rentalId]);
         }
       }
     });
   }
 
-  static Future<void> addPaymentToRentalGroup(int firstId, double amount, bool isFull, List<int> allIds, {String paymentMethod = ''}) async {
+  static Future<void> addPaymentToRentalGroup(int firstId, double amount, bool isFull, List<int> allIds, {String paymentMethod = '', double discountAmount = 0.0}) async {
     final db = await getDatabase();
     await db.transaction((txn) async {
       if (amount.abs() > 0.0001) {
@@ -822,7 +854,7 @@ class DatabaseHelper {
           'paidAt': DateTime.now().toIso8601String(),
         });
       }
-      await txn.rawUpdate('UPDATE rentals SET advanceDeposit=advanceDeposit+?,paymentMethod=? WHERE id=?', [amount, paymentMethod, firstId]);
+      await txn.rawUpdate('UPDATE rentals SET advanceDeposit=advanceDeposit+?, discount=discount+?, paymentMethod=? WHERE id=?', [amount, discountAmount, paymentMethod, firstId]);
       if (isFull) { for (final id in allIds) { await txn.rawUpdate('UPDATE rentals SET isSettled=1 WHERE id=?', [id]); } }
     });
   }
@@ -887,7 +919,7 @@ class DatabaseHelper {
   }
 
   static Future<Map<String, dynamic>> getCustomerLifetimeStats(String customerName) async {
-    if (customerName.isEmpty) return {'totalSpent': 0.0, 'totalInvoices': 0, 'activeRentals': 0, 'refundBalance': 0.0, 'owedBalance': 0.0};
+    if (customerName.isEmpty) return {'totalSpent': 0.0, 'totalInvoices': 0, 'activeRentals': 0, 'refundBalance': 0.0, 'owedBalance': 0.0, 'badDebt': 0.0};
     final rows = await (await getDatabase()).rawQuery(
       "SELECT rentals.*, items.name as itemName FROM rentals JOIN items ON rentals.itemId=items.id WHERE rentals.contractor=? ORDER BY rentals.checkoutDate ASC, rentals.id ASC",
       [customerName],
@@ -896,9 +928,11 @@ class DatabaseHelper {
     double totalSpent   = 0.0;
     double owedBalance  = 0.0;
     double refundBalance = 0.0;
+    double badDebtTotal = 0.0;
     int activeRentals   = 0;
     for (final g in groups) {
       totalSpent += g.calculateTotalCost();
+      badDebtTotal += g.badDebt;
       if (!g.isFullyReturned) activeRentals += g.items.where((r) => r['returned'] == 0).length;
       if (g.isFullyReturned && !g.isSettled) {
         if (g.balance > 0) owedBalance  += g.balance;
@@ -911,6 +945,7 @@ class DatabaseHelper {
       'activeRentals': activeRentals,
       'owedBalance':   owedBalance,
       'refundBalance': refundBalance,
+      'badDebt':       badDebtTotal,
     };
   }
 
@@ -937,7 +972,7 @@ class DatabaseHelper {
         if (rows.isEmpty) throw Exception('Item not found');
         final total = rows.first['total'] as int? ?? 0; final rented = rows.first['rented'] as int? ?? 0;
         if (qty > (total - rented)) throw Exception('Not enough stock for item $itemId');
-        await txn.insert('rentals', {'itemId':itemId,'contractor':it['contractor']??'','phone':it['phone']??'','phone2':it['phone2']??'','address':it['address']??'','advanceDeposit':it['advanceDeposit']??0.0,'rentalRate':rate,'qty':qty,'checkoutDate':it['checkoutDate']??isoNow(),'orderId':orderId,'returned':0,'notes':it['notes']??'','isSettled':0,'paymentMethod':it['paymentMethod']??''});
+        await txn.insert('rentals', {'itemId':itemId,'contractor':it['contractor']??'','phone':it['phone']??'','phone2':it['phone2']??'','address':it['address']??'','advanceDeposit':it['advanceDeposit']??0.0,'discount':it['discount']??0.0,'rentalRate':rate,'qty':qty,'checkoutDate':it['checkoutDate']??isoNow(),'orderId':orderId,'returned':0,'notes':it['notes']??'','isSettled':0,'paymentMethod':it['paymentMethod']??''});
         await txn.update('items', {'rented':rented+qty}, where:'id=?', whereArgs:[itemId]);
       }
       if (initialAdvance.abs() > 0.0001) {
@@ -974,7 +1009,7 @@ class DatabaseHelper {
       final placeholders = List.filled(orderIds.length, '?').join(',');
       final result = await db.rawQuery(
         "SELECT id, orderId, fallbackRentalId, amount, method, paidAt "
-        "FROM payment_logs WHERE orderId IN ($placeholders) ORDER BY paidAt ASC, id ASC",
+            "FROM payment_logs WHERE orderId IN ($placeholders) ORDER BY paidAt ASC, id ASC",
         orderIds.toList(),
       );
       rows.addAll(result.map((r) => Map<String, dynamic>.from(r)));
@@ -984,7 +1019,7 @@ class DatabaseHelper {
       final placeholders = List.filled(fallbackIds.length, '?').join(',');
       final result = await db.rawQuery(
         "SELECT id, orderId, fallbackRentalId, amount, method, paidAt "
-        "FROM payment_logs WHERE fallbackRentalId IN ($placeholders) ORDER BY paidAt ASC, id ASC",
+            "FROM payment_logs WHERE fallbackRentalId IN ($placeholders) ORDER BY paidAt ASC, id ASC",
         fallbackIds.toList(),
       );
       rows.addAll(result.map((r) => Map<String, dynamic>.from(r)));
@@ -1031,8 +1066,8 @@ class DatabaseHelper {
     if (s.isNotEmpty) {
       where.add(
         "(COALESCE(o.customerName, r.contractor, '') LIKE ? "
-        "OR COALESCE(p.method, '') LIKE ? "
-        "OR CAST(COALESCE(p.orderId, p.fallbackRentalId) AS TEXT) LIKE ?)",
+            "OR COALESCE(p.method, '') LIKE ? "
+            "OR CAST(COALESCE(p.orderId, p.fallbackRentalId) AS TEXT) LIKE ?)",
       );
       args.addAll(['%$s%', '%$s%', '%$s%']);
     }
@@ -1040,13 +1075,14 @@ class DatabaseHelper {
     final whereSql = where.isEmpty ? '' : 'WHERE ${where.join(' AND ')}';
     final rows = await db.rawQuery(
       "SELECT p.id, p.orderId, p.fallbackRentalId, p.amount, p.method, p.paidAt, "
-      "COALESCE(o.customerName, r.contractor, '') AS customerName, "
-      "COALESCE(o.createdDate, r.checkoutDate, '') AS baseDate "
-      "FROM payment_logs p "
-      "LEFT JOIN orders o ON p.orderId = o.id "
-      "LEFT JOIN rentals r ON p.fallbackRentalId = r.id "
-      "$whereSql "
-      "ORDER BY p.paidAt DESC, p.id DESC",
+          "COALESCE(o.customerName, r.contractor, '') AS customerName, "
+          "COALESCE(o.createdDate, r.checkoutDate, '') AS baseDate, "
+          "(SELECT MIN(id) FROM payment_logs p2 WHERE COALESCE(p2.orderId, -1) = COALESCE(p.orderId, -1) AND COALESCE(p2.fallbackRentalId, -1) = COALESCE(p.fallbackRentalId, -1)) AS firstLogId "
+          "FROM payment_logs p "
+          "LEFT JOIN orders o ON p.orderId = o.id "
+          "LEFT JOIN rentals r ON p.fallbackRentalId = r.id "
+          "$whereSql "
+          "ORDER BY p.paidAt DESC, p.id DESC",
       args,
     );
     return rows.map((r) => Map<String, dynamic>.from(r)).toList();
@@ -1069,19 +1105,19 @@ class DatabaseHelper {
   }
 
   static Future<void> saveBusinessInfo(
-    String name,
-    String phone,
-    String phone2,
-    String email,
-    String address,
-    String upiId,
-    String upiName, {
-    String taxProfile = 'No Tax',
-    String taxType = 'none',
-    double taxRate = 0.0,
-    String taxMode = 'exclusive',
-    String taxRegNo = '',
-  }) async =>
+      String name,
+      String phone,
+      String phone2,
+      String email,
+      String address,
+      String upiId,
+      String upiName, {
+        String taxProfile = 'No Tax',
+        String taxType = 'none',
+        double taxRate = 0.0,
+        String taxMode = 'exclusive',
+        String taxRegNo = '',
+      }) async =>
       (await getDatabase()).update('business_info', {
         'name':name,
         'phone':phone,
@@ -1185,6 +1221,7 @@ class DatabaseHelper {
     final fontRegular = fonts['regular']!;
     final fontBold    = fonts['bold']!;
     final fontItalic  = fonts['italic']!;
+    final showSigs    = appSettingsNotifier.showPdfSignatures;
 
     String s(String k) => (biz[k] as String?) ?? '';
     final bizName=s('name'),bizPhone=s('phone'),bizPhone2=s('phone2'),bizEmail=s('email'),bizAddress=s('address'),bizUpi=s('upiId'),bizUpiName=s('upiName');
@@ -1240,8 +1277,12 @@ class DatabaseHelper {
           if (advance > 0) pw.Text('Advance Paid: ${formatMoney(advance)}', style:ts()),
           pw.Text('Note: This is a Proforma (estimated rental summary).', style:ts(d:-1, italic:true)),
           pw.SizedBox(height:6), pw.Text('Thank you for your business!', style:ts(italic:true)),
-          pw.SizedBox(height:40), pw.Align(alignment:pw.Alignment.center, child:sigLine('Customer Signature')),
-          pw.SizedBox(height:40), pw.Align(alignment:pw.Alignment.center, child:sigLine('Vendor Signature')),
+
+          if (showSigs) ...[
+            pw.SizedBox(height:40), pw.Align(alignment:pw.Alignment.center, child:sigLine('Customer Signature')),
+            pw.SizedBox(height:40), pw.Align(alignment:pw.Alignment.center, child:sigLine('Vendor Signature')),
+          ],
+
           if (bizUpi.isNotEmpty) ...[
             pw.SizedBox(height:30),
             pw.Center(child:pw.Column(crossAxisAlignment:pw.CrossAxisAlignment.center, children:[
@@ -1263,6 +1304,11 @@ class DatabaseHelper {
     final rentals = await getRentalsByOrder(orderId);
     if (rentals.isEmpty) throw Exception('No rentals found for order');
     final biz = await getBusinessInfo();
+
+    // Fetch logs to show itemized payments
+    final pMap = await getPaymentLogsForGroups([RentalGroup(orderId: orderId, items: rentals)]);
+    final logs = pMap.values.firstOrNull ?? [];
+
     final is57mm = pageSize == '57mm';
     final format = is57mm ? const PdfPageFormat(57*PdfPageFormat.mm, 220*PdfPageFormat.mm, marginAll:4*PdfPageFormat.mm) : PdfPageFormat.a4;
     final fs = is57mm ? 8.0 : 11.0;
@@ -1271,6 +1317,8 @@ class DatabaseHelper {
     final fontRegular = fonts['regular']!;
     final fontBold    = fonts['bold']!;
     final fontItalic  = fonts['italic']!;
+    final showSigs    = appSettingsNotifier.showPdfSignatures;
+
     String s(String k) => (biz[k] as String?) ?? '';
     final bizName=s('name'),bizPhone=s('phone'),bizPhone2=s('phone2'),bizEmail=s('email'),bizAddress=s('address'),bizUpi=s('upiId'),bizUpiName=s('upiName');
     final tax = _taxSettingsFromBiz(biz);
@@ -1304,12 +1352,23 @@ class DatabaseHelper {
       }
     }
 
-    final advance = rentals.fold(0.0, (sum, r) => sum + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0));
-    final totals = _taxBreakdown(lineSubtotal, tax);
-    final taxableBase = totals['taxableBase'] ?? lineSubtotal;
+    final discount = rentals.fold(0.0, (sum, r) => sum + ((r['discount'] as num?)?.toDouble() ?? 0.0));
+    final subtotalAfterDiscount = lineSubtotal - discount;
+    final totals = _taxBreakdown(subtotalAfterDiscount, tax);
+    final taxableBase = totals['taxableBase'] ?? subtotalAfterDiscount;
     final taxAmount = totals['taxAmount'] ?? 0.0;
-    final grandTotal = totals['grandTotal'] ?? lineSubtotal;
-    final balance = grandTotal - advance;
+    final grandTotal = totals['grandTotal'] ?? subtotalAfterDiscount;
+
+    double totalPaid = 0.0;
+    if (logs.isNotEmpty) {
+      for (final l in logs) {
+        totalPaid += (l['amount'] as num).toDouble();
+      }
+    } else {
+      totalPaid = rentals.fold(0.0, (sum, r) => sum + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0));
+    }
+
+    final balance = grandTotal - discount - totalPaid;
     final isSettled = rentals.every((r) => (r['isSettled'] as int? ?? 0) == 1);
     final finalReturnText = finalReturnDate == null ? 'Pending' : formatDateFromDt(finalReturnDate);
 
@@ -1367,9 +1426,9 @@ class DatabaseHelper {
               ),
               columnWidths: {
                 0: const pw.FlexColumnWidth(1.1),
-                1: const pw.FlexColumnWidth(2.5),
+                1: const pw.FlexColumnWidth(2.0),
                 2: const pw.FlexColumnWidth(1.1),
-                3: const pw.FlexColumnWidth(1.5),
+                3: const pw.FlexColumnWidth(2.0),
               },
               children: [
                 pw.TableRow(children: [
@@ -1448,19 +1507,49 @@ class DatabaseHelper {
           pw.Text(is57mm ? 'Total:' : 'Total (Incl. Tax):', style: ts(bold:true)),
           pw.Text(formatMoney(grandTotal, decimals: is57mm ? 0 : 2), style: ts(bold:true)),
         ]),
-        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text(is57mm ? 'Advance:' : 'Advance Paid:', style: ts()),
-          pw.Text('- ${formatMoney(advance, decimals: is57mm ? 0 : 2)}', style: ts()),
+
+        // --- NEW: Discount Section ---
+        if (discount > 0) pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+          pw.Text('Discount:', style: ts()),
+          pw.Text('- ${formatMoney(discount, decimals: is57mm ? 0 : 2)}', style: ts()),
         ]),
+
+// --- NEW: Itemized Payments Section ---
+        if (logs.isNotEmpty) ...[
+          // First payment is listed as Advance
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+            pw.Text(is57mm ? 'Advance:' : 'Advance Paid:', style: ts()),
+            pw.Text('- ${formatMoney(logs.first['amount'] as double, decimals: is57mm ? 0 : 2)}', style: ts()),
+          ]),
+          // Subsequent payments and refunds
+          for (int i = 1; i < logs.length; i++)
+            pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+              pw.Text((logs[i]['amount'] as num) < 0
+                  ? 'Refunded ${((logs[i]['method'] as String?) ?? '').isEmpty ? '' : logs[i]['method']}:'
+                  : 'Paid ${((logs[i]['method'] as String?) ?? '').isEmpty ? 'Payment' : logs[i]['method']}:', style: ts()),
+              pw.Text(((logs[i]['amount'] as num) < 0 ? '+ ' : '- ') + formatMoney((logs[i]['amount'] as num).abs(), decimals: is57mm ? 0 : 2), style: ts()),
+            ]),
+        ] else if (totalPaid > 0) ...[
+          // Fallback for old records
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+            pw.Text(is57mm ? 'Advance:' : 'Advance Paid:', style: ts()),
+            pw.Text('- ${formatMoney(totalPaid, decimals: is57mm ? 0 : 2)}', style: ts()),
+          ]),
+        ],
+
         pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
           pw.Text(balance > 0 ? (is57mm ? 'Due:' : 'Balance Due:') : balance < 0 ? (is57mm ? 'Refund:' : 'Refund Due:') : 'Balance:', style: ts(bold:true)),
           pw.Text(formatMoney(balance.abs(), decimals: is57mm ? 0 : 2), style: ts(bold:true)),
         ]),
         pw.Text(isSettled ? 'Payment Status: Settled' : 'Payment Status: Pending', style: ts()),
-        pw.SizedBox(height: is57mm ? 18 : 30),
-        pw.Align(alignment: pw.Alignment.center, child: sigLine('Customer Signature')),
-        pw.SizedBox(height: is57mm ? 18 : 30),
-        pw.Align(alignment: pw.Alignment.center, child: sigLine('Vendor Signature')),
+
+        if (showSigs) ...[
+          pw.SizedBox(height: is57mm ? 18 : 30),
+          pw.Align(alignment: pw.Alignment.center, child: sigLine('Customer Signature')),
+          pw.SizedBox(height: is57mm ? 18 : 30),
+          pw.Align(alignment: pw.Alignment.center, child: sigLine('Vendor Signature')),
+        ],
+
         pw.SizedBox(height:8),
         pw.Text('This is the final invoice based on actual return dates.', style:ts(d:-1, italic:true)),
         if (bizUpi.isNotEmpty) ...[
@@ -1522,7 +1611,9 @@ class RentalGroup {
       ? 'o:$orderId'
       : 'f:${fallbackId ?? (items.firstOrNull?['id'] as int? ?? 0)}';
   double get advance => items.fold(0.0, (s, r) => s + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0));
-  double get balance => calculateTotalCost() - advance;
+  double get discount => items.fold(0.0, (s, r) => s + ((r['discount'] as num?)?.toDouble() ?? 0.0));
+  double get badDebt => items.fold(0.0, (s, r) => s + ((r['badDebt'] as num?)?.toDouble() ?? 0.0));
+  double get balance => calculateTotalCost() - advance - discount - badDebt;
 
   double calculateTotalCost() {
     double total = 0.0;
@@ -1572,9 +1663,12 @@ class _MainShellState extends State<MainShell> {
   @override
   void initState() {
     super.initState();
-    // Run notification checks each time the app is opened.
-    // Each check fires at most once per day per category.
-    NotificationService.checkAndNotify();
+    // Defer notification checks so the main thread can render the Dashboard first
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) NotificationService.checkAndNotify();
+      });
+    });
   }
 
   void _nav(Widget screen) { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (_) => screen)); }
@@ -1620,6 +1714,7 @@ class _MainShellState extends State<MainShell> {
     Expanded(child: ListView(padding: EdgeInsets.zero, children: [
       _drawerNavItem(icon: Icons.account_balance_wallet, title: 'Payment Ledger', onTap: () => _nav(const PaymentLedgerScreen())),
       _drawerNavItem(icon: Icons.history, title: 'Payment History', onTap: () => _nav(const PaymentHistoryScreen())),
+      _drawerNavItem(icon: Icons.money_off, title: 'Losses & Bad Debt', onTap: () => _nav(const LossesAndBadDebtScreen())),
       const Divider(height: 1),
       _drawerNavItem(icon: Icons.store, title: 'Business Info', onTap: () => _nav(const BusinessInfoScreen())),
       _drawerNavItem(icon: Icons.group, title: 'Manage Customers', onTap: () => _nav(const CustomersManagementScreen())),
@@ -1695,8 +1790,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
           onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PaymentLedgerScreen())),
         ),
       ),
+      const SizedBox(height: 20),
+      const Text('Quick Actions', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+      const SizedBox(height: 8),
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        _QuickAction(icon:Icons.playlist_add,          label:'New Order',  onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const NewOrderScreen()))),
+        _QuickAction(icon:Icons.account_balance_wallet, label:'Ledger',    onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const PaymentLedgerScreen()))),
+        _QuickAction(icon:Icons.store,                 label:'Biz Info',   onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const BusinessInfoScreen()))),
+        _QuickAction(icon:Icons.receipt_long,          label:'Proforma',   onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const OrdersListScreen()))),
+        _QuickAction(icon:Icons.request_quote,         label:'Invoice',    onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const FinalInvoicesScreen()))),
+        _QuickAction(icon:Icons.people,                label:'Customers',  onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const CustomersManagementScreen()))),
+      ]),
+      if ((_stats['overdue'] ?? 0) > 0) ...[
+        const SizedBox(height: 20),
+        Row(children: [
+          const Icon(Icons.warning_amber_rounded, color: Colors.orange), const SizedBox(width: 8),
+          Text('Overdue Rentals ($overdueDays+ days)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.orange[300])),
+        ]),
+        const SizedBox(height: 8),
+        ..._overdueRentals.map((r) {
+          final days = DateTime.now().difference(DateTime.tryParse(r['checkoutDate'] as String? ?? '') ?? DateTime.now()).inDays;
+          return Card(color: Colors.orange.withValues(alpha:0.15), child: ListTile(
+            leading: const Icon(Icons.warning_amber_rounded, color: Colors.orange),
+            title: Text('${r['contractor']} - ${r['itemName']}'),
+            subtitle: Text('Out since: ${DatabaseHelper.formatDateString(r['checkoutDate'] as String?)} ($days days)'),
+          ));
+        }),
+      ],
       if (showTopCustomers) ...[
-        const SizedBox(height: 14),
+        const SizedBox(height: 20),
         const Text('Top Customers By Revenue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         if (_topCustomers.isEmpty)
@@ -1720,33 +1842,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             );
           }),
       ],
-      if ((_stats['overdue'] ?? 0) > 0) ...[
-        const SizedBox(height: 20),
-        Row(children: [
-          const Icon(Icons.warning_amber_rounded, color: Colors.orange), const SizedBox(width: 8),
-          Text('Overdue Rentals ($overdueDays+ days)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.orange[300])),
-        ]),
-        const SizedBox(height: 8),
-        ..._overdueRentals.map((r) {
-          final days = DateTime.now().difference(DateTime.tryParse(r['checkoutDate'] as String? ?? '') ?? DateTime.now()).inDays;
-          return Card(color: Colors.orange.withValues(alpha:0.15), child: ListTile(
-            leading: const Icon(Icons.warning_amber_rounded, color: Colors.orange),
-            title: Text('${r['contractor']} - ${r['itemName']}'),
-            subtitle: Text('Out since: ${DatabaseHelper.formatDateString(r['checkoutDate'] as String?)} ($days days)'),
-          ));
-        }),
-      ],
-      const SizedBox(height: 20),
-      const Text('Quick Actions', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-      const SizedBox(height: 8),
-      Wrap(spacing: 8, runSpacing: 8, children: [
-        _QuickAction(icon:Icons.playlist_add,          label:'New Order',  onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const NewOrderScreen()))),
-        _QuickAction(icon:Icons.account_balance_wallet, label:'Ledger',    onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const PaymentLedgerScreen()))),
-        _QuickAction(icon:Icons.store,                 label:'Biz Info',   onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const BusinessInfoScreen()))),
-        _QuickAction(icon:Icons.receipt_long,          label:'Proforma',   onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const OrdersListScreen()))),
-        _QuickAction(icon:Icons.request_quote,         label:'Invoice',    onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const FinalInvoicesScreen()))),
-        _QuickAction(icon:Icons.people,                label:'Customers',  onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const CustomersManagementScreen()))),
-      ]),
     ]));
   }
 }
@@ -1787,18 +1882,32 @@ class _SettleGroupDialog extends StatefulWidget {
 
 class _SettleGroupDialogState extends State<_SettleGroupDialog> {
   late final TextEditingController payC;
+  late final TextEditingController discC;
   late final GlobalKey<FormState> formKey;
   String method = kPaymentMethods.first;
+  String discountType = 'None';
+  bool isBadDebtWriteOff = false;
 
   @override
   void initState() {
     super.initState();
     formKey = GlobalKey<FormState>();
     payC = TextEditingController(text: widget.group.balance.abs().toStringAsFixed(2));
+    discC = TextEditingController();
   }
 
   @override
-  void dispose() { payC.dispose(); super.dispose(); }
+  void dispose() { payC.dispose(); discC.dispose(); super.dispose(); }
+
+  double _calculateDiscountAmount(double maxAllowed) {
+    if (discountType == 'None') return 0.0;
+    final val = double.tryParse(discC.text) ?? 0.0;
+    if (val <= 0) return 0.0;
+    if (discountType == 'Percentage') {
+      return (maxAllowed * (val / 100)).clamp(0.0, maxAllowed);
+    }
+    return val.clamp(0.0, maxAllowed);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1806,29 +1915,90 @@ class _SettleGroupDialogState extends State<_SettleGroupDialog> {
     final absBalance = widget.group.balance.abs();
     return AlertDialog(
       title: Text(isRefund ? 'Record Refund' : 'Record Payment'),
-      content: Form(key: formKey, child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(isRefund
-            ? 'Refund Due to Customer: ${formatMoney(absBalance)}'
-            : 'Total Remaining Balance: ${formatMoney(absBalance)}'),
-        const SizedBox(height: 16),
-        TextFormField(
-          controller: payC,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: InputDecoration(labelText: isRefund ? 'Amount Refunded ($curr)' : 'Amount Paid ($curr)', border: const OutlineInputBorder()),
-          validator: (v) { final val = double.tryParse(v??''); if (val==null||val<=0) return 'Invalid amount'; if (val>absBalance) return 'Cannot exceed ${isRefund ? 'refund amount' : 'balance'}'; return null; },
-        ),
-        const SizedBox(height: 16),
-        DropdownButtonFormField<String>(
-          initialValue: method,
-          decoration: const InputDecoration(labelText: 'Payment Method', border: OutlineInputBorder(), prefixIcon: Icon(Icons.payment)),
-          items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
-          onChanged: (v) { if (v != null) setState(() => method = v); },
-        ),
-      ])),
+      content: SingleChildScrollView(
+        child: Form(key: formKey, child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(isRefund
+              ? 'Refund Due to Customer: ${formatMoney(absBalance)}'
+              : 'Total Remaining Balance: ${formatMoney(absBalance)}'),
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: payC,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(labelText: isRefund ? 'Amount Refunded ($curr)' : 'Amount Paid ($curr)', border: const OutlineInputBorder()),
+            validator: (v) {
+              final val = double.tryParse(v??'');
+              if (val==null||val<0) return 'Invalid amount';
+              return null;
+            },
+          ),
+          const SizedBox(height: 16),
+          if (!isBadDebtWriteOff)
+            DropdownButtonFormField<String>(
+              initialValue: method,
+              decoration: const InputDecoration(labelText: 'Payment Method', border: OutlineInputBorder(), prefixIcon: Icon(Icons.payment)),
+              items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
+              onChanged: (v) { if (v != null) setState(() => method = v); },
+            ),
+
+          if (!isRefund) ...[
+            const SizedBox(height: 12),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Write off as Bad Debt', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent)),
+              subtitle: const Text('Customer absconded or refused payment.'),
+              value: isBadDebtWriteOff,
+              activeThumbColor: Colors.red, // Modern SDK standard
+              onChanged: (v) => setState(() { isBadDebtWriteOff = v; if (v) discountType = 'None'; }),
+            ),
+          ],
+
+          if (!isBadDebtWriteOff) ...[ // FIX: Correctly opening the array block here
+            const SizedBox(height: 24),
+            const Text('Apply Discount (Optional)', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber)),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              initialValue: discountType,
+              decoration: const InputDecoration(labelText: 'Discount Type', border: OutlineInputBorder()),
+              items: const [
+                DropdownMenuItem(value: 'None', child: Text('None')),
+                DropdownMenuItem(value: 'Flat', child: Text('Flat Rate')),
+                DropdownMenuItem(value: 'Percentage', child: Text('Percentage (%)')),
+              ],
+              onChanged: (v) { if (v != null) setState(() => discountType = v); },
+            ),
+            if (discountType != 'None') ...[
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: discC,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                    labelText: discountType == 'Percentage' ? 'Discount %' : 'Discount ($curr)',
+                    border: const OutlineInputBorder()
+                ),
+              ),
+            ],
+          ], // FIXED: Added the missing closing bracket and comma
+        ])),
+      ),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('Cancel')),
         ElevatedButton(
-          onPressed: () { if (formKey.currentState!.validate()) Navigator.pop(context, {'amount': payC.text, 'method': method}); },
+          onPressed: () {
+            if (formKey.currentState!.validate()) {
+              final paidAmt = double.tryParse(payC.text) ?? 0.0;
+              final discAmt = isBadDebtWriteOff ? 0.0 : _calculateDiscountAmount(absBalance);
+              if (paidAmt + discAmt > absBalance + 0.01) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Total amount cannot exceed the balance.')));
+                return;
+              }
+              Navigator.pop(context, {
+                'amount': paidAmt.toString(),
+                'method': method,
+                'discount': discAmt.toString(),
+                'isBadDebt': isBadDebtWriteOff.toString(),
+              });
+            }
+          },
           child: Text(isRefund ? 'Confirm Refund' : 'Save Payment'),
         ),
       ],
@@ -1904,16 +2074,39 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
       builder: (_) => _SettleGroupDialog(group: group),
     );
     if (result == null || !mounted) return;
+
     final amount = double.parse(result['amount']!);
     final method = result['method']!;
-    final isFull = amount >= absBalance - 0.01;
+    final discount = double.parse(result['discount']!);
+
+final isBadDebt = result['isBadDebt'] == 'true';
+    final isFull = (amount + discount) >= absBalance - 0.01;
     final adjustedAmount = isRefund ? -amount : amount;
-    await DatabaseHelper.addPaymentToRentalGroup(group.items.first['id'] as int, adjustedAmount, isFull, group.items.map((i) => i['id'] as int).toList(), paymentMethod: method);
-    if (!mounted) return;
-    _load();
-    messenger.showSnackBar(SnackBar(content: Text(isFull
-        ? (isRefund ? 'Refund recorded. Invoice settled.' : 'Invoice marked as fully paid & settled.')
-        : (isRefund ? 'Partial refund recorded.' : 'Partial payment recorded.'))));
+
+    if (isBadDebt) {
+      await DatabaseHelper.writeOffBadDebt(
+        group.items.first['id'] as int,
+        amount,
+        isFull ? group.items.map((i) => i['id'] as int).toList() : [],
+      );
+      if (!mounted) return;
+      _load();
+      messenger.showSnackBar(SnackBar(content: Text(isFull ? 'Balance written off as bad debt. Invoice closed.' : 'Partial bad debt written off.')));
+    } else {
+      await DatabaseHelper.addPaymentToRentalGroup(
+          group.items.first['id'] as int,
+          adjustedAmount,
+          isFull,
+          group.items.map((i) => i['id'] as int).toList(),
+          paymentMethod: method,
+          discountAmount: discount
+      );
+      if (!mounted) return;
+      _load();
+      messenger.showSnackBar(SnackBar(content: Text(isFull
+          ? (isRefund ? 'Refund recorded. Invoice settled.' : 'Invoice marked as fully paid & settled.')
+          : (isRefund ? 'Partial refund recorded.' : 'Partial payment recorded.'))));
+    }
   }
 
   @override
@@ -1956,7 +2149,37 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
           onChanged: _onSearch,
         ),
       ),
-      const SizedBox(height: 4),
+      Card(
+        margin: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+        child: Padding(
+          padding: appSettingsNotifier.cardPadding,
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Total Due', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+                    const SizedBox(height: 2),
+                    Text(formatMoney(_ledger.where((g) => g.balance > 0).fold(0.0, (s, g) => s + g.balance)), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Total Refunds', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+                    const SizedBox(height: 2),
+                    Text(formatMoney(_ledger.where((g) => g.balance < 0).fold(0.0, (s, g) => s + g.balance.abs())), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                  ],
+                ),
+              ),
+              Text('${_ledger.length} inv', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+            ],
+          ),
+        ),
+      ),
       Expanded(child: _ledger.isEmpty
           ? Center(child: Text(
           _filterMode == 'Amount Due' ? 'No pending collections.' :
@@ -1981,6 +2204,7 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
               const Divider(),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Billed:'), Text(formatMoney(g.calculateTotalCost()))]),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Paid:'), Text('- ${formatMoney(g.advance)}')]),
+              if (g.discount > 0) Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Discount Applied:'), Text('- ${formatMoney(g.discount)}')]),
               const SizedBox(height: 4),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 Text(g.balance < 0 ? 'Refund Due:' : 'Amount Due:', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -1989,7 +2213,7 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
               const SizedBox(height: 16),
               SizedBox(width: double.infinity, child: ElevatedButton.icon(
                 icon: Icon(g.balance < 0 ? Icons.undo : Icons.payment),
-                label: Text(g.balance < 0 ? 'Record Refund' : 'Record Payment'),
+                label: Text(g.balance < 0 ? 'Record Refund/Discount' : 'Record Payment/Discount'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: g.balance < 0 ? Colors.green.withValues(alpha: 0.2) : Colors.orange.withValues(alpha: 0.2),
                   foregroundColor: g.balance < 0 ? Colors.greenAccent : Colors.orangeAccent,
@@ -2229,8 +2453,8 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                     final ref = orderId != null
                         ? 'Invoice #$orderId'
                         : fallbackId != null
-                            ? 'Record #$fallbackId'
-                            : 'Record';
+                        ? 'Record #$fallbackId'
+                        : 'Record';
                     final timeText = _formatTimeText(
                       (r['paidAt'] as String? ?? ''),
                       (r['baseDate'] as String? ?? ''),
@@ -2244,6 +2468,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                         ? '$ref  |  $dateText  |  $timeText'
                         : '$ref  |  $dateText';
                     final amountColor = isRefund ? Colors.orange : Colors.green;
+                    final isAdvance = !isRefund && (r['id'] == r['firstLogId']);
 
                     return Card(
                       margin: const EdgeInsets.only(bottom: 8),
@@ -2270,7 +2495,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                                     spacing: 6,
                                     runSpacing: 4,
                                     children: [
-                                      _tag(isRefund ? 'Refund' : 'Payment', amountColor),
+                                      _tag(isRefund ? 'Refund' : (isAdvance ? 'Advance' : 'Payment'), amountColor),
                                       _tag(method.isEmpty ? 'Method: N/A' : 'Method: $method', Colors.blueGrey),
                                     ],
                                   ),
@@ -2294,6 +2519,238 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
       ],
     ),
   );
+}
+
+// =================================================
+// Losses & Bad Debt Screen
+// =================================================
+class LossesAndBadDebtScreen extends StatefulWidget {
+  const LossesAndBadDebtScreen({super.key});
+  @override
+  State<LossesAndBadDebtScreen> createState() => _LossesAndBadDebtScreenState();
+}
+
+class _LossesAndBadDebtScreenState extends State<LossesAndBadDebtScreen> {
+  List<RentalGroup> _allBadDebts = [];
+  List<RentalGroup> _badDebts = [];
+  final _searchCtrl = TextEditingController();
+  Timer? _debounce;
+  String _sortMode = kSortOptions.first;
+
+  @override
+  void initState() { super.initState(); _load(); }
+  @override
+  void dispose() { _searchCtrl.dispose(); _debounce?.cancel(); super.dispose(); }
+
+  Future<void> _load() async {
+    final all = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
+    _allBadDebts = all.where((g) => g.badDebt > 0).toList();
+    _applyFilter();
+  }
+
+  void _onSearch(String _) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), _applyFilter);
+  }
+
+  void _applyFilter() {
+    List<RentalGroup> filtered = List.from(_allBadDebts);
+    final q = _searchCtrl.text.trim().toLowerCase();
+
+    if (q.isNotEmpty) {
+      filtered = filtered.where((g) {
+        return g.contractor.toLowerCase().contains(q) ||
+            (g.orderId?.toString() ?? '').contains(q);
+      }).toList();
+    }
+    _applySort(filtered, _sortMode);
+
+    if (!mounted) return;
+    setState(() { _badDebts = filtered; });
+  }
+
+  Future<void> _recoverFunds(RentalGroup group) async {
+    final payC = TextEditingController(text: group.badDebt.toStringAsFixed(2));
+    String method = kPaymentMethods.first;
+    final formKey = GlobalKey<FormState>();
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Recover Bad Debt'),
+        content: Form(
+          key: formKey,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Customer is making a payment on a previously written-off invoice.'),
+            const SizedBox(height: 16),
+            Text('Written off amount: ${formatMoney(group.badDebt)}'),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: payC,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(labelText: 'Amount Recovered ($curr)', border: const OutlineInputBorder()),
+              validator: (v) {
+                final val = double.tryParse(v ?? '');
+                if (val == null || val <= 0) return 'Invalid amount';
+                if (val > group.badDebt + 0.01) return 'Cannot exceed written off amount';
+                return null;
+              },
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              initialValue: method,
+              decoration: const InputDecoration(labelText: 'Payment Method', border: OutlineInputBorder()),
+              items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
+              onChanged: (v) { if (v != null) method = v; },
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              if (formKey.currentState!.validate()) {
+                Navigator.pop(ctx, {'amount': double.parse(payC.text), 'method': method});
+              }
+            },
+            child: const Text('Record Recovery'),
+          ),
+        ],
+      ),
+    );
+
+    payC.dispose();
+    if (result == null || !mounted) return;
+
+    final amount = result['amount'] as double;
+    final isFullyRecovered = amount >= group.badDebt - 0.01;
+
+    await DatabaseHelper.recoverBadDebt(
+        group.items.first['id'] as int,
+        amount,
+        result['method'] as String,
+        group.items.map((i) => i['id'] as int).toList(),
+        isFullyRecovered
+    );
+
+    if (!mounted) return;
+    _load();
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Bad debt recovery recorded successfully.')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double currentTotalLost = _badDebts.fold(0.0, (sum, g) => sum + g.badDebt);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Losses & Bad Debt')),
+      body: Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          child: TextField(
+            controller: _searchCtrl,
+            decoration: InputDecoration(
+              hintText: 'Search customer or invoice...',
+              prefixIcon: const Icon(Icons.search),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
+                if (_searchCtrl.text.isNotEmpty)
+                  IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); _applyFilter(); }),
+                PopupMenuButton<String>(
+                  icon: Stack(clipBehavior: Clip.none, children: [
+                    Icon(Icons.filter_list, color: _sortMode != kSortOptions.first ? Colors.amber : null),
+                    if (_sortMode != kSortOptions.first) Positioned(
+                      right: -2, top: -2,
+                      child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)),
+                    ),
+                  ]),
+                  tooltip: 'Sort by',
+                  initialValue: _sortMode,
+                  onSelected: (v) { setState(() => _sortMode = v); _applyFilter(); },
+                  itemBuilder: (_) => kSortOptions.map((o) => PopupMenuItem(
+                    value: o,
+                    child: Row(children: [
+                      Icon(_sortMode == o ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber),
+                      const SizedBox(width: 8),
+                      Text(o),
+                    ]),
+                  )).toList(),
+                ),
+              ]),
+            ),
+            onChanged: _onSearch,
+          ),
+        ),
+        Card(
+          margin: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+          child: Padding(
+            padding: appSettingsNotifier.cardPadding,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Total Bad Debt', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+                      const SizedBox(height: 2),
+                      Text(formatMoney(currentTotalLost), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                    ],
+                  ),
+                ),
+                Text('${_badDebts.length} inv', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+              ],
+            ),
+          ),
+        ),
+        Expanded(
+          child: _badDebts.isEmpty
+              ? const Center(child: Text('No bad debt recorded. Awesome!', style: TextStyle(color: Colors.green, fontSize: 16)))
+              : ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            itemCount: _badDebts.length,
+            itemBuilder: (_, i) {
+              final g = _badDebts[i];
+              return Card(
+                margin: const EdgeInsets.only(bottom: 10),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                      Expanded(child: Text(g.contractor, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+                      if (g.orderId != null) Text('INV #${g.orderId}', style: const TextStyle(color: Colors.grey)),
+                    ]),
+                    const SizedBox(height: 8),
+                    Text('Out: ${DatabaseHelper.formatDateString(g.checkoutDate)}'),
+                    const Divider(),
+                    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                      const Text('Total Billed:'), Text(formatMoney(g.calculateTotalCost())),
+                    ]),
+                    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                      const Text('Written Off (Bad Debt):', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                      Text(formatMoney(g.badDebt), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                    ]),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        icon: const Icon(Icons.settings_backup_restore),
+                        label: const Text('Recover Funds'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green.withValues(alpha: 0.2),
+                          foregroundColor: Colors.green,
+                        ),
+                        onPressed: () => _recoverFunds(g),
+                      ),
+                    ),
+                  ]),
+                ),
+              );
+            },
+          ),
+        ),
+      ]),
+    );
+  }
 }
 
 // =================================================
@@ -2405,7 +2862,20 @@ class _InventoryTabState extends State<InventoryTab> {
               if ((it['notes'] as String? ?? '').isNotEmpty)
                 Padding(padding: const EdgeInsets.only(top: 4), child: Text(it['notes'] as String, style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12))),
             ])),
-            IconButton(icon: const Icon(Icons.edit_outlined), tooltip: 'Edit', onPressed: () => _showItemDialog(item: it)),
+            SizedBox(
+              width: 28,
+              child: Tooltip(
+                message: 'Edit',
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: () => _showItemDialog(item: it),
+                  child: const Align(
+                    alignment: Alignment.centerRight,
+                    child: Icon(Icons.edit_outlined, size: 20),
+                  ),
+                ),
+              ),
+            ),
           ])));
         },
       ))),
@@ -2426,7 +2896,7 @@ class _StockChip extends StatelessWidget {
 }
 
 // =================================================
-// Partial Return Dialog
+// Advanced / Partial Return Dialog
 // =================================================
 class _PartialReturnDialog extends StatefulWidget {
   final List<Map<String, dynamic>> activeItems;
@@ -2437,23 +2907,54 @@ class _PartialReturnDialog extends StatefulWidget {
 }
 
 class _PartialReturnDialogState extends State<_PartialReturnDialog> {
-  final Map<int, TextEditingController> _ctrl = {};
+  final Map<int, TextEditingController> _goodCtrl = {};
+  final Map<int, TextEditingController> _lostCtrl = {};
+  final Map<int, TextEditingController> _penaltyCtrl = {};
   DateTime _returnDate = DateTime.now();
 
   @override
-  void initState() { super.initState(); for (final r in widget.activeItems) { _ctrl[r['id'] as int] = TextEditingController(text: '0'); } }
+  void initState() {
+    super.initState();
+    for (final r in widget.activeItems) {
+      final id = r['id'] as int;
+      _goodCtrl[id] = TextEditingController(text: r['qty'].toString()); // Default to all good
+      _lostCtrl[id] = TextEditingController(text: '0');
+      _penaltyCtrl[id] = TextEditingController(text: '0');
+    }
+  }
+
   @override
-  void dispose() { for (final c in _ctrl.values) { c.dispose(); } super.dispose(); }
+  void dispose() {
+    for (final c in [..._goodCtrl.values, ..._lostCtrl.values, ..._penaltyCtrl.values]) { c.dispose(); }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Partial Return'),
+    title: const Text('Advanced Return'),
     content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
-      const Text('Enter the quantity to return for each item:'), const SizedBox(height: 16),
-      ...widget.activeItems.map((r) => Padding(padding: const EdgeInsets.only(bottom: 12), child: Row(children: [
-        Expanded(child: Text('${r['itemName']}\n(Max: ${r['qty']})', style: const TextStyle(fontSize: 14))),
-        SizedBox(width: 80, child: TextField(controller: _ctrl[r['id'] as int], keyboardType: TextInputType.number, decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true), textAlign: TextAlign.center)),
-      ]))),
+      const Text('Specify returned quantities and any damage penalties.'),
+      const SizedBox(height: 16),
+      ...widget.activeItems.map((r) {
+        final id = r['id'] as int;
+        return Card(
+          margin: const EdgeInsets.only(bottom: 12),
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('${r['itemName']} (Rented: ${r['qty']})', style: const TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 10),
+              Row(children: [
+                Expanded(child: TextField(controller: _goodCtrl[id], keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Good Qty', border: OutlineInputBorder(), isDense: true))),
+                const SizedBox(width: 8),
+                Expanded(child: TextField(controller: _lostCtrl[id], keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Damaged/Lost', border: OutlineInputBorder(), isDense: true))),
+              ]),
+              const SizedBox(height: 8),
+              TextField(controller: _penaltyCtrl[id], keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: InputDecoration(labelText: 'Penalty Fee ($curr)', border: const OutlineInputBorder(), isDense: true, prefixIcon: const Icon(Icons.money, size: 18))),
+            ]),
+          ),
+        );
+      }),
       const Divider(),
       Row(children: [
         Expanded(child: Text('Return Date:\n${DatabaseHelper.formatDateFromDt(_returnDate)}', style: const TextStyle(fontSize: 14))),
@@ -2470,9 +2971,22 @@ class _PartialReturnDialogState extends State<_PartialReturnDialog> {
           final returns = <Map<String, dynamic>>[];
           final messenger = ScaffoldMessenger.of(context);
           for (final r in widget.activeItems) {
-            final id = r['id'] as int; final q = int.tryParse(_ctrl[id]?.text ?? '0') ?? 0;
-            if (q > (r['qty'] as int)) { messenger.showSnackBar(SnackBar(content: Text('Cannot return more than rented for ${r['itemName']}'))); return; }
-            if (q > 0) returns.add({'rental': r, 'qty': q});
+            final id = r['id'] as int;
+            final good = int.tryParse(_goodCtrl[id]?.text ?? '0') ?? 0;
+            final lost = int.tryParse(_lostCtrl[id]?.text ?? '0') ?? 0;
+            final penalty = double.tryParse(_penaltyCtrl[id]?.text ?? '0') ?? 0.0;
+            final total = good + lost;
+
+            if (total > (r['qty'] as int)) {
+              messenger.showSnackBar(SnackBar(content: Text('Cannot return more than rented for ${r['itemName']}')));
+              return;
+            }
+            if (total > 0) {
+              returns.add({'rental': r, 'goodQty': good, 'damagedQty': lost, 'penalty': penalty});
+            } else if (penalty > 0) {
+              messenger.showSnackBar(const SnackBar(content: Text('You must return at least 1 item to apply a penalty here.')));
+              return;
+            }
           }
           if (returns.isEmpty) { messenger.showSnackBar(const SnackBar(content: Text('Enter at least one quantity to return'))); return; }
           Navigator.pop(context, {'returns': returns, 'date': DatabaseHelper.isoDate(_returnDate)});
@@ -2603,6 +3117,7 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
   List<RentalGroup> _groups = [];
   final _searchCtrl = TextEditingController();
   Timer? _debounce;
+  String _sortMode = kSortOptions.first;
 
   @override
   void initState() { super.initState(); _load(); }
@@ -2612,7 +3127,9 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
   Future<void> _load() async {
     final all = groupRentalsByInvoice(await DatabaseHelper.getAllRentals(search: _searchCtrl.text));
     if (!mounted) return;
-    setState(() => _groups = all.where((g) => !g.isFullyReturned).toList());
+    var filtered = all.where((g) => !g.isFullyReturned).toList();
+    _applySort(filtered, _sortMode);
+    setState(() => _groups = filtered);
   }
 
   void _onSearch(String _) { _debounce?.cancel(); _debounce = Timer(const Duration(milliseconds: 300), _load); }
@@ -2679,7 +3196,43 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
     final compact = appSettingsNotifier.cardDensity == 'compact';
     return Scaffold(
       body: Column(children: [
-        _SearchBar(controller: _searchCtrl, hint: 'Search by contractor or item...', onClear: () { _searchCtrl.clear(); _load(); }, onChanged: _onSearch),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          child: TextField(
+            controller: _searchCtrl,
+            decoration: InputDecoration(
+              hintText: 'Search by contractor or item...',
+              prefixIcon: const Icon(Icons.search),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
+                if (_searchCtrl.text.isNotEmpty)
+                  IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); _load(); }),
+                PopupMenuButton<String>(
+                  icon: Stack(clipBehavior: Clip.none, children: [
+                    Icon(Icons.filter_list, color: _sortMode != kSortOptions.first ? Colors.amber : null),
+                    if (_sortMode != kSortOptions.first) Positioned(
+                      right: -2, top: -2,
+                      child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)),
+                    ),
+                  ]),
+                  tooltip: 'Sort by',
+                  initialValue: _sortMode,
+                  onSelected: (v) { setState(() { _sortMode = v; _applySort(_groups, v); }); },
+                  itemBuilder: (_) => kSortOptions.map((o) => PopupMenuItem(
+                    value: o,
+                    child: Row(children: [
+                      Icon(_sortMode == o ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber),
+                      const SizedBox(width: 8),
+                      Text(o),
+                    ]),
+                  )).toList(),
+                ),
+              ]),
+            ),
+            onChanged: _onSearch,
+          ),
+        ),
+        const SizedBox(height: 8),
         Expanded(child: _groups.isEmpty
             ? const Center(child: Text('No active rentals.'))
             : RefreshIndicator(onRefresh: _load, child: ListView.builder(
@@ -2695,13 +3248,13 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
     );
   }
 
-  Widget _buildCard(RentalGroup g) {
+Widget _buildCard(RentalGroup g) {
     DateTime checkoutDt; try { checkoutDt = DateTime.parse(g.checkoutDate); } catch (_) { checkoutDt = DateTime.now(); }
     final compact = appSettingsNotifier.cardDensity == 'compact';
     final dividerHeight = compact ? 10.0 : 16.0;
     final overdueDays = appSettingsNotifier.overdueDays;
     final isOverdue = DateTime.now().difference(checkoutDt).inDays > overdueDays;
-    final totalCost = g.calculateTotalCost(); final balance = totalCost - g.advance;
+    final totalCost = g.calculateTotalCost(); final balance = totalCost - g.advance - g.discount;
     final dayCount = DateTime.now().difference(checkoutDt).inDays;
     return Card(
       margin: EdgeInsets.only(bottom: compact ? 8 : 10),
@@ -2727,13 +3280,19 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
               ]),
               overflow: TextOverflow.ellipsis,
             )),
-            IconButton(
-              icon: Icon(Icons.edit_outlined, size: compact ? 18 : 20),
-              tooltip: 'Edit',
-              visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
-              padding: EdgeInsets.zero,
-              constraints: BoxConstraints.tightFor(width: compact ? 30 : 36, height: compact ? 30 : 36),
-              onPressed: () => _editGroup(g),
+            SizedBox(
+              width: 28,
+              child: Tooltip(
+                message: 'Edit',
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: () => _editGroup(g),
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: Icon(Icons.edit_outlined, size: compact ? 18 : 20),
+                  ),
+                ),
+              ),
             ),
           ]),
           // Row 2: Site address
@@ -2773,7 +3332,7 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
             return Padding(padding: EdgeInsets.symmetric(vertical: compact ? 2 : 4), child: Row(children: [
               Icon(isRet ? Icons.check_circle : Icons.radio_button_checked, size: compact ? 14 : 16, color: isRet ? Colors.green : Colors.redAccent),
               SizedBox(width: compact ? 6 : 8),
-              Expanded(child: Text('${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))}', style: TextStyle(fontSize: 13, color: isRet ? Colors.grey : null))),
+              Expanded(child: Text('${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))}/day', style: TextStyle(fontSize: 13, color: isRet ? Colors.grey : null))),
               if (isRet) Text('Returned ${DatabaseHelper.formatDateString(r['returnDate'] as String?)}', style: const TextStyle(color: Colors.green, fontSize: 11)),
             ]));
           }),
@@ -2817,6 +3376,7 @@ class HistoryTab extends StatefulWidget {
 
 class _HistoryTabState extends State<HistoryTab> {
   List<RentalGroup> _groups = [];
+  Map<String, List<Map<String, dynamic>>> _paymentLogsByGroup = {};
   final _searchCtrl = TextEditingController();
   Timer? _debounce;
   String _sortMode = kSortOptions.first;
@@ -2830,9 +3390,11 @@ class _HistoryTabState extends State<HistoryTab> {
     final all = groupRentalsByInvoice(await DatabaseHelper.getAllRentals(search: _searchCtrl.text));
     final history = all.where((g) => g.isFullyReturned).toList();
     _applySort(history, _sortMode);
+    final paymentMap = await DatabaseHelper.getPaymentLogsForGroups(history);
     if (!mounted) return;
     setState(() {
       _groups = history;
+      _paymentLogsByGroup = paymentMap;
     });
   }
 
@@ -2908,7 +3470,20 @@ class _HistoryTabState extends State<HistoryTab> {
         padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
         itemCount: _groups.length,
         itemBuilder: (_, i) {
-          final g = _groups[i]; final totalCost = g.calculateTotalCost(); final balance = totalCost - g.advance;
+          final g = _groups[i]; final totalCost = g.calculateTotalCost(); final balance = totalCost - g.advance - g.discount;
+          final payments = _paymentLogsByGroup[g.paymentGroupKey] ?? const <Map<String, dynamic>>[];
+
+          double initialAdvance = 0.0;
+          double laterPaid = 0.0;
+          if (payments.isNotEmpty) {
+            initialAdvance = (payments.first['amount'] as num?)?.toDouble() ?? 0.0;
+            for (int j = 1; j < payments.length; j++) {
+              laterPaid += (payments[j]['amount'] as num?)?.toDouble() ?? 0.0;
+            }
+          } else {
+            initialAdvance = g.advance;
+          }
+
           return Card(margin: const EdgeInsets.only(bottom: 8), child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             // Row 1: Contractor name + phone(s) + PAID badge + delete
             Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
@@ -2958,13 +3533,15 @@ class _HistoryTabState extends State<HistoryTab> {
             // Items list
             ...g.items.map((r) => Padding(padding: const EdgeInsets.only(bottom: 4), child: Row(children: [
               const Icon(Icons.check_circle, size: 14, color: Colors.green), const SizedBox(width: 8),
-              Expanded(child: Text('${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))}', style: const TextStyle(fontSize: 13))),
+              Expanded(child: Text('${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))}/day', style: const TextStyle(fontSize: 13))),
               Text(DatabaseHelper.formatDateString(r['returnDate'] as String?), style: const TextStyle(fontSize: 11, color: Colors.grey)),
             ]))),
             if (g.notes.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4, bottom: 4), child: Text('Note: ${g.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12))),
             const Divider(height: 16),
             Text('Total Billed: ${formatMoney(totalCost)}'),
-            Text('Paid: ${formatMoney(g.advance)}'),
+            Text('Advance: ${formatMoney(initialAdvance)}'),
+            if (laterPaid != 0) Text('Payment(s): ${formatMoney(laterPaid)}'),
+            if (g.discount != 0) Text('Discount: ${formatMoney(g.discount)}'),
             Row(
               children: [
                 Expanded(
@@ -3298,7 +3875,7 @@ class _CustomersManagementScreenState extends State<CustomersManagementScreen> {
               secondary: Icon(Icons.block, color: isBlacklisted ? Colors.red : Colors.grey),
               title: const Text('Blacklist Customer'),
               value: isBlacklisted,
-              activeThumbColor: Colors.red,
+              activeThumbColor: Colors.red, // Modern SDK standard
               onChanged: (v) => setSt(() => isBlacklisted = v),
             ),
           ],
@@ -3374,62 +3951,77 @@ class _CustomersManagementScreenState extends State<CustomersManagementScreen> {
             },
             child: Padding(
               padding: appSettingsNotifier.cardPadding,
-              child: Column(
+              child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    CircleAvatar(
-                      backgroundColor: isBlacklisted ? Colors.red.withValues(alpha: 0.15) : Colors.amber.withValues(alpha: 0.2),
-                      child: Text(
-                        name.isNotEmpty ? name[0].toUpperCase() : '?',
-                        style: TextStyle(color: isBlacklisted ? Colors.red : Colors.amber[900], fontWeight: FontWeight.bold),
-                      ),
+                  CircleAvatar(
+                    backgroundColor: isBlacklisted ? Colors.red.withValues(alpha: 0.15) : Colors.amber.withValues(alpha: 0.2),
+                    child: Text(
+                      name.isNotEmpty ? name[0].toUpperCase() : '?',
+                      style: TextStyle(color: isBlacklisted ? Colors.red : Colors.amber[900], fontWeight: FontWeight.bold),
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Row(children: [
-                          if (isBlacklisted) const Padding(
-                            padding: EdgeInsets.only(right: 5),
-                            child: Icon(Icons.block, size: 14, color: Colors.red),
-                          ),
-                          Expanded(child: Text(name, style: TextStyle(fontWeight: FontWeight.w700, color: isBlacklisted ? Colors.red : null))),
-                        ]),
-                        if (phoneLine.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 2),
-                            child: Text(phoneLine, style: const TextStyle(fontSize: 13)),
-                          ),
-                        if (joinedDate.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 2),
-                            child: Text(
-                              'Since ${DatabaseHelper.formatDateString(joinedDate)}',
-                              style: TextStyle(fontSize: 11, color: Theme.of(context).textTheme.bodySmall?.color),
-                            ),
-                          ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Row(children: [
+                        if (isBlacklisted) const Padding(
+                          padding: EdgeInsets.only(right: 5),
+                          child: Icon(Icons.block, size: 14, color: Colors.red),
+                        ),
+                        Expanded(child: Text(name, style: TextStyle(fontWeight: FontWeight.w700, color: isBlacklisted ? Colors.red : null))),
                       ]),
-                    ),
-                    Row(mainAxisSize: MainAxisSize.min, children: [
-                      IconButton(icon: const Icon(Icons.edit_outlined), tooltip: 'Edit', onPressed: () => _showCustomerDialog(existing: c)),
-                      IconButton(icon: const Icon(Icons.delete_outline), tooltip: 'Delete', onPressed: () => _delete(c['id'] as int)),
+                      if (phoneLine.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(phoneLine, style: const TextStyle(fontSize: 13)),
+                        ),
+                      if (joinedDate.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            'Since ${DatabaseHelper.formatDateString(joinedDate)}',
+                            style: TextStyle(fontSize: 11, color: Theme.of(context).textTheme.bodySmall?.color),
+                          ),
+                        ),
                     ]),
-                  ]),
-                  if (owed > 0) ...[
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.orange.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.orange, width: 0.8),
+                  ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      SizedBox(
+                        height: 28,
+                        child: PopupMenuButton<String>(
+                          icon: const Icon(Icons.more_vert, size: 20),
+                          padding: EdgeInsets.zero,
+                          tooltip: 'Options',
+                          onSelected: (val) {
+                            if (val == 'edit') _showCustomerDialog(existing: c);
+                            if (val == 'delete') _delete(c['id'] as int);
+                          },
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit_outlined, size: 18), SizedBox(width: 8), Text('Edit')])),
+                            PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 8), Text('Delete', style: TextStyle(color: Colors.red))])),
+                          ],
+                        ),
                       ),
-                      child: Text(
-                        'Owes ${formatMoney(owed, decimals: 0)}',
-                        style: const TextStyle(fontSize: 11, color: Colors.orange, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                  ],
+                      if (owed > 0) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.orange, width: 0.8),
+                          ),
+                          child: Text(
+                            'Owes ${formatMoney(owed, decimals: 0)}',
+                            style: const TextStyle(fontSize: 11, color: Colors.orange, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -3453,13 +4045,20 @@ class CustomerProfileScreen extends StatefulWidget {
 
 class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
   late Map<String, dynamic> _customer;
+  List<RentalGroup> _allHistory = [];
   List<RentalGroup> _history = [];
   Map<String, List<Map<String, dynamic>>> _paymentLogsByGroup = {};
   Map<String, dynamic> _stats = {};
   bool _loading = true;
 
+  final _searchCtrl = TextEditingController();
+  Timer? _debounce;
+  String _sortMode = kSortOptions.first;
+
   @override
   void initState() { super.initState(); _customer = widget.customer; _load(); }
+  @override
+  void dispose() { _searchCtrl.dispose(); _debounce?.cancel(); super.dispose(); }
 
   Future<void> _load() async {
     final name    = _customer['name'] as String? ?? '';
@@ -3471,11 +4070,30 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
     if (!mounted) return;
     setState(() {
       if (updated != null) _customer = updated;
-      _history = history;
+      _allHistory = history;
       _paymentLogsByGroup = paymentMap;
       _stats   = stats;
+      _applyFilter();
       _loading = false;
     });
+  }
+
+  void _onSearch(String _) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), () => setState(_applyFilter));
+  }
+
+  void _applyFilter() {
+    List<RentalGroup> filtered = List.from(_allHistory);
+    final q = _searchCtrl.text.trim().toLowerCase();
+    if (q.isNotEmpty) {
+      filtered = filtered.where((g) {
+        return (g.orderId?.toString() ?? '').contains(q) ||
+            g.items.any((i) => (i['itemName'] as String? ?? '').toLowerCase().contains(q));
+      }).toList();
+    }
+    _applySort(filtered, _sortMode);
+    _history = filtered;
   }
 
   Future<void> _toggleBlacklist() async {
@@ -3512,6 +4130,299 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
     } catch (e) { if (mounted) messenger.showSnackBar(SnackBar(content: Text('Failed: $e'))); }
   }
 
+  Future<void> _handleReturn(RentalGroup group) async {
+    final messenger = ScaffoldMessenger.of(context);
+    DateTime checkoutDt; try { checkoutDt = DateTime.parse(group.checkoutDate); } catch (_) { checkoutDt = DateTime(2000); }
+    final action = await showDialog<String>(context: context, builder: (d) => AlertDialog(
+      title: const Text('Return Action'),
+      content: const Text('Are you returning ALL remaining items, or only a partial return?'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(d,'cancel'),  child: const Text('Cancel')),
+        TextButton(onPressed: () => Navigator.pop(d,'partial'), child: const Text('Partial Return')),
+        ElevatedButton(onPressed: () => Navigator.pop(d,'full'), child: const Text('Full Return')),
+      ],
+    ));
+    if (action == null || action == 'cancel') return;
+
+    if (action == 'partial') {
+      final activeItems = group.items.where((r) => r['returned'] == 0).toList();
+      if (activeItems.isEmpty) return;
+      if (!mounted) return;
+      final result = await showDialog<Map<String, dynamic>>(context: context, builder: (ctx) => _PartialReturnDialog(activeItems: activeItems, checkoutDate: checkoutDt));
+      if (result == null) return;
+      try { await DatabaseHelper.returnMultiplePartial(result['returns'] as List<Map<String,dynamic>>, result['date'] as String); if (mounted) _load(); }
+      catch (e) { if (mounted) messenger.showSnackBar(SnackBar(content: Text('Return failed: $e'))); }
+    } else {
+      if (!mounted) return;
+      final choice = await showDialog<String?>(context: context, builder: (d) => AlertDialog(
+        title: const Text('Full Return Date'), content: const Text('When were the remaining items returned?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d),           child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(d,'today'),   child: const Text('Today')),
+          ElevatedButton(onPressed: () => Navigator.pop(d,'pick'), child: const Text('Pick Date')),
+        ],
+      ));
+      if (choice == null) return;
+      String returnDate = DatabaseHelper.isoNow();
+      if (choice == 'pick') {
+        if (!mounted) return;
+        final picked = await showDatePicker(context: context, initialDate: DateTime.now(), firstDate: checkoutDt, lastDate: DateTime(2100));
+        if (picked == null) return;
+        returnDate = DatabaseHelper.isoDate(picked);
+      }
+      try {
+        await DatabaseHelper.returnOrderGroup(group.items.where((r) => r['returned'] == 0).toList(), returnDate);
+        if (!mounted) return;
+        _load();
+        messenger.showSnackBar(SnackBar(content: Text(group.balance > 0 ? 'Items returned. Remaining balance sent to Payment Ledger.' : 'Remaining items returned successfully.')));
+      } catch (e) { if (mounted) messenger.showSnackBar(SnackBar(content: Text('Return failed: $e'))); }
+    }
+  }
+
+  Future<void> _settleGroup(RentalGroup group) async {
+    final isRefund   = group.balance < 0;
+    final absBalance = group.balance.abs();
+    final messenger  = ScaffoldMessenger.of(context);
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (_) => _SettleGroupDialog(group: group),
+    );
+    if (result == null || !mounted) return;
+
+    final amount = double.parse(result['amount']!);
+    final method = result['method']!;
+    final discount = double.parse(result['discount']!);
+    final isBadDebt = result['isBadDebt'] == 'true';
+    final isFull = (amount + discount) >= absBalance - 0.01;
+    final adjustedAmount = isRefund ? -amount : amount;
+
+    if (isBadDebt) {
+      await DatabaseHelper.writeOffBadDebt(
+        group.items.first['id'] as int,
+        amount,
+        isFull ? group.items.map((i) => i['id'] as int).toList() : [],
+      );
+      if (!mounted) return;
+      _load();
+      messenger.showSnackBar(SnackBar(content: Text(isFull ? 'Balance written off as bad debt. Invoice closed.' : 'Partial bad debt written off.')));
+    } else {
+      await DatabaseHelper.addPaymentToRentalGroup(
+          group.items.first['id'] as int,
+          adjustedAmount,
+          isFull,
+          group.items.map((i) => i['id'] as int).toList(),
+          paymentMethod: method,
+          discountAmount: discount
+      );
+      if (!mounted) return;
+      _load();
+      messenger.showSnackBar(SnackBar(content: Text(isFull
+          ? (isRefund ? 'Refund recorded. Invoice settled.' : 'Invoice marked as fully paid & settled.')
+          : (isRefund ? 'Partial refund recorded.' : 'Partial payment recorded.'))));
+    }
+  }
+
+  Future<void> _editGroup(RentalGroup group) async {
+    await showDialog<void>(context: context, builder: (_) => _EditGroupDialog(group: group));
+    if (mounted) _load();
+  }
+
+  Future<void> _delete(RentalGroup group) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await _confirmDialog(context, title:'Delete Invoice Record', message:'Permanently delete this entire invoice history?');
+    if (!ok) return;
+    await DatabaseHelper.deleteRentalGroup(group.items);
+    if (!mounted) return;
+    _load();
+    messenger.showSnackBar(const SnackBar(content: Text('Invoice history deleted.')));
+  }
+
+  void _openPaymentHistoryForGroup(RentalGroup g) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PaymentHistoryScreen(
+          initialOrderId: g.orderId,
+          initialFallbackRentalId: g.orderId == null ? (g.fallbackId ?? (g.items.firstOrNull?['id'] as int?)) : null,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCard(RentalGroup g) {
+    DateTime checkoutDt; try { checkoutDt = DateTime.parse(g.checkoutDate); } catch (_) { checkoutDt = DateTime.now(); }
+    final compact = appSettingsNotifier.cardDensity == 'compact';
+    final dividerHeight = compact ? 10.0 : 16.0;
+    final totalCost = g.calculateTotalCost();
+    final balance = totalCost - g.advance - g.discount - g.badDebt;
+
+    // IF RENTAL IS ACTIVE
+    if (!g.isFullyReturned) {
+      final overdueDays = appSettingsNotifier.overdueDays;
+      final isOverdue = DateTime.now().difference(checkoutDt).inDays > overdueDays;
+      final dayCount = DateTime.now().difference(checkoutDt).inDays;
+
+      return Card(
+        margin: EdgeInsets.only(bottom: compact ? 8 : 10),
+        clipBehavior: Clip.antiAlias,
+        child: Container(
+          decoration: isOverdue ? const BoxDecoration(border: Border(left: BorderSide(color: Colors.orange, width: 4))) : null,
+          child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+              if (isOverdue) Padding(padding: EdgeInsets.only(right: compact ? 4 : 6), child: Icon(Icons.warning_amber_rounded, color: Colors.orange, size: compact ? 16 : 18)),
+              Expanded(child: Text(g.orderId != null ? 'Invoice #${g.orderId}' : 'Active Rental', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold))),
+              IconButton(
+                icon: Icon(Icons.edit_outlined, size: compact ? 18 : 20),
+                tooltip: 'Edit', visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
+                padding: EdgeInsets.zero, constraints: BoxConstraints.tightFor(width: compact ? 30 : 36, height: compact ? 30 : 36),
+                onPressed: () => _editGroup(g),
+              ),
+            ]),
+            Padding(padding: EdgeInsets.only(top: compact ? 1 : 2), child: Row(children: [
+              Expanded(child: Text.rich(TextSpan(style: const TextStyle(fontSize: 12), children: [
+                TextSpan(text: 'Checkout: ${DatabaseHelper.formatDateString(g.checkoutDate)}'), const TextSpan(text: '  |  '),
+                TextSpan(text: '$dayCount days', style: TextStyle(fontWeight: FontWeight.w600, color: isOverdue ? Colors.orange : Colors.blue)),
+              ]), overflow: TextOverflow.ellipsis)),
+            ])),
+            Divider(height: dividerHeight),
+            ...g.items.map((r) {
+              final isRet = r['returned'] == 1;
+              return Padding(padding: EdgeInsets.symmetric(vertical: compact ? 2 : 4), child: Row(children: [
+                Icon(isRet ? Icons.check_circle : Icons.radio_button_checked, size: compact ? 14 : 16, color: isRet ? Colors.green : Colors.redAccent),
+                SizedBox(width: compact ? 6 : 8),
+                Expanded(child: Text('${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))}/day', style: TextStyle(fontSize: 13, color: isRet ? Colors.grey : null))),
+                if (isRet) Text('Returned ${DatabaseHelper.formatDateString(r['returnDate'] as String?)}', style: const TextStyle(color: Colors.green, fontSize: 11)),
+              ]));
+            }),
+            if (g.notes.isNotEmpty) Padding(padding: EdgeInsets.only(top: compact ? 2 : 4), child: Text('Note: ${g.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12))),
+            Divider(height: dividerHeight),
+            Row(children: [
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Live Cost: ${formatMoney(totalCost)}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                Row(children: [Text('Advance: ${formatMoney(g.advance)}'), _PaymentLabel(g.paymentMethod)]),
+                Text('Balance: ${formatMoney(balance)}', style: TextStyle(color: balance>0?Colors.orangeAccent:Colors.greenAccent, fontWeight: FontWeight.bold)),
+              ])),
+              ElevatedButton.icon(
+                icon: Icon(Icons.check_circle_outline, size: compact ? 16 : 18), label: const Text('Return Items'),
+                style: ElevatedButton.styleFrom(padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 14, vertical: compact ? 8 : 10), minimumSize: Size(0, compact ? 32 : 38), tapTargetSize: compact ? MaterialTapTargetSize.shrinkWrap : MaterialTapTargetSize.padded, visualDensity: compact ? VisualDensity.compact : VisualDensity.standard),
+                onPressed: () => _handleReturn(g),
+              ),
+            ]),
+          ])),
+        ),
+      );
+    }
+    // IF RENTAL IS HISTORICAL
+    else {
+      final payments = _paymentLogsByGroup[g.paymentGroupKey] ?? const <Map<String, dynamic>>[];
+      double initialAdvance = 0.0;
+      double laterPaid = 0.0;
+      if (payments.isNotEmpty) {
+        initialAdvance = (payments.first['amount'] as num?)?.toDouble() ?? 0.0;
+        for (int j = 1; j < payments.length; j++) { laterPaid += (payments[j]['amount'] as num?)?.toDouble() ?? 0.0; }
+      } else { initialAdvance = g.advance; }
+
+      return Card(margin: EdgeInsets.only(bottom: compact ? 8 : 10), child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+          Expanded(child: Text(g.orderId != null ? 'Invoice #${g.orderId}' : 'Settled Rental', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+          if (g.isSettled) Container(
+            margin: const EdgeInsets.only(left: 6), padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
+            child: const Text('PAID', style: TextStyle(color: Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+          ),
+          if (g.badDebt > 0) Container(
+            margin: const EdgeInsets.only(left: 6), padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
+            child: const Text('BAD DEBT', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+          ),
+          SizedBox(width: 28, child: Tooltip(message: 'Delete', child: InkWell(borderRadius: BorderRadius.circular(6), onTap: () => _delete(g), child: const Align(alignment: Alignment.centerRight, child: Icon(Icons.delete_outline, size: 20))))),
+        ]),
+        Padding(padding: const EdgeInsets.only(top: 2), child: Row(children: [
+          Text('Checkout: ${DatabaseHelper.formatDateString(g.checkoutDate)}', style: const TextStyle(fontSize: 12)),
+          const Spacer(),
+          if (g.orderId != null) SizedBox(
+            width: 28,
+            child: Tooltip(
+              message: 'View Final Invoice',
+              child: InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: () => _openInvoicePdf(g.orderId!, finalInvoice: true),
+                child: const Align(
+                  alignment: Alignment.centerRight,
+                  child: Icon(Icons.picture_as_pdf_outlined, size: 20, color: Colors.amber),
+                ),
+              ),
+            ),
+          ),
+        ])),
+        Divider(height: dividerHeight),
+        ...g.items.map((r) => Padding(padding: const EdgeInsets.only(bottom: 4), child: Row(children: [
+          const Icon(Icons.check_circle, size: 14, color: Colors.green), const SizedBox(width: 8),
+          Expanded(child: Text('${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))}/day', style: const TextStyle(fontSize: 13))),
+          Text(DatabaseHelper.formatDateString(r['returnDate'] as String?), style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        ]))),
+        if (g.notes.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4, bottom: 4), child: Text('Note: ${g.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12))),
+        Divider(height: dividerHeight),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Total Billed: ${formatMoney(totalCost)}'),
+                  Text('Advance: ${formatMoney(initialAdvance)}'),
+                  if (laterPaid != 0) Text('Payments: ${formatMoney(laterPaid)}'),
+                  if (g.discount != 0) Text('Discount: ${formatMoney(g.discount)}'),
+                  if (g.badDebt != 0) Text('Written Off: ${formatMoney(g.badDebt)}', style: const TextStyle(color: Colors.redAccent)),
+                  const SizedBox(height: 4),
+                  Text(
+                    g.isSettled ? 'Settled: Balance Cleared' : 'Final Balance: ${formatMoney(balance)}',
+                    style: TextStyle(color: g.isSettled ? Colors.grey : (balance>0?Colors.orange:Colors.green), fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                SizedBox(
+                  width: 28,
+                  child: Tooltip(
+                    message: 'View Payments',
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: () => _openPaymentHistoryForGroup(g),
+                      child: const Align(
+                        alignment: Alignment.centerRight,
+                        child: Icon(Icons.receipt_long, color: Colors.amber, size: 20),
+                      ),
+                    ),
+                  ),
+                ),
+                if (!g.isSettled) ...[
+                  const SizedBox(height: 8),
+                  ElevatedButton.icon(
+                    icon: Icon(balance < 0 ? Icons.undo : Icons.payment, size: 16),
+                    label: Text(compact ? 'Settle' : (balance < 0 ? 'Record Refund' : 'Record Payment')),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: balance < 0 ? Colors.green.withValues(alpha: 0.2) : Colors.orange.withValues(alpha: 0.2),
+                      foregroundColor: balance < 0 ? Colors.greenAccent : Colors.orangeAccent,
+                      padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 14, vertical: compact ? 8 : 10),
+                      minimumSize: Size(0, compact ? 32 : 38),
+                      visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
+                    ),
+                    onPressed: () => _settleGroup(g),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ])));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final name          = _customer['name']          as String? ?? '';
@@ -3528,6 +4439,7 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
     final activeRentals = (_stats['activeRentals'] as int?)    ?? 0;
     final owedBalance   = (_stats['owedBalance']   as double?) ?? 0.0;
     final refundBalance = (_stats['refundBalance'] as double?) ?? 0.0;
+    final badDebtTotal  = (_stats['badDebt']       as double?) ?? 0.0;
 
     return Scaffold(
       appBar: AppBar(
@@ -3543,189 +4455,157 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-        onRefresh: _load,
-        child: ListView(padding: const EdgeInsets.all(16), children: [
-
-          // Header card
-          Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              CircleAvatar(
-                radius: 28,
-                backgroundColor: isBlacklisted
-                    ? Colors.red.withValues(alpha: 0.15)
-                    : Colors.amber.withValues(alpha: 0.2),
-                child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
-                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold,
-                        color: isBlacklisted ? Colors.red : Colors.amber)),
-              ),
-              const SizedBox(width: 16),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          : Column(children: [
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _load,
+            child: ListView(padding: const EdgeInsets.all(16), children: [
+              // Header card
+              Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Row(children: [
-                  Expanded(child: Text(name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
-                  if (isBlacklisted) Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.red, width: 0.8)),
-                    child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                      Icon(Icons.block, size: 11, color: Colors.red),
-                      SizedBox(width: 4),
-                      Text('BLACKLISTED', style: TextStyle(fontSize: 10, color: Colors.red, fontWeight: FontWeight.bold)),
-                    ]),
+                  CircleAvatar(
+                    radius: 28,
+                    backgroundColor: isBlacklisted
+                        ? Colors.red.withValues(alpha: 0.15)
+                        : Colors.amber.withValues(alpha: 0.2),
+                    child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+                        style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold,
+                            color: isBlacklisted ? Colors.red : Colors.amber)),
                   ),
-                ]),
-                if (joinedDate.isNotEmpty) Padding(
-                  padding: const EdgeInsets.only(top: 3),
-                  child: Text('Customer since ${DatabaseHelper.formatDateString(joinedDate)}',
-                      style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
-                ),
-              ])),
-            ]),
-            if (phone.isNotEmpty || email.isNotEmpty || address.isNotEmpty || notes.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              const Divider(height: 1),
-              const SizedBox(height: 10),
-              if (phone.isNotEmpty)   _InfoRow(icon: Icons.phone,       text: phone + (phone2.isNotEmpty ? '  /  $phone2' : '')),
-              if (email.isNotEmpty)   _InfoRow(icon: Icons.email,       text: email),
-              if (address.isNotEmpty) _InfoRow(icon: Icons.location_on, text: address),
-              if (notes.isNotEmpty)   _InfoRow(icon: Icons.notes,       text: notes),
-            ],
-          ]))),
-
-          const SizedBox(height: 12),
-
-          // Stats grid
-          GridView.count(
-            crossAxisCount: 2, shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 1.75,
-            children: [
-              _MiniStatCard(label: 'Lifetime Billed', value: formatMoney(totalSpent, decimals: 0), icon: Icons.receipt_long, color: Colors.blue),
-              _MiniStatCard(label: 'Total Invoices',  value: '$totalInvoices', icon: Icons.folder_copy, color: Colors.purple),
-              _MiniStatCard(label: 'Active Items',    value: '$activeRentals', icon: Icons.handshake,   color: Colors.orange),
-              if (owedBalance > 0)   _MiniStatCard(label: 'Amount Due',  value: formatMoney(owedBalance, decimals: 0),   icon: Icons.payments, color: Colors.red),
-              if (refundBalance > 0) _MiniStatCard(label: 'Refund Due',  value: formatMoney(refundBalance, decimals: 0), icon: Icons.undo,     color: Colors.green),
-            ],
-          ),
-
-          // Balance alert banner
-          if (owedBalance > 0 || refundBalance > 0) ...[
-            const SizedBox(height: 12),
-            Card(
-              color: owedBalance > 0
-                  ? Colors.orange.withValues(alpha: 0.08)
-                  : Colors.green.withValues(alpha: 0.08),
-              shape: RoundedRectangleBorder(
-                side: BorderSide(color: owedBalance > 0 ? Colors.orange : Colors.green, width: 0.8),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Padding(padding: const EdgeInsets.all(14), child: Row(children: [
-                Icon(owedBalance > 0 ? Icons.warning_amber_rounded : Icons.check_circle_outline,
-                    color: owedBalance > 0 ? Colors.orange : Colors.green, size: 22),
-                const SizedBox(width: 12),
-                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(owedBalance > 0 ? 'Outstanding Balance' : 'Refund Pending',
-                      style: TextStyle(fontWeight: FontWeight.bold, color: owedBalance > 0 ? Colors.orange : Colors.green)),
-                  Text(owedBalance > 0
-                      ? 'This customer owes ${formatMoney(owedBalance)}'
-                      : 'You owe this customer ${formatMoney(refundBalance)}',
-                      style: const TextStyle(fontSize: 13)),
-                ])),
-              ])),
-            ),
-          ],
-
-          const SizedBox(height: 16),
-
-          // Rental history
-          Row(children: [
-            const Icon(Icons.history, size: 18),
-            const SizedBox(width: 6),
-            Text('Rental History (${_history.length})', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          ]),
-          const SizedBox(height: 8),
-
-          if (_history.isEmpty)
-            const Center(child: Padding(
-              padding: EdgeInsets.all(24),
-              child: Text('No rental history yet.', style: TextStyle(color: Colors.grey)),
-            ))
-          else
-            ..._history.map((g) {
-              final totalCost = g.calculateTotalCost();
-              final balance   = totalCost - g.advance;
-              final isActive  = !g.isFullyReturned;
-              final payments = _paymentLogsByGroup[g.paymentGroupKey] ?? const <Map<String, dynamic>>[];
-              return Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                shape: RoundedRectangleBorder(
-                  side: BorderSide(
-                    color: isActive
-                        ? Colors.red.withValues(alpha: 0.45)
-                        : g.isSettled
-                        ? Colors.green.withValues(alpha: 0.35)
-                        : Colors.orange.withValues(alpha: 0.35),
-                    width: 0.8,
-                  ),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Padding(padding: const EdgeInsets.all(12), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  // Header row
-                  Row(children: [
-                    _StatusBadge(isActive ? 'ACTIVE' : g.isSettled ? 'SETTLED' : 'PENDING',
-                        isActive ? Colors.red : g.isSettled ? Colors.green : Colors.orange),
-                    const SizedBox(width: 8),
-                    if (g.orderId != null) Text('Invoice #${g.orderId}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                    const Spacer(),
-                    Text(DatabaseHelper.formatDateString(g.checkoutDate),
-                        style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
-                    if (g.orderId != null) IconButton(
-                      padding: const EdgeInsets.only(left: 8), constraints: const BoxConstraints(),
-                      icon: const Icon(Icons.picture_as_pdf_outlined, size: 18, color: Colors.amber),
-                      tooltip: g.isFullyReturned ? 'View Final Invoice' : 'View Proforma',
-                      onPressed: () => _openInvoicePdf(g.orderId!, finalInvoice: g.isFullyReturned),
-                    ),
-                  ]),
-                  const SizedBox(height: 8),
-                  // Items
-                  ...g.items.map((r) => Padding(
-                    padding: const EdgeInsets.only(bottom: 3),
-                    child: Row(children: [
-                      Icon(r['returned'] == 1 ? Icons.check_circle : Icons.radio_button_checked,
-                          size: 13, color: r['returned'] == 1 ? Colors.green : Colors.redAccent),
-                      const SizedBox(width: 6),
-                      Expanded(child: Text(
-                        '${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble() ?? 0.0))}/day',
-                        style: TextStyle(fontSize: 13, color: r['returned'] == 1 ? Colors.grey : null),
-                      )),
-                    ]),
-                  )),
-                  const Divider(height: 12),
-                  // Financials
-                  Text('Billed: ${formatMoney(totalCost)}', style: const TextStyle(fontSize: 13)),
-                  _PaymentBreakdownLine(totalPaid: g.advance, payments: payments, fallbackMethod: g.paymentMethod, fontSize: 13),
-                  const SizedBox(height: 2),
-                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    Text(
-                      g.isSettled ? 'Settled'
-                          : balance > 0 ? 'Due: ${formatMoney(balance)}'
-                          : balance < 0 ? 'Refund: ${formatMoney(balance, absolute: true)}'
-                          : 'Clear',
-                      style: TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.bold,
-                        color: g.isSettled ? Colors.green
-                            : balance > 0 ? Colors.orange
-                            : balance < 0 ? Colors.green
-                            : Colors.grey,
+                  const SizedBox(width: 16),
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(children: [
+                      Expanded(child: Text(name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
+                      if (isBlacklisted) Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.red, width: 0.8)),
+                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.block, size: 11, color: Colors.red),
+                          SizedBox(width: 4),
+                          Text('BLACKLISTED', style: TextStyle(fontSize: 10, color: Colors.red, fontWeight: FontWeight.bold)),
+                        ]),
                       ),
+                    ]),
+                    if (joinedDate.isNotEmpty) Padding(
+                      padding: const EdgeInsets.only(top: 3),
+                      child: Text('Customer since ${DatabaseHelper.formatDateString(joinedDate)}',
+                          style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+                    ),
+                  ])),
+                ]),
+                if (phone.isNotEmpty || email.isNotEmpty || address.isNotEmpty || notes.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Divider(height: 1),
+                  const SizedBox(height: 10),
+                  if (phone.isNotEmpty)   _InfoRow(icon: Icons.phone,       text: phone + (phone2.isNotEmpty ? '  /  $phone2' : '')),
+                  if (email.isNotEmpty)   _InfoRow(icon: Icons.email,       text: email),
+                  if (address.isNotEmpty) _InfoRow(icon: Icons.location_on, text: address),
+                  if (notes.isNotEmpty)   _InfoRow(icon: Icons.notes,       text: notes),
+                ],
+              ]))),
+
+              const SizedBox(height: 12),
+
+              // Stats grid
+              GridView.count(
+                crossAxisCount: 2, shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 1.75,
+                children: [
+                  _MiniStatCard(label: 'Lifetime Billed', value: formatMoney(totalSpent, decimals: 0), icon: Icons.receipt_long, color: Colors.blue),
+                  _MiniStatCard(label: 'Total Invoices',  value: '$totalInvoices', icon: Icons.folder_copy, color: Colors.purple),
+                  _MiniStatCard(label: 'Active Items',    value: '$activeRentals', icon: Icons.handshake,   color: Colors.orange),
+                  if (badDebtTotal > 0)  _MiniStatCard(label: 'Bad Debt',    value: formatMoney(badDebtTotal, decimals: 0),  icon: Icons.money_off, color: Colors.redAccent),
+                  if (owedBalance > 0)   _MiniStatCard(label: 'Amount Due',  value: formatMoney(owedBalance, decimals: 0),   icon: Icons.payments, color: Colors.red),
+                  if (refundBalance > 0) _MiniStatCard(label: 'Refund Due',  value: formatMoney(refundBalance, decimals: 0), icon: Icons.undo,     color: Colors.green),
+                ],
+              ),
+
+              // Balance alert banner
+              if (owedBalance > 0 || refundBalance > 0) ...[
+                const SizedBox(height: 12),
+                Card(
+                  color: owedBalance > 0
+                      ? Colors.orange.withValues(alpha: 0.08)
+                      : Colors.green.withValues(alpha: 0.08),
+                  shape: RoundedRectangleBorder(
+                    side: BorderSide(color: owedBalance > 0 ? Colors.orange : Colors.green, width: 0.8),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Padding(padding: const EdgeInsets.all(14), child: Row(children: [
+                    Icon(owedBalance > 0 ? Icons.warning_amber_rounded : Icons.check_circle_outline,
+                        color: owedBalance > 0 ? Colors.orange : Colors.green, size: 22),
+                    const SizedBox(width: 12),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(owedBalance > 0 ? 'Outstanding Balance' : 'Refund Pending',
+                          style: TextStyle(fontWeight: FontWeight.bold, color: owedBalance > 0 ? Colors.orange : Colors.green)),
+                      Text(owedBalance > 0
+                          ? 'This customer owes ${formatMoney(owedBalance)}'
+                          : 'You owe this customer ${formatMoney(refundBalance)}',
+                          style: const TextStyle(fontSize: 13)),
+                    ])),
+                  ])),
+                ),
+              ],
+
+              const SizedBox(height: 16),
+              Row(children: [
+                const Icon(Icons.history, size: 18),
+                const SizedBox(width: 6),
+                Text('Rental History (${_history.length})', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ]),
+              const SizedBox(height: 8),
+
+              // Inline Search and Sort for History
+              TextField(
+                controller: _searchCtrl,
+                decoration: InputDecoration(
+                  hintText: 'Search invoices...',
+                  prefixIcon: const Icon(Icons.search),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                  suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
+                    if (_searchCtrl.text.isNotEmpty)
+                      IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); setState(_applyFilter); }),
+                    PopupMenuButton<String>(
+                      icon: Stack(clipBehavior: Clip.none, children: [
+                        Icon(Icons.filter_list, color: _sortMode != kSortOptions.first ? Colors.amber : null),
+                        if (_sortMode != kSortOptions.first) Positioned(
+                          right: -2, top: -2,
+                          child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)),
+                        ),
+                      ]),
+                      tooltip: 'Sort by',
+                      initialValue: _sortMode,
+                      onSelected: (v) { setState(() { _sortMode = v; _applyFilter(); }); },
+                      itemBuilder: (_) => kSortOptions.map((o) => PopupMenuItem(
+                        value: o,
+                        child: Row(children: [
+                          Icon(_sortMode == o ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber),
+                          const SizedBox(width: 8),
+                          Text(o),
+                        ]),
+                      )).toList(),
                     ),
                   ]),
-                ])),
-              );
-            }),
+                ),
+                onChanged: _onSearch,
+              ),
+              const SizedBox(height: 12),
 
-          const SizedBox(height: 80),
-        ]),
-      ),
+              if (_history.isEmpty)
+                const Center(child: Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Text('No rental history matches.', style: TextStyle(color: Colors.grey)),
+                ))
+              else
+                ..._history.map((g) => _buildCard(g)),
+
+              const SizedBox(height: 80),
+            ]),
+          ),
+        ),
+      ]),
     );
   }
 }
@@ -3763,16 +4643,6 @@ class _MiniStatCard extends StatelessWidget {
   );
 }
 
-class _StatusBadge extends StatelessWidget {
-  final String label; final Color color;
-  const _StatusBadge(this.label, this.color);
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-    decoration: BoxDecoration(color: color.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(6)),
-    child: Text(label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: color)),
-  );
-}
 
 // =================================================
 // New Order Screen
@@ -4108,7 +4978,7 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen> {
           return Card(margin:const EdgeInsets.only(bottom:8), child:ListTile(
             leading: const Icon(Icons.inventory_2_outlined),
             title: Text(r['itemName']??'', style:const TextStyle(fontWeight:FontWeight.bold)),
-            subtitle: Text('Qty: $qty  *  Rate: ${formatMoney(rate)}/day\nCheckout: ${DatabaseHelper.formatDateString(r['checkoutDate'] as String?)}'),
+            subtitle: Text('Qty: $qty  * Rate: ${formatMoney(rate)}/day\nCheckout: ${DatabaseHelper.formatDateString(r['checkoutDate'] as String?)}'),
             isThreeLine: true,
             trailing: Text(formatMoney((qty*rate)), style:const TextStyle(fontWeight:FontWeight.bold)),
           ));
@@ -4146,7 +5016,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _rebuild() { if (mounted) setState(() {}); }
 
-  // ---- dialog helpers ----
+// ---- dialog helpers ----
+
+  static const _iconChannel = MethodChannel('com.wjust4435.rental_manager/icon');
+
+  Future<void> _changeAppIcon(String iconKey) async {
+    final s = appSettingsNotifier;
+    final messenger = ScaffoldMessenger.of(context);
+
+    try {
+      await _iconChannel.invokeMethod('setIcon', {'iconKey': iconKey});
+      await s.setAppIcon(iconKey);
+
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(iconKey == 'default'
+                ? 'App icon reset to default.'
+                : 'App icon changed successfully.'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Failed to change icon: $e')),
+        );
+      }
+    }
+  }
+
+  void _showAppIconDialog() {
+    final s = appSettingsNotifier;
+    final icons = [
+      {'name': 'Default Icon', 'key': 'default'},
+      {'name': 'Icon Variant 1', 'key': 'icon1'},
+      {'name': 'Icon Variant 2', 'key': 'icon2'},
+      {'name': 'Icon Variant 3', 'key': 'icon3'},
+    ];
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Choose App Icon'),
+        children: icons.map((icon) => ListTile(
+          leading: const Icon(Icons.app_shortcut, color: Colors.amber),
+          title: Text(icon['name']!),
+          trailing: s.appIcon == icon['key'] ? const Icon(Icons.check, color: Colors.amber) : null,
+          onTap: () {
+            Navigator.pop(ctx);
+            _changeAppIcon(icon['key']!);
+          },
+        )).toList(),
+      ),
+    );
+  }
 
   void _showCardDensityDialog() {
     final s = appSettingsNotifier;
@@ -4334,11 +5259,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         content: const SingleChildScrollView(
           child: Text(
             'Rental Manager is designed for offline-first use.\n\n'
-            '- Your business data is stored locally on your device database.\n'
-            '- The app does not require internet for normal operation.\n'
-            '- Payment and customer records stay on your device unless you export a backup manually.\n'
-            '- Keep your backup files secure, because they contain your app data.\n\n'
-            'You control your data: export, restore, and deletion actions are initiated by you.',
+                '- Your business data is stored locally on your device database.\n'
+                '- The app does not require internet for normal operation.\n'
+                '- Payment and customer records stay on your device unless you export a backup manually.\n'
+                '- Keep your backup files secure, because they contain your app data.\n\n'
+                'You control your data: export, restore, and deletion actions are initiated by you.',
           ),
         ),
         actions: [
@@ -4399,7 +5324,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // ====================================
         _sectionHeader('APPEARANCE'),
 
-        // Theme
+// Theme
         ListTile(
           leading: Icon(
             tm == ThemeMode.light ? Icons.light_mode :
@@ -4413,6 +5338,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             tm == ThemeMode.system ? ThemeMode.light :
             tm == ThemeMode.light  ? ThemeMode.dark  : ThemeMode.system,
           ),
+        ),
+
+        // App Icon Picker (NEW)
+        ListTile(
+          leading: const Icon(Icons.app_shortcut, color: Colors.amber),
+          title: const Text('App Icon'),
+          subtitle: const Text('Change home screen icon'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _showAppIconDialog,
         ),
 
         // Card Density
@@ -4458,6 +5392,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           onTap: _showOverdueDaysDialog,
         ),
 
+        _switchSettingTile(
+            icon: Icons.draw_outlined,
+            color: Colors.amber,
+            title: 'PDF Signatures',
+            subtitle: 'Show customer and vendor signature lines on PDFs',
+            value: s.showPdfSignatures,
+            onChanged: s.setShowPdfSignatures
+        ),
+
         const Divider(height: 1),
 
         // ====================================
@@ -4465,8 +5408,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // ====================================
         _sectionHeader('DASHBOARD'),
 
-        _switchSettingTile(icon: Icons.leaderboard_outlined, color: Colors.orange, title: 'Top Customers by Revenue', subtitle: 'Show/hide Top 5 revenue list on dashboard', value: s.showTopCustomersByRevenue, onChanged: s.setShowTopCustomersByRevenue),
-        _switchSettingTile(icon: Icons.history, color: Colors.orange, title: 'Payment History Time Stamp', subtitle: 'Show/hide time (AM/PM) in Payment History entries', value: s.showPaymentHistoryTime, onChanged: s.setShowPaymentHistoryTime),
+        _switchSettingTile(icon: Icons.leaderboard_outlined, color: Colors.amber, title: 'Top Customers by Revenue', subtitle: 'Show/hide Top 5 revenue list on dashboard', value: s.showTopCustomersByRevenue, onChanged: s.setShowTopCustomersByRevenue),
+        _switchSettingTile(icon: Icons.history, color: Colors.amber, title: 'Payment History Time Stamp', subtitle: 'Show/hide time (AM/PM) in Payment History entries', value: s.showPaymentHistoryTime, onChanged: s.setShowPaymentHistoryTime),
 
         const Divider(height: 1),
 
@@ -4475,10 +5418,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // ====================================
         _sectionHeader('NOTIFICATIONS'),
 
-        _switchSettingTile(icon: Icons.alarm_on, color: Colors.orange, title: 'Overdue Rental Alert', subtitle: 'Alert when a rental exceeds ${s.overdueDays} days', value: s.notifyOverdue, onChanged: s.setNotifyOverdue),
-        _switchSettingTile(icon: Icons.payments_outlined, color: Colors.orange, title: 'Pending Payment Reminder', subtitle: 'Remind about unsettled returned invoices', value: s.notifyPendingPayments, onChanged: s.setNotifyPendingPayments),
-        _switchSettingTile(icon: Icons.undo, color: Colors.orange, title: 'Refund Wait Alert', subtitle: 'Alert when a customer has been waiting too long for a refund', value: s.notifyRefundWait, onChanged: s.setNotifyRefundWait),
-        _switchSettingTile(icon: Icons.event_note_outlined, color: Colors.orange, title: 'Rental Anniversary Alert', subtitle: 'Notify on milestone days - 7, 14, 30, 60...', value: s.notifyAnniversary, onChanged: s.setNotifyAnniversary),
+        _switchSettingTile(icon: Icons.alarm_on, color: Colors.amber, title: 'Overdue Rental Alert', subtitle: 'Alert when a rental exceeds ${s.overdueDays} days', value: s.notifyOverdue, onChanged: s.setNotifyOverdue),
+        _switchSettingTile(icon: Icons.payments_outlined, color: Colors.amber, title: 'Pending Payment Reminder', subtitle: 'Remind about unsettled returned invoices', value: s.notifyPendingPayments, onChanged: s.setNotifyPendingPayments),
+        _switchSettingTile(icon: Icons.undo, color: Colors.amber, title: 'Refund Wait Alert', subtitle: 'Alert when a customer has been waiting too long for a refund', value: s.notifyRefundWait, onChanged: s.setNotifyRefundWait),
+        _switchSettingTile(icon: Icons.event_note_outlined, color: Colors.amber, title: 'Rental Anniversary Alert', subtitle: 'Notify on milestone days - 7, 14, 30, 60...', value: s.notifyAnniversary, onChanged: s.setNotifyAnniversary),
 
 
         const Divider(height: 1, indent: 16, endIndent: 16),
@@ -4507,7 +5450,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             underline: const SizedBox(),
             items: const [
               DropdownMenuItem(value: 'English', child: Text('English')),
-              DropdownMenuItem(value: 'Hindi',   child: Text('Hindi')),
+              // Hindi temporarily removed as per user request
             ],
             onChanged: (v) { if (v != null) s.setLanguage(v); },
           ),
@@ -4537,7 +5480,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const ListTile(
           leading: Icon(Icons.construction, color: Colors.amber),
           title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: Text('Version 2.2.0  |  Database v18'),
+          subtitle: Text('Version 2.5.0  |  Database v21'),
         ),
         ListTile(
           leading: const Icon(Icons.privacy_tip_outlined, color: Colors.amber),
@@ -4545,6 +5488,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           subtitle: const Text('Offline-first data handling and user control'),
           trailing: const Icon(Icons.chevron_right),
           onTap: _showPrivacyDialog,
+        ),
+        ListTile(
+          leading: const Icon(Icons.share, color: Colors.amber),
+          title: const Text('Tell a Friend'),
+          subtitle: const Text('Share the app with others'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Share.share('Check out Rental Manager, a great offline tool for tracking inventory and invoices: https://gitlab.com/wjust4435/rental_manager');
+          },
         ),
         const SizedBox(height: 40),
       ]),
