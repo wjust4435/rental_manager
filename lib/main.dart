@@ -2054,18 +2054,20 @@ class UniversalRentalCard extends StatelessWidget {
                       decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
                       child: const Text('CANCELLED', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
                     )
-                  else if (group.isFullyReturned && group.isSettled)
+                  else if (group.badDebt > 0)
                     Container(
                       margin: const EdgeInsets.only(left: 6),
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-                      child: const Text('PAID', style: TextStyle(color: Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold)),
-                    ),
-                  if (group.badDebt > 0 && !showCustomerName) Container(
-                    margin: const EdgeInsets.only(left: 6), padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-                    child: const Text('BAD DEBT', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
-                  ),
+                      decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
+                      child: const Text('BAD DEBT', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                    )
+                  else if (group.isFullyReturned && group.isSettled)
+                      Container(
+                        margin: const EdgeInsets.only(left: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
+                        child: const Text('PAID', style: TextStyle(color: Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                      ),
                   SizedBox(
                     width: 32,
                     child: PopupMenuButton<String>(
@@ -3600,7 +3602,11 @@ class _InventoryTabState extends State<InventoryTab> {
         },
       ))),
     ]),
-    floatingActionButton: FloatingActionButton.extended(onPressed: _showItemDialog, icon: const Icon(Icons.add), label: const Text('Add Item')),
+    floatingActionButton: FloatingActionButton(
+      onPressed: _showItemDialog,
+      tooltip: 'Add Item',
+      child: const Icon(Icons.add),
+    ),
   );
 }
 
@@ -3982,6 +3988,13 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
         itemBuilder: (_, i) => _buildCard(_groups[i]),
       ))),
     ]),
+    floatingActionButton: FloatingActionButton(
+      onPressed: () {
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const NewOrderScreen())).then((_) => _load());
+      },
+      tooltip: 'Add Rental',
+      child: const Icon(Icons.add),
+    ),
   );
 }
 
