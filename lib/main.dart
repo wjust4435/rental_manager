@@ -35,17 +35,62 @@ Future<void> _initializeServicesInBackground() async {
   }
 }
 
+//------------------------------------------
+// Unified State Provider & Shared Utilities
+//------------------------------------------
+class RentalUtils {
+  static int calculateChargeDays(String? checkoutDateStr, String? returnDateStr, int returned) {
+    DateTime checkout = DateTime.now();
+    try {
+      if (checkoutDateStr != null && checkoutDateStr.isNotEmpty) {
+        checkout = DateTime.parse(checkoutDateStr);
+      }
+    } catch (_) {}
+
+    DateTime end = DateTime.now();
+    if (returned == 1 && returnDateStr != null && returnDateStr.isNotEmpty) {
+      try {
+        end = DateTime.parse(returnDateStr);
+      } catch (_) {}
+    }
+
+    int days = end.difference(checkout).inDays;
+    if (days < 0) days = 0;
+    return days == 0 ? 1 : days;
+  }
+}
+
+class AppProvider extends InheritedNotifier<AppSettingsNotifier> {
+  const AppProvider({
+    super.key,
+    required AppSettingsNotifier super.notifier,
+    required super.child,
+  });
+
+  static AppSettingsNotifier of(BuildContext context) {
+    final provider = context.dependOnInheritedWidgetOfExactType<AppProvider>();
+    if (provider == null) throw Exception('AppProvider not found in context tree');
+    return provider.notifier!;
+  }
+}
+
 // =================================================
 // Theme Notifier
 // =================================================
 class ThemeModeNotifier extends ChangeNotifier {
   ThemeMode _mode = ThemeMode.dark;
   ThemeMode get mode => _mode;
+  SharedPreferences? _prefs;
 
   ThemeModeNotifier() { _load(); }
 
+  Future<SharedPreferences> _getPrefs() async {
+    _prefs ??= await SharedPreferences.getInstance();
+    return _prefs!;
+  }
+
   Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final saved = prefs.getString('themeMode') ?? 'dark';
     _mode = saved == 'light' ? ThemeMode.light : saved == 'dark' ? ThemeMode.dark : ThemeMode.system;
     notifyListeners();
@@ -54,7 +99,7 @@ class ThemeModeNotifier extends ChangeNotifier {
   Future<void> setMode(ThemeMode m) async {
     _mode = m;
     notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final val   = m == ThemeMode.light ? 'light' : m == ThemeMode.dark ? 'dark' : 'system';
     await prefs.setString('themeMode', val);
   }
@@ -70,7 +115,6 @@ class AppSettingsNotifier extends ChangeNotifier {
   String _fontSize           = 'medium';
   String _dateFormat         = 'dd/MMM/yyyy';
   String _timeFormat         = '12h';
-  String _firstDayOfWeek     = 'Monday';
   bool   _showTopCustomersByRevenue = false;
   bool   _showPaymentHistoryTime = true;
   bool   _showPdfSignatures  = true;
@@ -80,16 +124,17 @@ class AppSettingsNotifier extends ChangeNotifier {
   bool   _notifyRefundWait   = true;
   bool   _notifyAnniversary  = false;
   String _language           = 'English';
-  String _appIcon            = 'default'; // ← NEW
+  String _appIcon            = 'default';
+
+  SharedPreferences? _prefs;
 
   String get currencySymbol      => _currencySymbol;
-  String get appIcon             => _appIcon;     // ← NEW
+  String get appIcon             => _appIcon;
   int    get overdueDays         => _overdueDays;
   String get cardDensity         => _cardDensity;
   String get fontSize            => _fontSize;
   String get dateFormat          => _dateFormat;
   String get timeFormat          => _timeFormat;
-  String get firstDayOfWeek      => _firstDayOfWeek;
   bool   get showTopCustomersByRevenue => _showTopCustomersByRevenue;
   bool   get showPaymentHistoryTime => _showPaymentHistoryTime;
   bool   get showPdfSignatures   => _showPdfSignatures;
@@ -100,46 +145,54 @@ class AppSettingsNotifier extends ChangeNotifier {
   bool   get notifyAnniversary   => _notifyAnniversary;
   String get language            => _language;
 
-  double get textScale  => _fontSize == 'small' ? 0.9 : _fontSize == 'large' ? 1.15 : 1.0;
-  EdgeInsets get cardPadding => EdgeInsets.all(_cardDensity == 'compact' ? 8.0 : 12.0);
+  double get textScale {
+    if (_fontSize == 'small') return 0.9;
+    if (_fontSize == 'large') return 1.15;
+    return 1.0;
+  }
 
-  AppSettingsNotifier() { _load(); }
+  EdgeInsets get cardPadding {
+    return EdgeInsets.all(_cardDensity == 'compact' ? 8.0 : 12.0);
+  }
 
-  String _normalizeLanguage(String? v) {
-    return 'English'; // Forced English for now as requested
+  AppSettingsNotifier() {
+    _load();
+  }
+
+  Future<SharedPreferences> _getPrefs() async {
+    _prefs ??= await SharedPreferences.getInstance();
+    return _prefs!;
   }
 
   Future<void> _load() async {
-    final p = await SharedPreferences.getInstance();
-    _currencySymbol       = p.getString('currencySymbol')       ?? '\u20B9';
-    _overdueDays          = p.getInt('overdueDays')             ?? 30;
-    _cardDensity          = p.getString('cardDensity')          ?? 'comfortable';
-    _fontSize             = p.getString('fontSize')             ?? 'medium';
-    _dateFormat           = p.getString('dateFormat')           ?? 'dd/MMM/yyyy';
-    _timeFormat           = p.getString('timeFormat')           ?? '12h';
-    _firstDayOfWeek       = p.getString('firstDayOfWeek')       ?? 'Monday';
-    _showTopCustomersByRevenue = p.getBool('showTopCustomersByRevenue') ?? false;
-    _showPaymentHistoryTime = p.getBool('showPaymentHistoryTime') ?? true;
-    _showPdfSignatures    = p.getBool('showPdfSignatures')      ?? true;
-    _notifyOverdue        = p.getBool('notifyOverdue')          ?? true;
-    _notifyPendingPayments= p.getBool('notifyPendingPayments')  ?? true;
-    _notifySummary        = p.getBool('notifySummary')          ?? false;
-    _notifyRefundWait     = p.getBool('notifyRefundWait')       ?? true;
-    _notifyAnniversary    = p.getBool('notifyAnniversary')      ?? false;
-    _language             = _normalizeLanguage(p.getString('language'));
-    _appIcon              = p.getString('appIcon')              ?? 'default';
+    final p = await _getPrefs();
+    _currencySymbol            = p.getString('currencySymbol')            ?? '\u20B9';
+    _overdueDays               = p.getInt('overdueDays')                  ?? 30;
+    _cardDensity               = p.getString('cardDensity')               ?? 'comfortable';
+    _fontSize                  = p.getString('fontSize')                  ?? 'medium';
+    _dateFormat                = p.getString('dateFormat')                ?? 'dd/MMM/yyyy';
+    _timeFormat                = p.getString('timeFormat')                ?? '12h';
+    _showTopCustomersByRevenue = p.getBool('showTopCustomersByRevenue')   ?? false;
+    _showPaymentHistoryTime    = p.getBool('showPaymentHistoryTime')      ?? true;
+    _showPdfSignatures         = p.getBool('showPdfSignatures')           ?? true;
+    _notifyOverdue             = p.getBool('notifyOverdue')               ?? true;
+    _notifyPendingPayments     = p.getBool('notifyPendingPayments')       ?? true;
+    _notifySummary             = p.getBool('notifySummary')               ?? false;
+    _notifyRefundWait          = p.getBool('notifyRefundWait')            ?? true;
+    _notifyAnniversary         = p.getBool('notifyAnniversary')           ?? false;
+    _language                  = p.getString('language')                  ?? 'English';
+    _appIcon                   = p.getString('appIcon')                   ?? 'default';
     notifyListeners();
   }
 
   Future<void> _save() async {
-    final p = await SharedPreferences.getInstance();
+    final p = await _getPrefs();
     await p.setString('currencySymbol',      _currencySymbol);
     await p.setInt('overdueDays',            _overdueDays);
     await p.setString('cardDensity',         _cardDensity);
     await p.setString('fontSize',            _fontSize);
     await p.setString('dateFormat',          _dateFormat);
     await p.setString('timeFormat',          _timeFormat);
-    await p.setString('firstDayOfWeek',      _firstDayOfWeek);
     await p.setBool('showTopCustomersByRevenue', _showTopCustomersByRevenue);
     await p.setBool('showPaymentHistoryTime', _showPaymentHistoryTime);
     await p.setBool('showPdfSignatures',     _showPdfSignatures);
@@ -152,23 +205,22 @@ class AppSettingsNotifier extends ChangeNotifier {
     await p.setString('appIcon',             _appIcon);
   }
 
-  Future<void> setCurrencySymbol(String v)      async { _currencySymbol      = v; notifyListeners(); await _save(); }
-  Future<void> setOverdueDays(int v)             async { _overdueDays         = v.clamp(1, 999); notifyListeners(); await _save(); }
-  Future<void> setCardDensity(String v)          async { _cardDensity         = v; notifyListeners(); await _save(); }
-  Future<void> setFontSize(String v)             async { _fontSize            = v; notifyListeners(); await _save(); }
-  Future<void> setDateFormat(String v)           async { _dateFormat          = v; notifyListeners(); await _save(); }
-  Future<void> setTimeFormat(String v)           async { _timeFormat          = v; notifyListeners(); await _save(); }
-  Future<void> setFirstDayOfWeek(String v)       async { _firstDayOfWeek      = v; notifyListeners(); await _save(); }
+  Future<void> setCurrencySymbol(String v)      async { _currencySymbol = v; notifyListeners(); await _save(); }
+  Future<void> setOverdueDays(int v)            async { _overdueDays = v.clamp(1, 999); notifyListeners(); await _save(); }
+  Future<void> setCardDensity(String v)         async { _cardDensity = v; notifyListeners(); await _save(); }
+  Future<void> setFontSize(String v)            async { _fontSize = v; notifyListeners(); await _save(); }
+  Future<void> setDateFormat(String v)          async { _dateFormat = v; notifyListeners(); await _save(); }
+  Future<void> setTimeFormat(String v)          async { _timeFormat = v; notifyListeners(); await _save(); }
   Future<void> setShowTopCustomersByRevenue(bool v) async { _showTopCustomersByRevenue = v; notifyListeners(); await _save(); }
   Future<void> setShowPaymentHistoryTime(bool v) async { _showPaymentHistoryTime = v; notifyListeners(); await _save(); }
-  Future<void> setShowPdfSignatures(bool v)      async { _showPdfSignatures   = v; notifyListeners(); await _save(); }
-  Future<void> setNotifyOverdue(bool v)          async { _notifyOverdue       = v; notifyListeners(); await _save(); }
-  Future<void> setNotifyPendingPayments(bool v)  async { _notifyPendingPayments = v; notifyListeners(); await _save(); }
-  Future<void> setNotifySummary(bool v)          async { _notifySummary       = v; notifyListeners(); await _save(); }
-  Future<void> setNotifyRefundWait(bool v)       async { _notifyRefundWait    = v; notifyListeners(); await _save(); }
-  Future<void> setNotifyAnniversary(bool v)      async { _notifyAnniversary   = v; notifyListeners(); await _save(); }
-  Future<void> setLanguage(String v)             async { _language            = _normalizeLanguage(v); notifyListeners(); await _save(); }
-  Future<void> setAppIcon(String v)              async { _appIcon             = v; notifyListeners(); await _save(); } // ← NEW
+  Future<void> setShowPdfSignatures(bool v)     async { _showPdfSignatures = v; notifyListeners(); await _save(); }
+  Future<void> setNotifyOverdue(bool v)         async { _notifyOverdue = v; notifyListeners(); await _save(); }
+  Future<void> setNotifyPendingPayments(bool v) async { _notifyPendingPayments = v; notifyListeners(); await _save(); }
+  Future<void> setNotifySummary(bool v)         async { _notifySummary = v; notifyListeners(); await _save(); }
+  Future<void> setNotifyRefundWait(bool v)      async { _notifyRefundWait = v; notifyListeners(); await _save(); }
+  Future<void> setNotifyAnniversary(bool v)     async { _notifyAnniversary = v; notifyListeners(); await _save(); }
+  Future<void> setLanguage(String v)            async { _language = v; notifyListeners(); await _save(); }
+  Future<void> setAppIcon(String v)             async { _appIcon = v; notifyListeners(); await _save(); }
 }
 
 // =================================================
@@ -229,16 +281,16 @@ class NotificationService {
         (s.notifySummary         && prefs.getString('notif_summary') != today);
 
     // 2. Fetch and group rentals exactly ONCE if needed
-    List<RentalGroup>? cachedGroups;
+    List<RentalGroup> cachedGroups = [];
     if (needsGroups) {
       cachedGroups = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
     }
 
     if (s.notifyOverdue         && await once('overdue'))     await _checkOverdue(s.overdueDays);
-    if (s.notifyPendingPayments && await once('pending'))     await _checkPendingPayments(cachedGroups!);
-    if (s.notifyRefundWait      && await once('refund'))      await _checkRefundWait(cachedGroups!);
+    if (s.notifyPendingPayments && await once('pending'))     await _checkPendingPayments(cachedGroups);
+    if (s.notifyRefundWait      && await once('refund'))      await _checkRefundWait(cachedGroups);
     if (s.notifyAnniversary     && await once('anniversary')) await _checkAnniversaries();
-    if (s.notifySummary         && await once('summary'))     await _checkSummary(s.overdueDays, cachedGroups!);
+    if (s.notifySummary         && await once('summary'))     await _checkSummary(s.overdueDays, cachedGroups);
   }
 
   static Future<void> _checkOverdue(int days) async {
@@ -385,13 +437,12 @@ class _RentalManagerAppState extends State<RentalManagerApp> {
   void initState() {
     super.initState();
     themeModeNotifier.addListener(_rebuild);
-    appSettingsNotifier.addListener(_rebuild);
+    // Removed appSettingsNotifier listener; InheritedNotifier handles this natively now.
   }
 
   @override
   void dispose() {
     themeModeNotifier.removeListener(_rebuild);
-    appSettingsNotifier.removeListener(_rebuild);
     super.dispose();
   }
 
@@ -405,29 +456,39 @@ class _RentalManagerAppState extends State<RentalManagerApp> {
   );
 
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    debugShowCheckedModeBanner: false,
-    title: 'Rental Manager',
-    locale: appLocale,
-    supportedLocales: const [
-      Locale('en', 'US'),
-      Locale('hi', 'IN'),
-    ],
-    localizationsDelegates: const [
-      GlobalMaterialLocalizations.delegate,
-      GlobalWidgetsLocalizations.delegate,
-      GlobalCupertinoLocalizations.delegate,
-    ],
-    themeMode: themeModeNotifier.mode,
-    theme: _theme(Brightness.light),
-    darkTheme: _theme(Brightness.dark),
-    builder: (ctx, child) => MediaQuery(
-      data: MediaQuery.of(ctx).copyWith(
-        textScaler: TextScaler.linear(appSettingsNotifier.textScale),
-      ),
-      child: child!,
+  Widget build(BuildContext context) => AppProvider(
+    notifier: appSettingsNotifier,
+    child: Builder(
+        builder: (appContext) {
+          // Now safely consuming settings from the InheritedNotifier context
+          final settings = AppProvider.of(appContext);
+
+          return MaterialApp(
+            debugShowCheckedModeBanner: false,
+            title: 'Rental Manager',
+            locale: settings.language == 'Hindi' ? const Locale('hi', 'IN') : const Locale('en', 'US'),
+            supportedLocales: const [
+              Locale('en', 'US'),
+              Locale('hi', 'IN'),
+            ],
+            localizationsDelegates: const [
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            themeMode: themeModeNotifier.mode,
+            theme: _theme(Brightness.light),
+            darkTheme: _theme(Brightness.dark),
+            builder: (ctx, child) => MediaQuery(
+              data: MediaQuery.of(ctx).copyWith(
+                textScaler: TextScaler.linear(settings.textScale),
+              ),
+              child: child!,
+            ),
+            home: const MainShell(),
+          );
+        }
     ),
-    home: const MainShell(),
   );
 }
 
@@ -546,20 +607,45 @@ void _applySort(List<RentalGroup> list, String mode) {
 // Database Helper
 // =================================================
 class DatabaseHelper {
-  static const int _dbVersion = 21;
+  static const int _dbVersion = 23;
+  static Database? _db;
+
+  static Future<void> closeDatabase() async {
+    if (_db != null && _db!.isOpen) {
+      await _db!.close();
+      _db = null;
+    }
+  }
 
   static Future<Database> getDatabase() async {
-    final dir  = await getApplicationDocumentsDirectory();
+    if (_db != null) return _db!;
+    final dir = await getApplicationDocumentsDirectory();
     final path = '${dir.path}/siteyard_v3.db';
-    return openDatabase(path, version: _dbVersion,
+    _db = await openDatabase(
+      path,
+      version: _dbVersion,
       onCreate: (db, v) async {
-        await db.execute("CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,category TEXT DEFAULT 'General',total INTEGER NOT NULL DEFAULT 0,rented INTEGER DEFAULT 0,notes TEXT DEFAULT '')");
-        await db.execute("CREATE TABLE rentals(id INTEGER PRIMARY KEY AUTOINCREMENT,itemId INTEGER,orderId INTEGER,contractor TEXT,phone TEXT,phone2 TEXT DEFAULT '',address TEXT,advanceDeposit REAL DEFAULT 0,discount REAL DEFAULT 0,badDebt REAL DEFAULT 0,qty INTEGER,checkoutDate TEXT,rentalRate REAL DEFAULT 0,returned INTEGER DEFAULT 0,returnDate TEXT,notes TEXT DEFAULT '',isSettled INTEGER DEFAULT 0,paymentMethod TEXT DEFAULT '',penaltyFee REAL DEFAULT 0)");
-        await db.execute("CREATE TABLE customers(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,phone TEXT,phone2 TEXT DEFAULT '',email TEXT DEFAULT '',address TEXT,notes TEXT DEFAULT '',joinedDate TEXT DEFAULT '',isBlacklisted INTEGER DEFAULT 0)");
-        await db.execute("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,customerId INTEGER,customerName TEXT,createdDate TEXT)");
-        await db.execute("CREATE TABLE payment_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,orderId INTEGER,fallbackRentalId INTEGER,amount REAL NOT NULL,method TEXT DEFAULT '',paidAt TEXT DEFAULT '')");
-        await db.execute("CREATE TABLE business_info(id INTEGER PRIMARY KEY,name TEXT DEFAULT '',phone TEXT DEFAULT '',phone2 TEXT DEFAULT '',email TEXT DEFAULT '',address TEXT DEFAULT '',upiId TEXT DEFAULT '',upiName TEXT DEFAULT '',taxProfile TEXT DEFAULT 'No Tax',taxType TEXT DEFAULT 'none',taxRate REAL DEFAULT 0,taxMode TEXT DEFAULT 'exclusive',taxRegNo TEXT DEFAULT '')");
-        await db.insert('business_info', {'id':1,'name':'','phone':'','phone2':'','email':'','address':'','upiId':'','upiName':'','taxProfile':'No Tax','taxType':'none','taxRate':0.0,'taxMode':'exclusive','taxRegNo':''});
+        await db.execute(
+            "CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, category TEXT DEFAULT 'General', total INTEGER NOT NULL DEFAULT 0, rented INTEGER DEFAULT 0, notes TEXT DEFAULT '')"
+        );
+        await db.execute(
+            "CREATE TABLE rentals(id INTEGER PRIMARY KEY AUTOINCREMENT, itemId INTEGER, orderId INTEGER, customerId INTEGER, contractor TEXT, phone TEXT, phone2 TEXT DEFAULT '', address TEXT, advanceDeposit REAL DEFAULT 0, discount REAL DEFAULT 0, badDebt REAL DEFAULT 0, qty INTEGER, checkoutDate TEXT, rentalRate REAL DEFAULT 0, returned INTEGER DEFAULT 0, returnDate TEXT, notes TEXT DEFAULT '', isSettled INTEGER DEFAULT 0, paymentMethod TEXT DEFAULT '', penaltyFee REAL DEFAULT 0, isCancelled INTEGER DEFAULT 0)"
+        );
+        await db.execute(
+            "CREATE TABLE customers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, phone TEXT, phone2 TEXT DEFAULT '', email TEXT DEFAULT '', address TEXT, notes TEXT DEFAULT '', joinedDate TEXT DEFAULT '', isBlacklisted INTEGER DEFAULT 0)"
+        );
+        await db.execute(
+            "CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT, customerId INTEGER, customerName TEXT, createdDate TEXT)"
+        );
+        await db.execute(
+            "CREATE TABLE payment_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, orderId INTEGER, fallbackRentalId INTEGER, amount REAL NOT NULL, method TEXT DEFAULT '', paidAt TEXT DEFAULT '')"
+        );
+        await db.execute(
+            "CREATE TABLE business_info(id INTEGER PRIMARY KEY, name TEXT DEFAULT '', phone TEXT DEFAULT '', phone2 TEXT DEFAULT '', email TEXT DEFAULT '', address TEXT DEFAULT '', upiId TEXT DEFAULT '', upiName TEXT DEFAULT '', taxProfile TEXT DEFAULT 'No Tax', taxType TEXT DEFAULT 'none', taxRate REAL DEFAULT 0, taxMode TEXT DEFAULT 'exclusive', taxRegNo TEXT DEFAULT '')"
+        );
+        await db.insert('business_info', {
+          'id': 1, 'name': '', 'phone': '', 'phone2': '', 'email': '', 'address': '', 'upiId': '', 'upiName': '', 'taxProfile': 'No Tax', 'taxType': 'none', 'taxRate': 0.0, 'taxMode': 'exclusive', 'taxRegNo': ''
+        });
         await db.execute("CREATE INDEX IF NOT EXISTS idx_items_name ON items(name)");
         await db.execute("CREATE INDEX IF NOT EXISTS idx_rentals_checkout ON rentals(checkoutDate)");
         await db.execute("CREATE INDEX IF NOT EXISTS idx_rentals_returned ON rentals(returned)");
@@ -567,94 +653,28 @@ class DatabaseHelper {
         await db.execute("CREATE INDEX IF NOT EXISTS idx_payment_logs_fallback ON payment_logs(fallbackRentalId)");
       },
       onUpgrade: (db, oldV, newV) async {
-        if (oldV < 11) {
-          for (final sql in ["ALTER TABLE rentals ADD COLUMN orderId INTEGER","ALTER TABLE rentals ADD COLUMN notes TEXT DEFAULT ''","ALTER TABLE items ADD COLUMN category TEXT DEFAULT 'General'","ALTER TABLE items ADD COLUMN notes TEXT DEFAULT ''","ALTER TABLE customers ADD COLUMN notes TEXT DEFAULT ''"]) {
-            try { await db.execute(sql); } catch (_) {}
-          }
-          try {
-            await db.execute("CREATE TABLE IF NOT EXISTS business_info(id INTEGER PRIMARY KEY,name TEXT DEFAULT '',phone TEXT DEFAULT '',address TEXT DEFAULT '',upiId TEXT DEFAULT '')");
-            if ((await db.query('business_info')).isEmpty) await db.insert('business_info', {'id':1,'name':'','phone':'','address':'','upiId':''});
-          } catch (_) {}
-        }
-        if (oldV < 12) {
-          for (final sql in ["ALTER TABLE business_info ADD COLUMN phone2 TEXT DEFAULT ''","ALTER TABLE business_info ADD COLUMN email TEXT DEFAULT ''","ALTER TABLE business_info ADD COLUMN upiName TEXT DEFAULT ''","ALTER TABLE customers ADD COLUMN phone2 TEXT DEFAULT ''","ALTER TABLE customers ADD COLUMN email TEXT DEFAULT ''","ALTER TABLE rentals ADD COLUMN isSettled INTEGER DEFAULT 0"]) {
-            try { await db.execute(sql); } catch (_) {}
-          }
-        }
-        if (oldV < 13) {
-          for (final sql in ["CREATE INDEX IF NOT EXISTS idx_items_name ON items(name)","CREATE INDEX IF NOT EXISTS idx_rentals_checkout ON rentals(checkoutDate)","CREATE INDEX IF NOT EXISTS idx_rentals_returned ON rentals(returned)"]) {
-            try { await db.execute(sql); } catch (_) {}
-          }
-        }
-        if (oldV < 14) { try { await db.execute("ALTER TABLE rentals ADD COLUMN paymentMethod TEXT DEFAULT ''"); } catch (_) {} }
-        if (oldV < 15) { try { await db.execute("ALTER TABLE rentals ADD COLUMN phone2 TEXT DEFAULT ''"); } catch (_) {} }
-        if (oldV < 16) {
-          for (final sql in [
-            "ALTER TABLE customers ADD COLUMN joinedDate TEXT DEFAULT ''",
-            "ALTER TABLE customers ADD COLUMN isBlacklisted INTEGER DEFAULT 0",
-          ]) { try { await db.execute(sql); } catch (_) {} }
-        }
-        if (oldV < 17) {
-          for (final sql in [
-            "CREATE TABLE IF NOT EXISTS payment_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,orderId INTEGER,fallbackRentalId INTEGER,amount REAL NOT NULL,method TEXT DEFAULT '',paidAt TEXT DEFAULT '')",
-            "CREATE INDEX IF NOT EXISTS idx_payment_logs_order ON payment_logs(orderId)",
-            "CREATE INDEX IF NOT EXISTS idx_payment_logs_fallback ON payment_logs(fallbackRentalId)",
-          ]) { try { await db.execute(sql); } catch (_) {} }
-
-          try {
-            final rows = await db.rawQuery(
-              "SELECT id, orderId, advanceDeposit, paymentMethod, checkoutDate "
-                  "FROM rentals WHERE advanceDeposit != 0 ORDER BY id ASC",
-            );
-            final seen = <String>{};
-            for (final r in rows) {
-              final amount = (r['advanceDeposit'] as num?)?.toDouble() ?? 0.0;
-              if (amount.abs() < 0.0001) continue;
-              final orderId = r['orderId'] as int?;
-              final rentalId = r['id'] as int?;
-              if (orderId == null && rentalId == null) continue;
-              final key = orderId != null ? 'o:$orderId' : 'f:$rentalId';
-              if (seen.contains(key)) continue;
-              seen.add(key);
-              final method = (r['paymentMethod'] as String? ?? '').trim();
-              final paidAt = (r['checkoutDate'] as String? ?? '').trim();
-              await db.insert('payment_logs', {
-                'orderId': orderId,
-                'fallbackRentalId': orderId == null ? rentalId : null,
-                'amount': amount,
-                'method': method,
-                'paidAt': paidAt.isNotEmpty ? paidAt : DateTime.now().toIso8601String(),
-              });
-            }
-          } catch (_) {}
-        }
-        if (oldV < 18) {
-          for (final sql in [
-            "ALTER TABLE business_info ADD COLUMN taxProfile TEXT DEFAULT 'No Tax'",
-            "ALTER TABLE business_info ADD COLUMN taxType TEXT DEFAULT 'none'",
-            "ALTER TABLE business_info ADD COLUMN taxRate REAL DEFAULT 0",
-            "ALTER TABLE business_info ADD COLUMN taxMode TEXT DEFAULT 'exclusive'",
-            "ALTER TABLE business_info ADD COLUMN taxRegNo TEXT DEFAULT ''",
-          ]) { try { await db.execute(sql); } catch (_) {} }
-        }
-        if (oldV < 19) {
-          try { await db.execute("ALTER TABLE rentals ADD COLUMN discount REAL DEFAULT 0"); } catch (_) {}
-        }
-        if (oldV < 20) {
-          try { await db.execute("ALTER TABLE rentals ADD COLUMN penaltyFee REAL DEFAULT 0"); } catch (_) {}
-        }
+        // Legacy migrations prior to v20 purged. Initial production release was v20.
         if (oldV < 21) {
-          try { await db.execute("ALTER TABLE rentals ADD COLUMN badDebt REAL DEFAULT 0"); } catch (_) {}
+          try { await db.execute("ALTER TABLE rentals ADD COLUMN badDebt REAL DEFAULT 0"); } catch (e, st) { debugPrint('Migration v21 error: $e\n$st'); }
+        }
+        if (oldV < 22) {
+          try { await db.execute("ALTER TABLE rentals ADD COLUMN customerId INTEGER"); } catch (e, st) { debugPrint('Migration v22 error: $e\n$st'); }
+        }
+        if (oldV < 23) {
+          try { await db.execute("ALTER TABLE rentals ADD COLUMN isCancelled INTEGER DEFAULT 0"); } catch (e, st) { debugPrint('Migration v23 error: $e\n$st'); }
         }
       },
     );
+    return _db!;
   }
 
   static Future<void> writeOffBadDebt(int firstId, double amount, List<int> allIds) async {
     final db = await getDatabase();
     await db.transaction((txn) async {
       await txn.rawUpdate('UPDATE rentals SET badDebt=badDebt+? WHERE id=?', [amount, firstId]);
-      for (final id in allIds) { await txn.rawUpdate('UPDATE rentals SET isSettled=1 WHERE id=?', [id]); }
+      for (final id in allIds) {
+        await txn.rawUpdate('UPDATE rentals SET isSettled=1 WHERE id=?', [id]);
+      }
     });
   }
 
@@ -670,35 +690,37 @@ class DatabaseHelper {
         'method': method,
         'paidAt': DateTime.now().toIso8601String(),
       });
-      // Convert bad debt back into a proper advance/payment so it balances out
       await txn.rawUpdate('UPDATE rentals SET badDebt=MAX(0, badDebt-?), advanceDeposit=advanceDeposit+? WHERE id=?', [amount, amount, firstId]);
       if (isFullyRecovered) {
-        for (final id in allIds) { await txn.rawUpdate('UPDATE rentals SET isSettled=1 WHERE id=?', [id]); }
+        for (final id in allIds) {
+          await txn.rawUpdate('UPDATE rentals SET isSettled=1 WHERE id=?', [id]);
+        }
       }
     });
   }
 
   static String formatDateFromDt(DateTime dt) => formatDateByPreference(dt);
-  static String formatDateString(String? s) { if (s==null||s.isEmpty) return ''; try { return formatDateFromDt(DateTime.parse(s)); } catch (_) { return s; } }
+
+  static String formatDateString(String? s) {
+    if (s == null || s.isEmpty) return '';
+    try {
+      return formatDateFromDt(DateTime.parse(s));
+    } catch (_) {
+      return s;
+    }
+  }
+
   static String isoDate(DateTime dt) => dt.toIso8601String().split('T')[0];
   static String isoNow() => isoDate(DateTime.now());
 
-// Cache fonts to avoid reloading on every PDF generation
   static Map<String, pw.Font>? _cachedFonts;
 
   static Future<Map<String, pw.Font>> _loadPdfFonts() async {
     if (_cachedFonts != null) return _cachedFonts!;
-
     final regular = pw.Font.ttf(await rootBundle.load('assets/fonts/Roboto-Regular.ttf'));
     final bold = pw.Font.ttf(await rootBundle.load('assets/fonts/Roboto-Bold.ttf'));
     final italic = pw.Font.ttf(await rootBundle.load('assets/fonts/Roboto-Italic.ttf'));
-
-    _cachedFonts = {
-      'regular': regular,
-      'bold': bold,
-      'italic': italic,
-    };
-
+    _cachedFonts = { 'regular': regular, 'bold': bold, 'italic': italic };
     return _cachedFonts!;
   }
 
@@ -707,97 +729,180 @@ class DatabaseHelper {
     int q(List<Map> r) => r.first['c'] as int? ?? 0;
     final cutoff = isoDate(DateTime.now().subtract(Duration(days: overdueDays)));
     return {
-      'items':         q(await db.rawQuery('SELECT COUNT(*) as c FROM items')),
+      'items': q(await db.rawQuery('SELECT COUNT(*) as c FROM items')),
       'activeRentals': q(await db.rawQuery('SELECT COUNT(*) as c FROM rentals WHERE returned=0 OR returned IS NULL')),
-      'returned':      q(await db.rawQuery('SELECT COUNT(*) as c FROM rentals WHERE returned=1')),
-      'customers':     q(await db.rawQuery('SELECT COUNT(*) as c FROM customers')),
-      'overdue':       q(await db.rawQuery('SELECT COUNT(*) as c FROM rentals WHERE (returned=0 OR returned IS NULL) AND checkoutDate<=?', [cutoff])),
+      'returned': q(await db.rawQuery('SELECT COUNT(*) as c FROM rentals WHERE returned=1')),
+      'customers': q(await db.rawQuery('SELECT COUNT(*) as c FROM customers')),
+      'overdue': q(await db.rawQuery('SELECT COUNT(*) as c FROM rentals WHERE (returned=0 OR returned IS NULL) AND checkoutDate<=?', [cutoff])),
     };
-  }
-
-  static Future<double> getPendingCollectionsTotal() async {
-    final groups = groupRentalsByInvoice(await getAllRentals());
-    return groups
-        .where((g) => g.isFullyReturned && !g.isSettled && g.balance > 0)
-        .fold<double>(0.0, (sum, g) => sum + g.balance);
-  }
-
-  static Future<List<Map<String, dynamic>>> getTopCustomersByRevenue({int limit = 5}) async {
-    final groups = groupRentalsByInvoice(await getAllRentals());
-    final totals = <String, double>{};
-    final invoices = <String, int>{};
-
-    for (final g in groups) {
-      final name = g.contractor.trim();
-      if (name.isEmpty) continue;
-      totals[name] = (totals[name] ?? 0.0) + g.calculateTotalCost();
-      invoices[name] = (invoices[name] ?? 0) + 1;
-    }
-
-    final rows = totals.entries
-        .map((e) => <String, dynamic>{
-      'name': e.key,
-      'revenue': e.value,
-      'invoices': invoices[e.key] ?? 0,
-    })
-        .toList();
-
-    rows.sort((a, b) => (b['revenue'] as double).compareTo(a['revenue'] as double));
-    if (rows.length > limit) return rows.take(limit).toList();
-    return rows;
   }
 
   static Future<List<Map<String, dynamic>>> getItems({String? search, String? category}) async {
     final db = await getDatabase();
-    final where = <String>[]; final args = <dynamic>[];
-    if (search != null && search.isNotEmpty) { where.add('name LIKE ?'); args.add('%$search%'); }
-    if (category != null && category != 'All') { where.add('category = ?'); args.add(category); }
-    return db.query('items', where: where.isEmpty ? null : where.join(' AND '), whereArgs: args.isEmpty ? null : args, orderBy: 'name ASC');
+    final where = <String>[];
+    final args = <dynamic>[];
+    if (search != null && search.isNotEmpty) {
+      where.add('name LIKE ?');
+      args.add('%$search%');
+    }
+    if (category != null && category != 'All') {
+      where.add('category = ?');
+      args.add(category);
+    }
+    return db.query(
+        'items',
+        where: where.isEmpty ? null : where.join(' AND '),
+        whereArgs: args.isEmpty ? null : args,
+        orderBy: 'name ASC'
+    );
   }
 
-  static Future<List<String>> getCategories() async =>
-      (await (await getDatabase()).rawQuery("SELECT DISTINCT category FROM items ORDER BY category ASC")).map((r) => r['category'] as String? ?? 'General').toList();
+  static Future<List<String>> getCategories() async {
+    final db = await getDatabase();
+    final rows = await db.rawQuery("SELECT DISTINCT category FROM items ORDER BY category ASC");
+    return rows.map((r) => r['category'] as String? ?? 'General').toList();
+  }
 
-  static Future<void> insertItem(String name, int total, String category, String notes) async =>
-      (await getDatabase()).insert('items', {'name':name,'total':total,'rented':0,'category':category,'notes':notes});
+  static Future<void> insertItem(String name, int total, String category, String notes) async {
+    final db = await getDatabase();
+    await db.insert('items', {
+      'name': name,
+      'total': total,
+      'rented': 0,
+      'category': category,
+      'notes': notes
+    });
+  }
 
   static Future<void> updateItem(int id, String name, int total, String category, String notes) async {
     final db = await getDatabase();
-    final rented = (await db.query('items', columns:['rented'], where:'id=?', whereArgs:[id])).firstOrNull?['rented'] as int? ?? 0;
-    await db.update('items', {'name':name,'total':total,'rented':rented>total?total:rented,'category':category,'notes':notes}, where:'id=?', whereArgs:[id]);
+    final rows = await db.query('items', columns: ['rented'], where: 'id=?', whereArgs: [id]);
+    final rented = rows.firstOrNull?['rented'] as int? ?? 0;
+    await db.update('items', {
+      'name': name,
+      'total': total,
+      'rented': rented > total ? total : rented,
+      'category': category,
+      'notes': notes
+    }, where: 'id=?', whereArgs: [id]);
   }
 
   static Future<void> deleteItem(int id) async {
     final db = await getDatabase();
     final active = (await db.rawQuery("SELECT COUNT(*) as c FROM rentals WHERE itemId=? AND (returned=0 OR returned IS NULL)", [id])).first['c'] as int? ?? 0;
     if (active > 0) throw Exception('Cannot delete: item has active rentals');
-    await db.delete('items', where:'id=?', whereArgs:[id]);
+    await db.delete('items', where: 'id=?', whereArgs: [id]);
   }
 
-  static Future<List<Map<String, dynamic>>> getAllRentals({String? search}) async {
-    final db = await getDatabase(); final args = <dynamic>[]; String where = '';
-    if (search != null && search.isNotEmpty) { where = "WHERE rentals.contractor LIKE ? OR items.name LIKE ?"; args.addAll(['%$search%','%$search%']); }
+  static Future<List<Map<String, dynamic>>> getAllRentals({String? search, int? limit, int? offset}) async {
+    final db = await getDatabase();
+    final args = <dynamic>[];
+    String where = '';
+
+    if (search != null && search.isNotEmpty) {
+      where = "WHERE rentals.contractor LIKE ? OR items.name LIKE ?";
+      args.addAll(['%$search%', '%$search%']);
+    }
+
+    String limitClause = '';
+    if (limit != null) {
+      limitClause = " LIMIT $limit";
+      if (offset != null) {
+        limitClause += " OFFSET $offset";
+      }
+    }
+
     final rows = await db.rawQuery(
       "SELECT rentals.*, items.name as itemName, "
           "CASE WHEN (rentals.phone2 IS NULL OR rentals.phone2 = '') THEN COALESCE(customers.phone2, '') ELSE rentals.phone2 END as phone2 "
           "FROM rentals JOIN items ON rentals.itemId=items.id "
           "LEFT JOIN customers ON customers.name=rentals.contractor "
-          "$where ORDER BY rentals.checkoutDate ASC, rentals.id ASC",
+          "$where ORDER BY rentals.checkoutDate ASC, rentals.id ASC$limitClause",
       args.isEmpty ? null : args,
     );
     return rows;
   }
 
-  static Future<void> updateRental(int id, {required String contractor, required String phone, required String phone2, required String address, required double advanceDeposit, required double rentalRate, required String checkoutDate, required String notes, String paymentMethod = ''}) async =>
-      (await getDatabase()).update('rentals', {'contractor':contractor,'phone':phone,'phone2':phone2,'address':address,'advanceDeposit':advanceDeposit,'rentalRate':rentalRate,'checkoutDate':checkoutDate,'notes':notes,'paymentMethod':paymentMethod}, where:'id=?', whereArgs:[id]);
+  static Future<void> updateRental(int id, {
+    required String contractor, required String phone, required String phone2,
+    required String address, required double advanceDeposit, required double rentalRate,
+    required String checkoutDate, required String notes, String paymentMethod = ''
+  }) async {
+    final db = await getDatabase();
+    await db.update('rentals', {
+      'contractor': contractor,
+      'phone': phone,
+      'phone2': phone2,
+      'address': address,
+      'advanceDeposit': advanceDeposit,
+      'rentalRate': rentalRate,
+      'checkoutDate': checkoutDate,
+      'notes': notes,
+      'paymentMethod': paymentMethod
+    }, where: 'id=?', whereArgs: [id]);
+  }
+
+  static Future<void> updateRentalGroup(RentalGroup group, {
+    required String contractor, required String phone, required String phone2,
+    required String address, required double advanceDeposit, required String paymentMethod,
+    required String checkoutDate, required String notes
+  }) async {
+    final db = await getDatabase();
+    await db.transaction((txn) async {
+      bool isFirst = true;
+      for (final r in group.items) {
+        await txn.update('rentals', {
+          'contractor': contractor,
+          'phone': phone,
+          'phone2': phone2,
+          'address': address,
+          'advanceDeposit': isFirst ? advanceDeposit : 0.0,
+          'checkoutDate': checkoutDate,
+          'notes': notes,
+          'paymentMethod': isFirst ? paymentMethod : ''
+        }, where: 'id=?', whereArgs: [r['id']]);
+        isFirst = false;
+      }
+
+      if (group.orderId != null) {
+        await txn.update('orders', {'customerName': contractor}, where: 'id=?', whereArgs: [group.orderId]);
+      }
+
+      final logQuery = group.orderId != null
+          ? await txn.query('payment_logs', where: 'orderId=?', whereArgs: [group.orderId], orderBy: 'id ASC', limit: 1)
+          : await txn.query('payment_logs', where: 'fallbackRentalId=?', whereArgs: [group.items.first['id']], orderBy: 'id ASC', limit: 1);
+
+      if (logQuery.isNotEmpty) {
+        final logId = logQuery.first['id'] as int;
+        if (advanceDeposit.abs() < 0.0001) {
+          await txn.delete('payment_logs', where: 'id=?', whereArgs: [logId]);
+        } else {
+          await txn.update('payment_logs', {
+            'amount': advanceDeposit,
+            'method': paymentMethod,
+            'paidAt': checkoutDate
+          }, where: 'id=?', whereArgs: [logId]);
+        }
+      } else if (advanceDeposit.abs() > 0.0001) {
+        await txn.insert('payment_logs', {
+          'orderId': group.orderId,
+          'fallbackRentalId': group.orderId == null ? group.items.first['id'] : null,
+          'amount': advanceDeposit,
+          'method': paymentMethod,
+          'paidAt': checkoutDate,
+        });
+      }
+    });
+  }
 
   static Future<void> returnOrderGroup(List<Map<String, dynamic>> items, String returnDate) async {
     final db = await getDatabase();
     await db.transaction((txn) async {
       for (final r in items) {
-        final rented = (await txn.query('items', columns:['rented'], where:'id=?', whereArgs:[r['itemId']])).firstOrNull?['rented'] as int? ?? 0;
-        await txn.rawUpdate('UPDATE items SET rented=rented-? WHERE id=?', [(r['qty'] as int).clamp(0,rented), r['itemId']]);
-        await txn.rawUpdate('UPDATE rentals SET returned=1,returnDate=? WHERE id=?', [returnDate, r['id']]);
+        final rows = await txn.query('items', columns: ['rented'], where: 'id=?', whereArgs: [r['itemId']]);
+        final rented = rows.firstOrNull?['rented'] as int? ?? 0;
+        await txn.rawUpdate('UPDATE items SET rented=rented-? WHERE id=?', [(r['qty'] as int).clamp(0, rented), r['itemId']]);
+        await txn.rawUpdate('UPDATE rentals SET returned=1, returnDate=? WHERE id=?', [returnDate, r['id']]);
       }
     });
   }
@@ -818,22 +923,38 @@ class DatabaseHelper {
         final itemId = rental['itemId'] as int;
         final currentQty = rental['qty'] as int;
 
-        final rented = (await txn.query('items', columns:['rented'], where:'id=?', whereArgs:[itemId])).firstOrNull?['rented'] as int? ?? 0;
+        final rows = await txn.query('items', columns: ['rented'], where: 'id=?', whereArgs: [itemId]);
+        final rented = rows.firstOrNull?['rented'] as int? ?? 0;
 
-        // 1. Both good and damaged items are no longer "rented out"
-        await txn.rawUpdate('UPDATE items SET rented=rented-? WHERE id=?', [totalReturnQty.clamp(0,rented), itemId]);
+        await txn.rawUpdate('UPDATE items SET rented=rented-? WHERE id=?', [totalReturnQty.clamp(0, rented), itemId]);
 
-        // 2. If items were destroyed/lost, permanently remove them from inventory total
         if (damagedQty > 0) {
-          await txn.rawUpdate('UPDATE items SET total=total-? WHERE id=?', [damagedQty, itemId]);
+          await txn.rawUpdate('UPDATE items SET total=MAX(0, total-?) WHERE id=?', [damagedQty, itemId]);
         }
 
         if (totalReturnQty >= currentQty) {
-          // Fully returned the line item
           await txn.rawUpdate('UPDATE rentals SET returned=1, returnDate=?, penaltyFee=? WHERE id=?', [returnDate, penalty, rentalId]);
         } else {
-          // Partially returned the line item - split the record
-          await txn.insert('rentals', {'itemId':itemId,'orderId':rental['orderId'],'contractor':rental['contractor'],'phone':rental['phone']??'','phone2':rental['phone2']??'','address':rental['address'],'advanceDeposit':0.0,'discount':0.0,'qty':totalReturnQty,'checkoutDate':rental['checkoutDate'],'rentalRate':rental['rentalRate'],'returned':1,'returnDate':returnDate,'notes':rental['notes'],'isSettled':rental['isSettled']??0,'paymentMethod':rental['paymentMethod']??'', 'penaltyFee': penalty});
+          await txn.insert('rentals', {
+            'itemId': itemId,
+            'orderId': rental['orderId'],
+            'customerId': rental['customerId'], // NEW DB BINDING
+            'contractor': rental['contractor'],
+            'phone': rental['phone'] ?? '',
+            'phone2': rental['phone2'] ?? '',
+            'address': rental['address'],
+            'advanceDeposit': 0.0,
+            'discount': 0.0,
+            'qty': totalReturnQty,
+            'checkoutDate': rental['checkoutDate'],
+            'rentalRate': rental['rentalRate'],
+            'returned': 1,
+            'returnDate': returnDate,
+            'notes': rental['notes'],
+            'isSettled': rental['isSettled'] ?? 0,
+            'paymentMethod': rental['paymentMethod'] ?? '',
+            'penaltyFee': penalty
+          });
           await txn.rawUpdate('UPDATE rentals SET qty=qty-? WHERE id=?', [totalReturnQty, rentalId]);
         }
       }
@@ -855,7 +976,11 @@ class DatabaseHelper {
         });
       }
       await txn.rawUpdate('UPDATE rentals SET advanceDeposit=advanceDeposit+?, discount=discount+?, paymentMethod=? WHERE id=?', [amount, discountAmount, paymentMethod, firstId]);
-      if (isFull) { for (final id in allIds) { await txn.rawUpdate('UPDATE rentals SET isSettled=1 WHERE id=?', [id]); } }
+      if (isFull) {
+        for (final id in allIds) {
+          await txn.rawUpdate('UPDATE rentals SET isSettled=1 WHERE id=?', [id]);
+        }
+      }
     });
   }
 
@@ -864,65 +989,112 @@ class DatabaseHelper {
     await db.transaction((txn) async {
       final orderIds = <int>{};
       final fallbackIds = <int>{};
+
       for (final r in groupItems) {
         if (r['orderId'] != null) {
           orderIds.add(r['orderId'] as int);
         } else if (r['id'] != null) {
           fallbackIds.add(r['id'] as int);
         }
-        await txn.delete('rentals', where:'id=?', whereArgs:[r['id']]);
+        await txn.delete('rentals', where: 'id=?', whereArgs: [r['id']]);
       }
+
       for (final oid in orderIds) {
         final count = (await txn.rawQuery('SELECT COUNT(*) as c FROM rentals WHERE orderId=?', [oid])).first['c'] as int? ?? 0;
         if (count == 0) {
-          await txn.delete('orders', where:'id=?', whereArgs:[oid]);
-          await txn.delete('payment_logs', where:'orderId=?', whereArgs:[oid]);
+          await txn.delete('orders', where: 'id=?', whereArgs: [oid]);
+          await txn.delete('payment_logs', where: 'orderId=?', whereArgs: [oid]);
         }
       }
       for (final fid in fallbackIds) {
-        await txn.delete('payment_logs', where:'fallbackRentalId=?', whereArgs:[fid]);
+        await txn.delete('payment_logs', where: 'fallbackRentalId=?', whereArgs: [fid]);
+      }
+    });
+  }
+
+  static Future<void> cancelRentalGroup(List<int> rentalIds) async {
+    final db = await getDatabase();
+    await db.transaction((txn) async {
+      for (final id in rentalIds) {
+        // Fetch current rental state to handle inventory
+        final List<Map<String, dynamic>> result = await txn.query('rentals', where: 'id=?', whereArgs: [id]);
+        if (result.isNotEmpty) {
+          final rental = result.first;
+          final int itemId = rental['itemId'] as int;
+          final int qty = rental['qty'] as int;
+          final int returned = rental['returned'] as int? ?? 0;
+          final int wasCancelled = rental['isCancelled'] as int? ?? 0;
+
+          if (wasCancelled == 0) {
+            // Reclaim inventory if the item was still "Out"
+            if (returned == 0) {
+              await txn.rawUpdate('UPDATE items SET rented = MAX(0, rented - ?) WHERE id = ?', [qty, itemId]);
+            }
+            // Mark as cancelled
+            await txn.rawUpdate('UPDATE rentals SET isCancelled=1 WHERE id=?', [id]);
+          }
+        }
       }
     });
   }
 
   static Future<List<Map<String, dynamic>>> getCustomers({String? search}) async {
     final db = await getDatabase();
-    if (search != null && search.isNotEmpty) return db.query('customers', where:'name LIKE ? OR phone LIKE ?', whereArgs:['%$search%','%$search%'], orderBy:'name ASC');
-    return db.query('customers', orderBy:'name ASC');
+    if (search != null && search.isNotEmpty) {
+      return db.query('customers', where: 'name LIKE ? OR phone LIKE ?', whereArgs: ['%$search%', '%$search%'], orderBy: 'name ASC');
+    }
+    return db.query('customers', orderBy: 'name ASC');
   }
 
-  static Future<int> insertCustomer(String name, String phone, String phone2, String email, String address, {String notes = '', String joinedDate = ''}) =>
-      getDatabase().then((db) => db.insert('customers', {'name':name,'phone':phone,'phone2':phone2,'email':email,'address':address,'notes':notes,'joinedDate':joinedDate.isNotEmpty ? joinedDate : isoNow(),'isBlacklisted':0}));
+  static Future<int> insertCustomer(String name, String phone, String phone2, String email, String address, {String notes = '', String joinedDate = ''}) async {
+    final db = await getDatabase();
+    return db.insert('customers', {
+      'name': name, 'phone': phone, 'phone2': phone2, 'email': email, 'address': address,
+      'notes': notes, 'joinedDate': joinedDate.isNotEmpty ? joinedDate : isoNow(), 'isBlacklisted': 0
+    });
+  }
 
-  static Future<void> updateCustomer(int id, String name, String phone, String phone2, String email, String address, {String notes = '', String joinedDate = '', int isBlacklisted = 0}) async =>
-      (await getDatabase()).update('customers', {'name':name,'phone':phone,'phone2':phone2,'email':email,'address':address,'notes':notes,'joinedDate':joinedDate,'isBlacklisted':isBlacklisted}, where:'id=?', whereArgs:[id]);
+  static Future<void> updateCustomer(int id, String name, String phone, String phone2, String email, String address, {String notes = '', String joinedDate = '', int isBlacklisted = 0}) async {
+    final db = await getDatabase();
+    await db.update('customers', {
+      'name': name, 'phone': phone, 'phone2': phone2, 'email': email, 'address': address,
+      'notes': notes, 'joinedDate': joinedDate, 'isBlacklisted': isBlacklisted
+    }, where: 'id=?', whereArgs: [id]);
+  }
 
-  static Future<void> deleteCustomer(int id) async =>
-      (await getDatabase()).delete('customers', where:'id=?', whereArgs:[id]);
+  static Future<void> deleteCustomer(int id) async {
+    final db = await getDatabase();
+    await db.delete('customers', where: 'id=?', whereArgs: [id]);
+  }
 
-  static Future<void> toggleBlacklist(int id, bool blacklist) async =>
-      (await getDatabase()).update('customers', {'isBlacklisted': blacklist ? 1 : 0}, where:'id=?', whereArgs:[id]);
+  static Future<void> toggleBlacklist(int id, bool blacklist) async {
+    final db = await getDatabase();
+    await db.update('customers', {'isBlacklisted': blacklist ? 1 : 0}, where: 'id=?', whereArgs: [id]);
+  }
 
-  static Future<double> getCustomerOwedBalance(String customerName) async {
-    if (customerName.isEmpty) return 0.0;
-    final rows = await (await getDatabase()).rawQuery("SELECT rentals.*, items.name as itemName FROM rentals JOIN items ON rentals.itemId=items.id WHERE rentals.contractor=? ORDER BY rentals.checkoutDate ASC, rentals.id ASC", [customerName]);
+  static Future<double> getCustomerOwedBalance(int customerId, String customerName) async {
+    final db = await getDatabase();
+    final rows = await db.rawQuery(
+        "SELECT rentals.*, items.name as itemName FROM rentals JOIN items ON rentals.itemId=items.id WHERE rentals.customerId=? OR (rentals.customerId IS NULL AND rentals.contractor=?) ORDER BY rentals.checkoutDate ASC, rentals.id ASC",
+        [customerId, customerName]
+    );
     return groupRentalsByInvoice(rows).where((g) => g.isFullyReturned && !g.isSettled && g.balance > 0).fold<double>(0.0, (s, g) => s + g.balance);
   }
 
-  static Future<List<RentalGroup>> getCustomerRentalHistory(String customerName) async {
-    if (customerName.isEmpty) return [];
-    final rows = await (await getDatabase()).rawQuery(
-      "SELECT rentals.*, items.name as itemName FROM rentals JOIN items ON rentals.itemId=items.id WHERE rentals.contractor=? ORDER BY rentals.checkoutDate DESC, rentals.id DESC",
-      [customerName],
+  static Future<List<RentalGroup>> getCustomerRentalHistory(int customerId, String customerName) async {
+    final db = await getDatabase();
+    final rows = await db.rawQuery(
+      "SELECT rentals.*, items.name as itemName FROM rentals JOIN items ON rentals.itemId=items.id WHERE rentals.customerId=? OR (rentals.customerId IS NULL AND rentals.contractor=?) ORDER BY rentals.checkoutDate DESC, rentals.id DESC",
+      [customerId, customerName],
     );
     return groupRentalsByInvoice(rows);
   }
 
-  static Future<Map<String, dynamic>> getCustomerLifetimeStats(String customerName) async {
-    if (customerName.isEmpty) return {'totalSpent': 0.0, 'totalInvoices': 0, 'activeRentals': 0, 'refundBalance': 0.0, 'owedBalance': 0.0, 'badDebt': 0.0};
-    final rows = await (await getDatabase()).rawQuery(
-      "SELECT rentals.*, items.name as itemName FROM rentals JOIN items ON rentals.itemId=items.id WHERE rentals.contractor=? ORDER BY rentals.checkoutDate ASC, rentals.id ASC",
-      [customerName],
+  static Future<Map<String, dynamic>> getCustomerLifetimeStats(int customerId, String customerName) async {
+    final db = await getDatabase();
+    final rows = await db.rawQuery(
+      "SELECT rentals.*, items.name as itemName FROM rentals JOIN items ON rentals.itemId=items.id WHERE rentals.customerId=? OR (rentals.customerId IS NULL AND rentals.contractor=?) ORDER BY rentals.checkoutDate ASC, rentals.id ASC",
+      [customerId, customerName],
     );
     final groups = groupRentalsByInvoice(rows);
     double totalSpent   = 0.0;
@@ -930,6 +1102,7 @@ class DatabaseHelper {
     double refundBalance = 0.0;
     double badDebtTotal = 0.0;
     int activeRentals   = 0;
+
     for (final g in groups) {
       totalSpent += g.calculateTotalCost();
       badDebtTotal += g.badDebt;
@@ -939,18 +1112,21 @@ class DatabaseHelper {
         if (g.balance < 0) refundBalance += g.balance.abs();
       }
     }
+
     return {
-      'totalSpent':    totalSpent,
+      'totalSpent': totalSpent,
       'totalInvoices': groups.length,
       'activeRentals': activeRentals,
-      'owedBalance':   owedBalance,
+      'owedBalance': owedBalance,
       'refundBalance': refundBalance,
-      'badDebt':       badDebtTotal,
+      'badDebt': badDebtTotal,
     };
   }
 
-  static Future<int> createOrder(int? customerId, String customerName, String createdDate) =>
-      getDatabase().then((db) => db.insert('orders', {'customerId':customerId,'customerName':customerName,'createdDate':createdDate}));
+  static Future<int> createOrder(int? customerId, String customerName, String createdDate) async {
+    final db = await getDatabase();
+    return db.insert('orders', {'customerId': customerId, 'customerName': customerName, 'createdDate': createdDate});
+  }
 
   static Future<void> createOrderRentals(int orderId, List<Map<String, dynamic>> items) async {
     final db = await getDatabase();
@@ -958,9 +1134,13 @@ class DatabaseHelper {
       double initialAdvance = 0.0;
       String initialMethod = '';
       String initialPaidAt = isoNow();
+
       for (final it in items) {
-        final itemId = it['itemId'] as int; final qty = it['qty'] as int; final rate = (it['rate'] as num?)?.toDouble() ?? 0.0;
+        final itemId = it['itemId'] as int;
+        final qty = it['qty'] as int;
+        final rate = (it['rate'] as num?)?.toDouble() ?? 0.0;
         final advance = (it['advanceDeposit'] as num?)?.toDouble() ?? 0.0;
+
         if (initialAdvance.abs() < 0.0001 && advance.abs() > 0.0001) {
           initialAdvance = advance;
           initialMethod = (it['paymentMethod'] as String? ?? '').trim();
@@ -968,13 +1148,35 @@ class DatabaseHelper {
               ? (it['checkoutDate'] as String)
               : isoNow();
         }
-        final rows = await txn.query('items', columns:['total','rented'], where:'id=?', whereArgs:[itemId]);
+
+        final rows = await txn.query('items', columns: ['total', 'rented'], where: 'id=?', whereArgs: [itemId]);
         if (rows.isEmpty) throw Exception('Item not found');
-        final total = rows.first['total'] as int? ?? 0; final rented = rows.first['rented'] as int? ?? 0;
+
+        final total = rows.first['total'] as int? ?? 0;
+        final rented = rows.first['rented'] as int? ?? 0;
         if (qty > (total - rented)) throw Exception('Not enough stock for item $itemId');
-        await txn.insert('rentals', {'itemId':itemId,'contractor':it['contractor']??'','phone':it['phone']??'','phone2':it['phone2']??'','address':it['address']??'','advanceDeposit':it['advanceDeposit']??0.0,'discount':it['discount']??0.0,'rentalRate':rate,'qty':qty,'checkoutDate':it['checkoutDate']??isoNow(),'orderId':orderId,'returned':0,'notes':it['notes']??'','isSettled':0,'paymentMethod':it['paymentMethod']??''});
-        await txn.update('items', {'rented':rented+qty}, where:'id=?', whereArgs:[itemId]);
+
+        await txn.insert('rentals', {
+          'itemId': itemId,
+          'customerId': it['customerId'], // NEW DB BINDING
+          'contractor': it['contractor'] ?? '',
+          'phone': it['phone'] ?? '',
+          'phone2': it['phone2'] ?? '',
+          'address': it['address'] ?? '',
+          'advanceDeposit': it['advanceDeposit'] ?? 0.0,
+          'discount': it['discount'] ?? 0.0,
+          'rentalRate': rate,
+          'qty': qty,
+          'checkoutDate': it['checkoutDate'] ?? isoNow(),
+          'orderId': orderId,
+          'returned': 0,
+          'notes': it['notes'] ?? '',
+          'isSettled': 0,
+          'paymentMethod': it['paymentMethod'] ?? ''
+        });
+        await txn.update('items', {'rented': rented + qty}, where: 'id=?', whereArgs: [itemId]);
       }
+
       if (initialAdvance.abs() > 0.0001) {
         await txn.insert('payment_logs', {
           'orderId': orderId,
@@ -1059,8 +1261,12 @@ class DatabaseHelper {
       args.add(fallbackRentalId);
     }
 
-    if (type == 'Payment') where.add('p.amount > 0');
-    if (type == 'Refund') where.add('p.amount < 0');
+    if (type == 'Payment') {
+      where.add('p.amount > 0');
+    }
+    if (type == 'Refund') {
+      where.add('p.amount < 0');
+    }
 
     final s = search.trim();
     if (s.isNotEmpty) {
@@ -1077,6 +1283,7 @@ class DatabaseHelper {
       "SELECT p.id, p.orderId, p.fallbackRentalId, p.amount, p.method, p.paidAt, "
           "COALESCE(o.customerName, r.contractor, '') AS customerName, "
           "COALESCE(o.createdDate, r.checkoutDate, '') AS baseDate, "
+          "COALESCE(r.isCancelled, (SELECT MAX(isCancelled) FROM rentals WHERE orderId = p.orderId), 0) AS isCancelled, "
           "(SELECT MIN(id) FROM payment_logs p2 WHERE COALESCE(p2.orderId, -1) = COALESCE(p.orderId, -1) AND COALESCE(p2.fallbackRentalId, -1) = COALESCE(p.fallbackRentalId, -1)) AS firstLogId "
           "FROM payment_logs p "
           "LEFT JOIN orders o ON p.orderId = o.id "
@@ -1088,50 +1295,48 @@ class DatabaseHelper {
     return rows.map((r) => Map<String, dynamic>.from(r)).toList();
   }
 
-  static Future<List<Map<String, dynamic>>> getOrders() async => (await getDatabase()).query('orders', orderBy:'createdDate DESC');
+  static Future<List<Map<String, dynamic>>> getOrders() async {
+    final db = await getDatabase();
+    return db.query('orders', orderBy: 'createdDate DESC');
+  }
 
-  static Future<List<Map<String, dynamic>>> getRentalsByOrder(int orderId) async =>
-      (await getDatabase()).rawQuery("SELECT rentals.*, items.name as itemName FROM rentals JOIN items ON rentals.itemId=items.id WHERE rentals.orderId=?", [orderId]);
+  static Future<List<Map<String, dynamic>>> getRentalsByOrder(int orderId) async {
+    final db = await getDatabase();
+    return db.rawQuery("SELECT rentals.*, items.name as itemName FROM rentals JOIN items ON rentals.itemId=items.id WHERE rentals.orderId=?", [orderId]);
+  }
 
   static Future<Map<String, dynamic>> getBusinessInfo() async {
-    final rows = await (await getDatabase()).query('business_info', where:'id=?', whereArgs:[1]);
+    final db = await getDatabase();
+    final rows = await db.query('business_info', where: 'id=?', whereArgs: [1]);
     if (rows.isEmpty) {
       return {
-        'name':'','phone':'','phone2':'','email':'','address':'','upiId':'','upiName':'',
-        'taxProfile':'No Tax','taxType':'none','taxRate':0.0,'taxMode':'exclusive','taxRegNo':'',
+        'name': '', 'phone': '', 'phone2': '', 'email': '', 'address': '', 'upiId': '', 'upiName': '',
+        'taxProfile': 'No Tax', 'taxType': 'none', 'taxRate': 0.0, 'taxMode': 'exclusive', 'taxRegNo': '',
       };
     }
     return rows.first;
   }
 
   static Future<void> saveBusinessInfo(
-      String name,
-      String phone,
-      String phone2,
-      String email,
-      String address,
-      String upiId,
-      String upiName, {
-        String taxProfile = 'No Tax',
-        String taxType = 'none',
-        double taxRate = 0.0,
-        String taxMode = 'exclusive',
-        String taxRegNo = '',
-      }) async =>
-      (await getDatabase()).update('business_info', {
-        'name':name,
-        'phone':phone,
-        'phone2':phone2,
-        'email':email,
-        'address':address,
-        'upiId':upiId,
-        'upiName':upiName,
-        'taxProfile':taxProfile,
-        'taxType':taxType,
-        'taxRate':taxRate,
-        'taxMode':taxMode,
-        'taxRegNo':taxRegNo,
-      }, where:'id=?', whereArgs:[1]);
+      String name, String phone, String phone2, String email, String address, String upiId, String upiName, {
+        String taxProfile = 'No Tax', String taxType = 'none', double taxRate = 0.0, String taxMode = 'exclusive', String taxRegNo = '',
+      }) async {
+    final db = await getDatabase();
+    await db.update('business_info', {
+      'name': name,
+      'phone': phone,
+      'phone2': phone2,
+      'email': email,
+      'address': address,
+      'upiId': upiId,
+      'upiName': upiName,
+      'taxProfile': taxProfile,
+      'taxType': taxType,
+      'taxRate': taxRate,
+      'taxMode': taxMode,
+      'taxRegNo': taxRegNo,
+    }, where: 'id=?', whereArgs: [1]);
+  }
 
   static Map<String, dynamic> _taxSettingsFromBiz(Map<String, dynamic> biz) {
     final typeRaw = (biz['taxType'] as String? ?? 'none').trim().toLowerCase();
@@ -1197,22 +1402,33 @@ class DatabaseHelper {
   }
 
   static int _rentalChargeDays(Map<String, dynamic> r) {
-    DateTime checkout = DateTime.now();
-    try { checkout = DateTime.parse(r['checkoutDate'] as String? ?? ''); } catch (_) {}
-    DateTime end = DateTime.now();
-    if (r['returned'] == 1 && (r['returnDate'] as String?)?.isNotEmpty == true) {
-      try { end = DateTime.parse(r['returnDate'] as String); } catch (_) {}
+    return RentalUtils.calculateChargeDays(
+      r['checkoutDate'] as String?,
+      r['returnDate'] as String?,
+      r['returned'] as int? ?? 0,
+    );
+  }
+
+  static String _getCurrencyCode(String symbol) {
+    switch (symbol) {
+      case '\$': return 'USD';
+      case '€': return 'EUR';
+      case '£': return 'GBP';
+      case '¥': return 'JPY';
+      case '฿': return 'THB';
+      default: return 'INR';
     }
-    int days = end.difference(checkout).inDays;
-    if (days < 0) days = 0;
-    return days == 0 ? 1 : days;
   }
 
   static Future<Uint8List> generatePdfProformaForOrder(int orderId, {String pageSize = 'A4'}) async {
     final db = await getDatabase();
-    final orderList = await db.query('orders', where:'id=?', whereArgs:[orderId]);
+    final orderList = await db.query('orders', where: 'id=?', whereArgs: [orderId]);
     if (orderList.isEmpty) throw Exception('Order not found');
-    final order = orderList.first; final rentals = await getRentalsByOrder(orderId); final biz = await getBusinessInfo();
+    final order = orderList.first;
+    final rentals = await getRentalsByOrder(orderId);
+    final biz = await getBusinessInfo();
+
+    final isCancelled = rentals.any((r) => (r['isCancelled'] as int? ?? 0) == 1);
     final is57mm = pageSize == '57mm';
     final format = is57mm ? const PdfPageFormat(57*PdfPageFormat.mm, 200*PdfPageFormat.mm, marginAll:4*PdfPageFormat.mm) : PdfPageFormat.a4;
     final fs = is57mm ? 8.0 : 11.0;
@@ -1224,7 +1440,14 @@ class DatabaseHelper {
     final showSigs    = appSettingsNotifier.showPdfSignatures;
 
     String s(String k) => (biz[k] as String?) ?? '';
-    final bizName=s('name'),bizPhone=s('phone'),bizPhone2=s('phone2'),bizEmail=s('email'),bizAddress=s('address'),bizUpi=s('upiId'),bizUpiName=s('upiName');
+    final bizName = s('name');
+    final bizPhone = s('phone');
+    final bizPhone2 = s('phone2');
+    final bizEmail = s('email');
+    final bizAddress = s('address');
+    final bizUpi = s('upiId');
+    final bizUpiName = s('upiName');
+
     final tax = _taxSettingsFromBiz(biz);
     final taxEnabled = tax['enabled'] == true;
     final taxLabel = (tax['label'] as String?) ?? 'Tax';
@@ -1232,80 +1455,123 @@ class DatabaseHelper {
     final taxMode = (tax['mode'] as String?) ?? 'exclusive';
     final taxRegNo = (tax['regNo'] as String?) ?? '';
     final taxRegLabel = (tax['regLabel'] as String?) ?? 'Tax Reg. No.';
-    final upiString = 'upi://pay?pa=$bizUpi&pn=${Uri.encodeComponent(bizUpiName)}&cu=INR';
+
+    final currencyCode = _getCurrencyCode(appSettingsNotifier.currencySymbol);
+    final upiString = 'upi://pay?pa=$bizUpi&pn=${Uri.encodeComponent(bizUpiName)}&cu=$currencyCode';
     final advance = rentals.fold(0.0, (sum, r) => sum + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0));
 
-    pw.TextStyle ts({double d=0, bool bold=false, bool italic=false}) => pw.TextStyle(
+    pw.TextStyle ts({double d = 0, bool bold = false, bool italic = false, PdfColor color = PdfColors.black}) => pw.TextStyle(
       fontSize: fs + d,
-      font:      bold ? fontBold : italic ? fontItalic : fontRegular,
-      fontBold:  fontBold,
-      fontItalic: fontItalic,
+      font: bold ? fontBold : italic ? fontItalic : fontRegular,
+      color: color,
     );
 
-    pw.Widget sigLine(String label) => pw.Column(crossAxisAlignment:pw.CrossAxisAlignment.center, children:[pw.Container(width:120,height:1,color:PdfColors.black),pw.SizedBox(height:4),pw.Text(label,style:ts(d:-1))]);
+    pw.Widget watermark() => pw.Center(
+      child: pw.Transform.rotate(
+        angle: 0.5,
+        child: pw.Text('CANCELLED', style: ts(d: 40, bold: true, color: PdfColors.red100)),
+      ),
+    );
+
+    pw.Widget sigLine(String label) => pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.center,
+        children: [
+          pw.Container(width: 120, height: 1, color: PdfColors.black),
+          pw.SizedBox(height: 4),
+          pw.Text(label, style: ts(d: -1))
+        ]
+    );
+
     final doc = pw.Document();
     doc.addPage(pw.MultiPage(
         pageFormat: format,
         theme: pw.ThemeData.withFont(base: fontRegular, bold: fontBold, italic: fontItalic),
-        build:(ctx) => [
-          if (bizName.isNotEmpty)    pw.Text(bizName, style:ts(d:4,bold:true)),
-          if (bizPhone.isNotEmpty || bizPhone2.isNotEmpty) pw.Text('Ph: $bizPhone${bizPhone2.isNotEmpty?' / $bizPhone2':''}', style:ts()),
-          if (bizEmail.isNotEmpty)   pw.Text(bizEmail, style:ts()),
-          if (bizAddress.isNotEmpty) pw.Text(bizAddress, style:ts()),
-          if (taxEnabled) pw.Text('$taxLabel: ${taxRate.toStringAsFixed(2)}% (${taxMode == 'inclusive' ? 'Inclusive' : 'Exclusive'})', style: ts()),
-          if (taxEnabled && taxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $taxRegNo', style: ts()),
-          if (bizUpi.isNotEmpty)     pw.Text('UPI: $bizUpi', style:ts()),
-          pw.Divider(),
-          pw.Text('PROFORMA', style:ts(d:2,bold:true)), pw.SizedBox(height:4),
-          pw.Text('Proforma #: $orderId', style:ts()),
-          pw.Text('Date: ${formatDateString(order['createdDate'] as String? ?? '')}', style:ts()),
-          pw.Divider(), pw.Text('BILL TO:', style:ts(bold:true)),
-          pw.Text('${order['customerName']??'N/A'}', style:ts()),
-          if (rentals.isNotEmpty) ...[
-            if (((rentals.first['phone'] as String?)??'').isNotEmpty)   pw.Text('Ph: ${rentals.first['phone']}', style:ts()),
-            if (((rentals.first['address'] as String?)??'').isNotEmpty) pw.Text('Site: ${rentals.first['address']}', style:ts()),
-          ],
-          pw.Divider(),
-          pw.TableHelper.fromTextArray(
-            headerStyle:ts(bold:true), cellStyle:ts(),
-            headers:['Item','Qty','Rate/Day'],
-            headerAlignments:{0:pw.Alignment.centerLeft,1:pw.Alignment.center,2:pw.Alignment.centerRight},
-            cellAlignments:{0:pw.Alignment.centerLeft,1:pw.Alignment.center,2:pw.Alignment.centerRight},
-            data:[for (final r in rentals) [r['itemName']??'',(r['qty']??0).toString(),formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))]],
-          ),
-          pw.Divider(),
-          if (advance > 0) pw.Text('Advance Paid: ${formatMoney(advance)}', style:ts()),
-          pw.Text('Note: This is a Proforma (estimated rental summary).', style:ts(d:-1, italic:true)),
-          pw.SizedBox(height:6), pw.Text('Thank you for your business!', style:ts(italic:true)),
+        build: (ctx) => [
+          pw.Stack(
+              children: [
+                if (isCancelled) pw.Positioned.fill(child: watermark()),
+                pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      if (bizName.isNotEmpty) pw.Text(bizName, style: ts(d: 4, bold: true)),
+                      if (bizPhone.isNotEmpty || bizPhone2.isNotEmpty) pw.Text('Ph: $bizPhone${bizPhone2.isNotEmpty ? ' / $bizPhone2' : ''}', style: ts()),
+                      if (bizEmail.isNotEmpty) pw.Text(bizEmail, style: ts()),
+                      if (bizAddress.isNotEmpty) pw.Text(bizAddress, style: ts()),
+                      if (taxEnabled) pw.Text('$taxLabel: ${taxRate.toStringAsFixed(2)}% (${taxMode == 'inclusive' ? 'Inclusive' : 'Exclusive'})', style: ts()),
+                      if (taxEnabled && taxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $taxRegNo', style: ts()),
+                      if (bizUpi.isNotEmpty) pw.Text('UPI: $bizUpi', style: ts()),
+                      pw.Divider(),
+                      pw.Text('PROFORMA', style: ts(d: 2, bold: true)),
+                      pw.SizedBox(height: 4),
+                      pw.Text('Proforma #: $orderId', style: ts()),
+                      pw.Text('Date: ${formatDateString(order['createdDate'] as String? ?? '')}', style: ts()),
+                      pw.Divider(),
+                      pw.Text('BILL TO:', style: ts(bold: true)),
+                      pw.Text('${order['customerName'] ?? 'N/A'}', style: ts()),
+                      if (rentals.isNotEmpty) ...[
+                        if (((rentals.first['phone'] as String?) ?? '').isNotEmpty) pw.Text('Ph: ${rentals.first['phone']}', style: ts()),
+                        if (((rentals.first['address'] as String?) ?? '').isNotEmpty) pw.Text('Site: ${rentals.first['address']}', style: ts()),
+                      ],
+                      pw.Divider(),
+                      pw.TableHelper.fromTextArray(
+                        headerStyle: ts(bold: true),
+                        cellStyle: ts(),
+                        headers: ['Item', 'Qty', 'Rate/Day'],
+                        headerAlignments: {0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight},
+                        cellAlignments: {0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight},
+                        data: [
+                          for (final r in rentals) [
+                            r['itemName'] ?? '',
+                            (r['qty'] ?? 0).toString(),
+                            formatMoney(((r['rentalRate'] as num?)?.toDouble() ?? 0.0))
+                          ]
+                        ],
+                      ),
+                      pw.Divider(),
+                      if (advance > 0) pw.Text('Advance Paid: ${formatMoney(advance)}', style: ts()),
+                      pw.Text('Note: This is a Proforma (estimated rental summary).', style: ts(d: -1, italic: true)),
+                      pw.SizedBox(height: 6),
+                      pw.Text('Thank you for your business!', style: ts(italic: true)),
 
-          if (showSigs) ...[
-            pw.SizedBox(height:40), pw.Align(alignment:pw.Alignment.center, child:sigLine('Customer Signature')),
-            pw.SizedBox(height:40), pw.Align(alignment:pw.Alignment.center, child:sigLine('Vendor Signature')),
-          ],
+                      if (showSigs) ...[
+                        pw.SizedBox(height: 40),
+                        pw.Align(alignment: pw.Alignment.center, child: sigLine('Customer Signature')),
+                        pw.SizedBox(height: 40),
+                        pw.Align(alignment: pw.Alignment.center, child: sigLine('Vendor Signature')),
+                      ],
 
-          if (bizUpi.isNotEmpty) ...[
-            pw.SizedBox(height:30),
-            pw.Center(child:pw.Column(crossAxisAlignment:pw.CrossAxisAlignment.center, children:[
-              pw.BarcodeWidget(barcode:pw.Barcode.qrCode(), data:upiString, width:70, height:70),
-              pw.SizedBox(height:6),
-              if (bizUpiName.isNotEmpty) pw.Text(bizUpiName, style:ts(bold:true)),
-              pw.Text('UPI: $bizUpi', style:ts(d:-2)),
-            ])),
-          ],
+                      if (bizUpi.isNotEmpty) ...[
+                        pw.SizedBox(height: 30),
+                        pw.Center(
+                            child: pw.Column(
+                                crossAxisAlignment: pw.CrossAxisAlignment.center,
+                                children: [
+                                  pw.BarcodeWidget(barcode: pw.Barcode.qrCode(), data: upiString, width: 70, height: 70),
+                                  pw.SizedBox(height: 6),
+                                  if (bizUpiName.isNotEmpty) pw.Text(bizUpiName, style: ts(bold: true)),
+                                  pw.Text('UPI: $bizUpi', style: ts(d: -2)),
+                                ]
+                            )
+                        ),
+                      ],
+                    ]
+                ),
+              ]
+          )
         ]));
     return doc.save();
   }
 
   static Future<Uint8List> generatePdfFinalInvoiceForOrder(int orderId, {String pageSize = 'A4'}) async {
     final db = await getDatabase();
-    final orderList = await db.query('orders', where:'id=?', whereArgs:[orderId]);
+    final orderList = await db.query('orders', where: 'id=?', whereArgs: [orderId]);
     if (orderList.isEmpty) throw Exception('Order not found');
     final order = orderList.first;
     final rentals = await getRentalsByOrder(orderId);
     if (rentals.isEmpty) throw Exception('No rentals found for order');
     final biz = await getBusinessInfo();
 
-    // Fetch logs to show itemized payments
+    final isCancelled = rentals.any((r) => (r['isCancelled'] as int? ?? 0) == 1);
     final pMap = await getPaymentLogsForGroups([RentalGroup(orderId: orderId, items: rentals)]);
     final logs = pMap.values.firstOrNull ?? [];
 
@@ -1320,18 +1586,28 @@ class DatabaseHelper {
     final showSigs    = appSettingsNotifier.showPdfSignatures;
 
     String s(String k) => (biz[k] as String?) ?? '';
-    final bizName=s('name'),bizPhone=s('phone'),bizPhone2=s('phone2'),bizEmail=s('email'),bizAddress=s('address'),bizUpi=s('upiId'),bizUpiName=s('upiName');
+    final bizName = s('name');
+    final bizPhone = s('phone');
+    final bizPhone2 = s('phone2');
+    final bizEmail = s('email');
+    final bizAddress = s('address');
+    final bizUpi = s('upiId');
+    final bizUpiName = s('upiName');
+
     final tax = _taxSettingsFromBiz(biz);
     final taxEnabled = tax['enabled'] == true;
     final taxLabel = (tax['label'] as String?) ?? 'Tax';
     final taxRegLabel = (tax['regLabel'] as String?) ?? 'Tax Reg. No.';
     final taxRegNo = (tax['regNo'] as String?) ?? '';
     final taxRate = (tax['rate'] as num?)?.toDouble() ?? 0.0;
-    final upiString = 'upi://pay?pa=$bizUpi&pn=${Uri.encodeComponent(bizUpiName)}&cu=INR';
+
+    final currencyCode = _getCurrencyCode(appSettingsNotifier.currencySymbol);
+    final upiString = 'upi://pay?pa=$bizUpi&pn=${Uri.encodeComponent(bizUpiName)}&cu=$currencyCode';
 
     double lineSubtotal = 0.0;
     final lineData = <List<String>>[];
     DateTime? finalReturnDate;
+
     for (final r in rentals) {
       final qty = r['qty'] as int? ?? 0;
       final rate = (r['rentalRate'] as num?)?.toDouble() ?? 0.0;
@@ -1379,11 +1655,17 @@ class DatabaseHelper {
       return rate * qty * days;
     }
 
-    pw.TextStyle ts({double d=0, bool bold=false, bool italic=false}) => pw.TextStyle(
+    pw.TextStyle ts({double d = 0, bool bold = false, bool italic = false, PdfColor color = PdfColors.black}) => pw.TextStyle(
       fontSize: fs + d,
       font: bold ? fontBold : italic ? fontItalic : fontRegular,
-      fontBold: fontBold,
-      fontItalic: fontItalic,
+      color: color,
+    );
+
+    pw.Widget watermark() => pw.Center(
+      child: pw.Transform.rotate(
+        angle: 0.5,
+        child: pw.Text('CANCELLED', style: ts(d: is57mm ? 30 : 60, bold: true, color: PdfColors.red100)),
+      ),
     );
 
     pw.Widget sigLine(String label) => pw.Column(
@@ -1401,10 +1683,12 @@ class DatabaseHelper {
       final rate = (r['rentalRate'] as num?)?.toDouble() ?? 0.0;
       final days = _rentalChargeDays(r);
       final amount = lineTotalOf(r);
+
       pw.Widget cell(String text, {bool bold = false, pw.TextAlign align = pw.TextAlign.left}) => pw.Padding(
         padding: const pw.EdgeInsets.symmetric(horizontal: 2, vertical: 2),
         child: pw.Text(text, style: ts(d: -1, bold: bold), textAlign: align),
       );
+
       return pw.Container(
         padding: const pw.EdgeInsets.symmetric(vertical: 2),
         child: pw.Column(
@@ -1454,138 +1738,155 @@ class DatabaseHelper {
     doc.addPage(pw.MultiPage(
       pageFormat: format,
       theme: pw.ThemeData.withFont(base: fontRegular, bold: fontBold, italic: fontItalic),
-      build:(ctx) => [
-        if (bizName.isNotEmpty)    pw.Text(bizName, style:ts(d:4,bold:true)),
-        if (bizPhone.isNotEmpty || bizPhone2.isNotEmpty) pw.Text('Ph: $bizPhone${bizPhone2.isNotEmpty?' / $bizPhone2':''}', style:ts()),
-        if (bizEmail.isNotEmpty)   pw.Text(bizEmail, style:ts()),
-        if (bizAddress.isNotEmpty) pw.Text(bizAddress, style:ts()),
-        if (taxEnabled && taxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $taxRegNo', style: ts()),
-        if (bizUpi.isNotEmpty)     pw.Text('UPI: $bizUpi', style:ts()),
-        pw.Divider(),
-        pw.Text('FINAL INVOICE', style:ts(d:2,bold:true)),
-        pw.SizedBox(height:4),
-        pw.Text('Invoice #: $orderId', style:ts()),
-        pw.Text('Order Date: ${formatDateString(order['createdDate'] as String? ?? '')}', style:ts()),
-        pw.Text('Final Return Date: $finalReturnText', style:ts()),
-        pw.Divider(),
-        pw.Text('BILL TO:', style:ts(bold:true)),
-        pw.Text('${order['customerName'] ?? 'N/A'}', style:ts()),
-        if (rentals.isNotEmpty) ...[
-          if (((rentals.first['phone'] as String?) ?? '').isNotEmpty)   pw.Text('Ph: ${rentals.first['phone']}', style:ts()),
-          if (((rentals.first['address'] as String?) ?? '').isNotEmpty) pw.Text('Site: ${rentals.first['address']}', style:ts()),
-        ],
-        pw.Divider(),
-        if (is57mm) ...[
-          for (final r in rentals) ...[
-            thermalItemRow(r),
-            pw.Divider(height: 4),
-          ],
-        ] else ...[
-          pw.TableHelper.fromTextArray(
-            headerStyle:ts(bold:true),
-            cellStyle:ts(d:-1),
-            headers:['Item','Qty','Rate/Day','Days','Line Total'],
-            headerAlignments:{
-              0:pw.Alignment.centerLeft,1:pw.Alignment.center,2:pw.Alignment.centerRight,3:pw.Alignment.center,4:pw.Alignment.centerRight
-            },
-            cellAlignments:{
-              0:pw.Alignment.centerLeft,1:pw.Alignment.center,2:pw.Alignment.centerRight,3:pw.Alignment.center,4:pw.Alignment.centerRight
-            },
-            data: lineData,
-          ),
-        ],
-        pw.Divider(),
-        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text(is57mm ? 'Subtotal:' : 'Subtotal:', style: ts(bold:true)),
-          pw.Text(formatMoney(taxableBase, decimals: is57mm ? 0 : 2), style: ts(bold:true)),
-        ]),
-        if (taxEnabled) pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text('$taxLabel ${taxRate.toStringAsFixed(2)}%:', style: ts()),
-          pw.Text(formatMoney(taxAmount, decimals: is57mm ? 0 : 2), style: ts()),
-        ]),
-        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text(is57mm ? 'Total:' : 'Total (Incl. Tax):', style: ts(bold:true)),
-          pw.Text(formatMoney(grandTotal, decimals: is57mm ? 0 : 2), style: ts(bold:true)),
-        ]),
+      build: (ctx) => [
+        pw.Stack(
+            children: [
+              if (isCancelled) pw.Positioned.fill(child: watermark()),
+              pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    if (bizName.isNotEmpty) pw.Text(bizName, style: ts(d: 4, bold: true)),
+                    if (bizPhone.isNotEmpty || bizPhone2.isNotEmpty) pw.Text('Ph: $bizPhone${bizPhone2.isNotEmpty ? ' / $bizPhone2' : ''}', style: ts()),
+                    if (bizEmail.isNotEmpty) pw.Text(bizEmail, style: ts()),
+                    if (bizAddress.isNotEmpty) pw.Text(bizAddress, style: ts()),
+                    if (taxEnabled && taxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $taxRegNo', style: ts()),
+                    if (bizUpi.isNotEmpty) pw.Text('UPI: $bizUpi', style: ts()),
+                    pw.Divider(),
+                    pw.Text('FINAL INVOICE', style: ts(d: 2, bold: true)),
+                    pw.SizedBox(height: 4),
+                    pw.Text('Invoice #: $orderId', style: ts()),
+                    pw.Text('Order Date: ${formatDateString(order['createdDate'] as String? ?? '')}', style: ts()),
+                    pw.Text('Final Return Date: $finalReturnText', style: ts()),
+                    pw.Divider(),
+                    pw.Text('BILL TO:', style: ts(bold: true)),
+                    pw.Text('${order['customerName'] ?? 'N/A'}', style: ts()),
+                    if (rentals.isNotEmpty) ...[
+                      if (((rentals.first['phone'] as String?) ?? '').isNotEmpty) pw.Text('Ph: ${rentals.first['phone']}', style: ts()),
+                      if (((rentals.first['address'] as String?) ?? '').isNotEmpty) pw.Text('Site: ${rentals.first['address']}', style: ts()),
+                    ],
+                    pw.Divider(),
+                    if (is57mm) ...[
+                      for (final r in rentals) ...[
+                        thermalItemRow(r),
+                        pw.Divider(height: 4),
+                      ],
+                    ] else ...[
+                      pw.TableHelper.fromTextArray(
+                        headerStyle: ts(bold: true),
+                        cellStyle: ts(d: -1),
+                        headers: ['Item', 'Qty', 'Rate/Day', 'Days', 'Line Total'],
+                        headerAlignments: {
+                          0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight, 3: pw.Alignment.center, 4: pw.Alignment.centerRight
+                        },
+                        cellAlignments: {
+                          0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight, 3: pw.Alignment.center, 4: pw.Alignment.centerRight
+                        },
+                        data: lineData,
+                      ),
+                    ],
+                    pw.Divider(),
+                    pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+                      pw.Text(is57mm ? 'Subtotal:' : 'Subtotal:', style: ts(bold: true)),
+                      pw.Text(formatMoney(taxableBase, decimals: is57mm ? 0 : 2), style: ts(bold: true)),
+                    ]),
+                    if (taxEnabled) pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+                      pw.Text('$taxLabel ${taxRate.toStringAsFixed(2)}%:', style: ts()),
+                      pw.Text(formatMoney(taxAmount, decimals: is57mm ? 0 : 2), style: ts()),
+                    ]),
+                    pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+                      pw.Text(is57mm ? 'Total:' : 'Total (Incl. Tax):', style: ts(bold: true)),
+                      pw.Text(formatMoney(grandTotal, decimals: is57mm ? 0 : 2), style: ts(bold: true)),
+                    ]),
 
-        // --- NEW: Discount Section ---
-        if (discount > 0) pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text('Discount:', style: ts()),
-          pw.Text('- ${formatMoney(discount, decimals: is57mm ? 0 : 2)}', style: ts()),
-        ]),
+                    if (discount > 0) pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+                      pw.Text('Discount:', style: ts()),
+                      pw.Text('- ${formatMoney(discount, decimals: is57mm ? 0 : 2)}', style: ts()),
+                    ]),
 
-// --- NEW: Itemized Payments Section ---
-        if (logs.isNotEmpty) ...[
-          // First payment is listed as Advance
-          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-            pw.Text(is57mm ? 'Advance:' : 'Advance Paid:', style: ts()),
-            pw.Text('- ${formatMoney(logs.first['amount'] as double, decimals: is57mm ? 0 : 2)}', style: ts()),
-          ]),
-          // Subsequent payments and refunds
-          for (int i = 1; i < logs.length; i++)
-            pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-              pw.Text((logs[i]['amount'] as num) < 0
-                  ? 'Refunded ${((logs[i]['method'] as String?) ?? '').isEmpty ? '' : logs[i]['method']}:'
-                  : 'Paid ${((logs[i]['method'] as String?) ?? '').isEmpty ? 'Payment' : logs[i]['method']}:', style: ts()),
-              pw.Text(((logs[i]['amount'] as num) < 0 ? '+ ' : '- ') + formatMoney((logs[i]['amount'] as num).abs(), decimals: is57mm ? 0 : 2), style: ts()),
-            ]),
-        ] else if (totalPaid > 0) ...[
-          // Fallback for old records
-          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-            pw.Text(is57mm ? 'Advance:' : 'Advance Paid:', style: ts()),
-            pw.Text('- ${formatMoney(totalPaid, decimals: is57mm ? 0 : 2)}', style: ts()),
-          ]),
-        ],
+                    if (logs.isNotEmpty) ...[
+                      pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+                        pw.Text(is57mm ? 'Advance:' : 'Advance Paid:', style: ts()),
+                        pw.Text('- ${formatMoney(logs.first['amount'] as double, decimals: is57mm ? 0 : 2)}', style: ts()),
+                      ]),
+                      for (int i = 1; i < logs.length; i++)
+                        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+                          pw.Text((logs[i]['amount'] as num) < 0
+                              ? 'Refunded ${((logs[i]['method'] as String?) ?? '').isEmpty ? '' : logs[i]['method']}:'
+                              : 'Paid ${((logs[i]['method'] as String?) ?? '').isEmpty ? 'Payment' : logs[i]['method']}:', style: ts()),
+                          pw.Text(((logs[i]['amount'] as num) < 0 ? '+ ' : '- ') + formatMoney((logs[i]['amount'] as num).abs(), decimals: is57mm ? 0 : 2), style: ts()),
+                        ]),
+                    ] else if (totalPaid > 0) ...[
+                      pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+                        pw.Text(is57mm ? 'Advance:' : 'Advance Paid:', style: ts()),
+                        pw.Text('- ${formatMoney(totalPaid, decimals: is57mm ? 0 : 2)}', style: ts()),
+                      ]),
+                    ],
 
-        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text(balance > 0 ? (is57mm ? 'Due:' : 'Balance Due:') : balance < 0 ? (is57mm ? 'Refund:' : 'Refund Due:') : 'Balance:', style: ts(bold:true)),
-          pw.Text(formatMoney(balance.abs(), decimals: is57mm ? 0 : 2), style: ts(bold:true)),
-        ]),
-        pw.Text(isSettled ? 'Payment Status: Settled' : 'Payment Status: Pending', style: ts()),
+                    pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+                      pw.Text(balance > 0 ? (is57mm ? 'Due:' : 'Balance Due:') : balance < 0 ? (is57mm ? 'Refund:' : 'Refund Due:') : 'Balance:', style: ts(bold: true)),
+                      pw.Text(formatMoney(balance.abs(), decimals: is57mm ? 0 : 2), style: ts(bold: true)),
+                    ]),
+                    pw.Text(isSettled ? 'Payment Status: Settled' : 'Payment Status: Pending', style: ts()),
 
-        if (showSigs) ...[
-          pw.SizedBox(height: is57mm ? 18 : 30),
-          pw.Align(alignment: pw.Alignment.center, child: sigLine('Customer Signature')),
-          pw.SizedBox(height: is57mm ? 18 : 30),
-          pw.Align(alignment: pw.Alignment.center, child: sigLine('Vendor Signature')),
-        ],
+                    if (showSigs) ...[
+                      pw.SizedBox(height: is57mm ? 18 : 30),
+                      pw.Align(alignment: pw.Alignment.center, child: sigLine('Customer Signature')),
+                      pw.SizedBox(height: is57mm ? 18 : 30),
+                      pw.Align(alignment: pw.Alignment.center, child: sigLine('Vendor Signature')),
+                    ],
 
-        pw.SizedBox(height:8),
-        pw.Text('This is the final invoice based on actual return dates.', style:ts(d:-1, italic:true)),
-        if (bizUpi.isNotEmpty) ...[
-          pw.SizedBox(height:20),
-          pw.Center(child:pw.Column(crossAxisAlignment:pw.CrossAxisAlignment.center, children:[
-            pw.BarcodeWidget(barcode:pw.Barcode.qrCode(), data:upiString, width:70, height:70),
-            pw.SizedBox(height:6),
-            if (bizUpiName.isNotEmpty) pw.Text(bizUpiName, style:ts(bold:true)),
-            pw.Text('UPI: $bizUpi', style:ts(d:-2)),
-          ])),
-        ],
+                    pw.SizedBox(height: 8),
+                    pw.Text('This is the final invoice based on actual return dates.', style: ts(d: -1, italic: true)),
+                    if (bizUpi.isNotEmpty) ...[
+                      pw.SizedBox(height: 20),
+                      pw.Center(
+                          child: pw.Column(
+                              crossAxisAlignment: pw.CrossAxisAlignment.center,
+                              children: [
+                                pw.BarcodeWidget(barcode: pw.Barcode.qrCode(), data: upiString, width: 70, height: 70),
+                                pw.SizedBox(height: 6),
+                                if (bizUpiName.isNotEmpty) pw.Text(bizUpiName, style: ts(bold: true)),
+                                pw.Text('UPI: $bizUpi', style: ts(d: -2)),
+                              ]
+                          )
+                      ),
+                    ],
+                  ]
+              )
+            ]
+        )
       ],
     ));
     return doc.save();
   }
 
-  static Future<Uint8List> generatePdfInvoiceForOrder(int orderId, {String pageSize = 'A4'}) =>
-      generatePdfFinalInvoiceForOrder(orderId, pageSize: pageSize);
-
   static Future<String> exportBackup() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
       final bytes = await File('${dir.path}/siteyard_v3.db').readAsBytes();
-      final path  = await FilePicker.platform.saveFile(dialogTitle:'Save Database Backup', fileName:'siteyard_backup.db', type:FileType.any, bytes:bytes);
+      final path = await FilePicker.platform.saveFile(
+          dialogTitle: 'Save Database Backup',
+          fileName: 'siteyard_backup.db',
+          type: FileType.any,
+          bytes: bytes
+      );
       return path == null ? 'Backup cancelled' : 'Backup saved successfully!';
-    } catch (e) { return 'Backup failed: $e'; }
+    } catch (e) {
+      return 'Backup failed: $e';
+    }
   }
 
   static Future<String> importBackup() async {
     try {
       final result = await FilePicker.platform.pickFiles();
       if (result == null) return 'No file selected';
+      await closeDatabase();
       final dir = await getApplicationDocumentsDirectory();
       await File(result.files.single.path!).copy('${dir.path}/siteyard_v3.db');
       return 'Restored successfully. Please restart the app.';
-    } catch (e) { return 'Restore failed: $e'; }
+    } catch (e) {
+      return 'Restore failed: $e';
+    }
   }
 }
 
@@ -1600,6 +1901,7 @@ class RentalGroup {
   bool get isGroup         => orderId != null;
   bool get isFullyReturned => items.every((r) => r['returned'] == 1);
   bool get isSettled       => items.every((r) => r['isSettled'] == 1);
+  bool get isCancelled     => items.any((r) => (r['isCancelled'] as int? ?? 0) == 1);
   String get contractor    => items.first['contractor']    as String? ?? '';
   String get phone         => items.first['phone']         as String? ?? '';
   String get address       => items.first['address']       as String? ?? '';
@@ -1616,19 +1918,17 @@ class RentalGroup {
   double get balance => calculateTotalCost() - advance - discount - badDebt;
 
   double calculateTotalCost() {
+    if (isCancelled) return 0.0;
     double total = 0.0;
     for (final r in items) {
       final qty  = r['qty']  as int? ?? 0;
       final rate = (r['rentalRate'] as num?)?.toDouble() ?? 0.0;
-      DateTime checkout = DateTime.now();
-      try { checkout = DateTime.parse(r['checkoutDate'] as String? ?? ''); } catch (_) {}
-      DateTime end = DateTime.now();
-      if (r['returned'] == 1 && (r['returnDate'] as String?)?.isNotEmpty == true) {
-        try { end = DateTime.parse(r['returnDate'] as String); } catch (_) {}
-      }
-      int days = end.difference(checkout).inDays;
-      if (days < 0) days = 0;
-      total += rate * (days == 0 ? 1 : days) * qty;
+      final days = RentalUtils.calculateChargeDays(
+        r['checkoutDate'] as String?,
+        r['returnDate'] as String?,
+        r['returned'] as int? ?? 0,
+      );
+      total += rate * days * qty;
     }
     return total;
   }
@@ -1645,6 +1945,314 @@ List<RentalGroup> groupRentalsByInvoice(List<Map<String, dynamic>> rawData) {
   for (final e in orderMap.entries) { groups.add(RentalGroup(orderId: e.key, items: e.value)); }
   groups.sort((a, b) => b.checkoutDate.compareTo(a.checkoutDate));
   return groups;
+}
+
+// NEW CODE
+// =================================================
+// Universal Rental Card
+// =================================================
+class UniversalRentalCard extends StatelessWidget {
+  final RentalGroup group;
+  final List<Map<String, dynamic>>? paymentLogs;
+  final bool showCustomerName;
+  final VoidCallback? onEdit;
+  final VoidCallback? onReturn;
+  final VoidCallback? onSettle;
+  final VoidCallback? onPdf;
+  final VoidCallback? onCancel;
+  final VoidCallback? onDelete;
+  final VoidCallback? onViewPayments;
+
+  const UniversalRentalCard({
+    super.key,
+    required this.group,
+    this.paymentLogs,
+    this.showCustomerName = true,
+    this.onEdit,
+    this.onReturn,
+    this.onSettle,
+    this.onPdf,
+    this.onCancel,
+    this.onDelete,
+    this.onViewPayments,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = AppProvider.of(context);
+    final compact = settings.cardDensity == 'compact';
+    final dividerHeight = compact ? 10.0 : 16.0;
+
+    DateTime checkoutDt;
+    try {
+      checkoutDt = DateTime.parse(group.checkoutDate);
+    } catch (_) {
+      checkoutDt = DateTime.now();
+    }
+
+    final dayCount = DateTime.now().difference(checkoutDt).inDays;
+    final isOverdue = !group.isFullyReturned && dayCount > settings.overdueDays;
+    final totalCost = group.calculateTotalCost();
+    final balance = group.balance;
+
+    double initialAdvance = 0.0;
+    double laterPaid = 0.0;
+    if (group.isFullyReturned) {
+      final payments = paymentLogs ?? const <Map<String, dynamic>>[];
+      if (payments.isNotEmpty) {
+        initialAdvance = (payments.first['amount'] as num?)?.toDouble() ?? 0.0;
+        for (int j = 1; j < payments.length; j++) {
+          laterPaid += (payments[j]['amount'] as num?)?.toDouble() ?? 0.0;
+        }
+      } else {
+        initialAdvance = group.advance;
+      }
+    }
+
+    return Card(
+      margin: EdgeInsets.only(bottom: compact ? 8 : 10),
+      clipBehavior: Clip.antiAlias,
+      child: Container(
+        decoration: isOverdue
+            ? const BoxDecoration(border: Border(left: BorderSide(color: Colors.orange, width: 4)))
+            : null,
+        child: Padding(
+          padding: settings.cardPadding,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  if (isOverdue)
+                    Padding(
+                      padding: EdgeInsets.only(right: compact ? 4 : 6),
+                      child: Icon(Icons.warning_amber_rounded, color: Colors.orange, size: compact ? 16 : 18),
+                    ),
+                  Expanded(
+                    child: showCustomerName
+                        ? Text.rich(
+                      TextSpan(children: [
+                        TextSpan(text: group.contractor, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                        if (group.phone.isNotEmpty)
+                          TextSpan(
+                            text: '  | Ph# ${group.phone}${group.phone2.isNotEmpty ? ' / ${group.phone2}' : ''}',
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.normal, color: Theme.of(context).textTheme.bodySmall?.color),
+                          ),
+                      ]),
+                      overflow: TextOverflow.ellipsis,
+                    )
+                        : Text(
+                      group.orderId != null ? 'Invoice #${group.orderId}' : (group.isFullyReturned ? 'Settled Rental' : 'Active Rental'),
+                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  if (group.isCancelled)
+                    Container(
+                      margin: const EdgeInsets.only(left: 6),
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
+                      child: const Text('CANCELLED', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                    )
+                  else if (group.isFullyReturned && group.isSettled)
+                    Container(
+                      margin: const EdgeInsets.only(left: 6),
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
+                      child: const Text('PAID', style: TextStyle(color: Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                    ),
+                  if (group.badDebt > 0 && !showCustomerName) Container(
+                    margin: const EdgeInsets.only(left: 6), padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
+                    child: const Text('BAD DEBT', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                  ),
+                  SizedBox(
+                    width: 32,
+                    child: PopupMenuButton<String>(
+                      tooltip: 'Options',
+                      onSelected: (val) {
+                        if (val == 'edit') onEdit?.call();
+                        if (val == 'cancel') onCancel?.call();
+                        if (val == 'delete') onDelete?.call();
+                        if (val == 'pdf' && group.orderId != null) onPdf?.call();
+                      },
+                      itemBuilder: (_) => [
+                        if (onEdit != null)
+                          const PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit_outlined, size: 18), SizedBox(width: 8), Text('Edit')])),
+                        if (onPdf != null && group.orderId != null)
+                          const PopupMenuItem(value: 'pdf', child: Row(children: [Icon(Icons.picture_as_pdf_outlined, size: 18, color: Colors.amber), SizedBox(width: 8), Text('Final Invoice', style: TextStyle(color: Colors.amber))])),
+                        if (onCancel != null && !group.isCancelled)
+                          const PopupMenuItem(value: 'cancel', child: Row(children: [Icon(Icons.cancel_outlined, size: 18, color: Colors.orange), SizedBox(width: 8), Text('Cancel Invoice', style: TextStyle(color: Colors.orange))])),
+                        if (onDelete != null)
+                          const PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 8), Text('Delete Record', style: TextStyle(color: Colors.red))])),
+                      ],
+                      child: const Align(alignment: Alignment.centerRight, child: Icon(Icons.more_vert, size: 20)),
+                    ),
+                  ),
+                ],
+              ),
+              if (group.address.isNotEmpty)
+                Padding(
+                  padding: EdgeInsets.only(top: compact ? 1 : 2),
+                  child: Text('Site: ${group.address}', style: TextStyle(fontSize: 13, color: Theme.of(context).textTheme.bodySmall?.color)),
+                ),
+              Padding(
+                padding: EdgeInsets.only(top: compact ? 1 : 2),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text.rich(
+                        TextSpan(
+                          style: const TextStyle(fontSize: 12),
+                          children: [
+                            if (group.orderId != null && showCustomerName) ...[
+                              TextSpan(text: 'Invoice #${group.orderId}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
+                              const TextSpan(text: '  |  '),
+                            ],
+                            TextSpan(text: 'Checkout: ${DatabaseHelper.formatDateString(group.checkoutDate)}'),
+                            if (!group.isFullyReturned) ...[
+                              const TextSpan(text: '  |  '),
+                              TextSpan(
+                                text: '$dayCount days',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  color: isOverdue ? Colors.orange : Colors.blue,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Divider(height: dividerHeight),
+              ...group.items.map((r) {
+                final isRet = r['returned'] == 1;
+                return Padding(
+                  padding: EdgeInsets.symmetric(vertical: compact ? 2 : 4),
+                  child: Row(
+                    children: [
+                      Icon(
+                        isRet ? Icons.check_circle : Icons.radio_button_checked,
+                        size: compact ? 14 : 16,
+                        color: isRet ? Colors.green : Colors.redAccent,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble() ?? 0.0))}/day',
+                          style: TextStyle(fontSize: 13, color: isRet ? Colors.grey : null),
+                        ),
+                      ),
+                      if (isRet)
+                        Text(
+                          DatabaseHelper.formatDateString(r['returnDate'] as String?),
+                          style: const TextStyle(color: Colors.green, fontSize: 11),
+                        ),
+                    ],
+                  ),
+                );
+              }),
+              if (group.notes.isNotEmpty)
+                Padding(
+                  padding: EdgeInsets.only(top: compact ? 2 : 4),
+                  child: Text('Note: ${group.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12)),
+                ),
+              Divider(height: dividerHeight),
+              if (!group.isFullyReturned) ...[
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Live Cost: ${formatMoney(totalCost)}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                          Row(children: [Text('Advance: ${formatMoney(group.advance)}'), _PaymentLabel(group.paymentMethod)]),
+                          Text('Balance: ${formatMoney(balance)}', style: TextStyle(color: balance > 0 ? Colors.orangeAccent : Colors.greenAccent, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                    if (onReturn != null)
+                      ElevatedButton.icon(
+                        icon: Icon(Icons.check_circle_outline, size: compact ? 16 : 18),
+                        label: const Text('Return Items'),
+                        style: ElevatedButton.styleFrom(
+                          padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 14, vertical: compact ? 8 : 10),
+                          minimumSize: Size(0, compact ? 32 : 38),
+                        ),
+                        onPressed: onReturn,
+                      ),
+                  ],
+                ),
+              ] else ...[
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Total Billed: ${formatMoney(totalCost)}', style: TextStyle(decoration: group.isCancelled ? TextDecoration.lineThrough : null)),
+                          Text('Advance: ${formatMoney(initialAdvance)}'),
+                          if (laterPaid != 0) Text('Payment(s): ${formatMoney(laterPaid)}'),
+                          if (group.discount != 0) Text('Discount: ${formatMoney(group.discount)}'),
+                          if (group.badDebt != 0) Text('Written Off: ${formatMoney(group.badDebt)}', style: const TextStyle(color: Colors.redAccent)),
+                          const SizedBox(height: 4),
+                          Text(
+                            group.isSettled ? 'Settled: Balance Cleared' : 'Final Balance: ${formatMoney(balance)}',
+                            style: TextStyle(color: group.isSettled ? Colors.grey : (balance > 0 ? Colors.orange : Colors.green), fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        if (onViewPayments != null)
+                          SizedBox(
+                            width: 32,
+                            child: Tooltip(
+                              message: 'View Payments',
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(6),
+                                onTap: onViewPayments,
+                                child: const Align(
+                                  alignment: Alignment.centerRight,
+                                  child: Icon(Icons.receipt_long, color: Colors.amber, size: 20),
+                                ),
+                              ),
+                            ),
+                          ),
+                        if (!group.isSettled && onSettle != null) ...[
+                          const SizedBox(height: 8),
+                          ElevatedButton.icon(
+                            icon: Icon(balance < 0 ? Icons.undo : Icons.payment, size: 16),
+                            label: Text(compact ? 'Settle' : (balance < 0 ? 'Record Refund' : 'Record Payment')),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: balance < 0 ? Colors.green.withValues(alpha: 0.2) : Colors.orange.withValues(alpha: 0.2),
+                              foregroundColor: balance < 0 ? Colors.greenAccent : Colors.orangeAccent,
+                              padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 14, vertical: compact ? 8 : 10),
+                              minimumSize: Size(0, compact ? 32 : 38),
+                              visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
+                            ),
+                            onPressed: onSettle,
+                          ),
+                        ],
+                      ],
+                    )
+                  ],
+                ),
+              ]
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 // =================================================
@@ -1744,41 +2352,127 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<Map<String, dynamic>> _topCustomers = [];
   double _pendingCollections = 0.0;
   bool _loading = true;
+  String? _error; // Added robust error boundary state
 
   @override
   void initState() { super.initState(); _load(); }
 
   Future<void> _load() async {
-    final overdueDays = appSettingsNotifier.overdueDays;
-    final stats   = await DatabaseHelper.getDashboardStats(overdueDays: overdueDays);
-    final pending = await DatabaseHelper.getPendingCollectionsTotal();
-    final topCust = await DatabaseHelper.getTopCustomersByRevenue(limit: 5);
-    final cutoff  = DateTime.now().subtract(Duration(days: overdueDays));
-    final db      = await DatabaseHelper.getDatabase();
-    final active  = await db.rawQuery("SELECT rentals.*, items.name as itemName FROM rentals JOIN items ON rentals.itemId=items.id WHERE rentals.returned=0 OR rentals.returned IS NULL");
-    final overdue = active.where((r) { try { return DateTime.parse(r['checkoutDate'] as String? ?? '').isBefore(cutoff); } catch (_) { return false; } }).toList();
     if (!mounted) return;
-    setState(() {
-      _stats = stats;
-      _pendingCollections = pending;
-      _topCustomers = topCust;
-      _overdueRentals = overdue;
-      _loading = false;
-    });
+    setState(() { _loading = true; _error = null; });
+
+    try {
+      final overdueDays = appSettingsNotifier.overdueDays;
+
+      // Core consolidation: Fetch rentals ONCE to serve all dashboard metrics.
+      final allRentals = await DatabaseHelper.getAllRentals();
+      final allGroups  = groupRentalsByInvoice(allRentals);
+
+      // Calculate Pending Collections natively
+      final pending = allGroups
+          .where((g) => g.isFullyReturned && !g.isSettled && g.balance > 0)
+          .fold<double>(0.0, (sum, g) => sum + g.balance);
+
+      // Calculate Top Customers natively
+      final totals = <String, double>{};
+      final invoices = <String, int>{};
+      for (final g in allGroups) {
+        final name = g.contractor.trim();
+        if (name.isEmpty) continue;
+        totals[name] = (totals[name] ?? 0.0) + g.calculateTotalCost();
+        invoices[name] = (invoices[name] ?? 0) + 1;
+      }
+
+      final topCustRows = totals.entries
+          .map((e) => <String, dynamic>{
+        'name': e.key,
+        'revenue': e.value,
+        'invoices': invoices[e.key] ?? 0,
+      })
+          .toList();
+      topCustRows.sort((a, b) => (b['revenue'] as double).compareTo(a['revenue'] as double));
+      final topCust = topCustRows.length > 5 ? topCustRows.take(5).toList() : topCustRows;
+
+      // Filter Overdue natively
+      final cutoff  = DateTime.now().subtract(Duration(days: overdueDays));
+      final active  = allRentals.where((r) => r['returned'] == 0 || r['returned'] == null).toList();
+      final overdue = active.where((r) {
+        try { return DateTime.parse(r['checkoutDate'] as String? ?? '').isBefore(cutoff); } catch (_) { return false; }
+      }).toList();
+
+      // Stats call remains distinct as it counts discrete rows and item aggregates quickly
+      final stats   = await DatabaseHelper.getDashboardStats(overdueDays: overdueDays);
+
+      if (!mounted) return;
+      setState(() {
+        _stats = stats;
+        _pendingCollections = pending;
+        _topCustomers = topCust;
+        _overdueRentals = overdue;
+        _loading = false;
+      });
+    } catch (e, st) {
+      debugPrint('Dashboard load error: $e\n$st');
+      if (!mounted) return;
+      setState(() {
+        _error = 'Failed to load dashboard data.\nPlease try again.';
+        _loading = false;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator());
-    final overdueDays = appSettingsNotifier.overdueDays;
-    final showTopCustomers = appSettingsNotifier.showTopCustomersByRevenue;
+
+    // Safety Net: Handle Uncaught Load Errors Cleanly
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
+              const SizedBox(height: 16),
+              Text(_error!, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16)),
+              const SizedBox(height: 24),
+              ElevatedButton.icon(
+                onPressed: _load,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Now safely consuming settings from the InheritedNotifier context
+    final settings = AppProvider.of(context);
+    final overdueDays = settings.overdueDays;
+    final showTopCustomers = settings.showTopCustomersByRevenue;
+
     return RefreshIndicator(onRefresh: _load, child: ListView(padding: const EdgeInsets.all(16), children: [
-      GridView.count(crossAxisCount:2, shrinkWrap:true, physics:const NeverScrollableScrollPhysics(), crossAxisSpacing:12, mainAxisSpacing:12, childAspectRatio:1.6, children: [
-        _StatCard(label:'Total Items',    value:'${_stats['items']}',         icon:Icons.inventory_2,  color:Colors.blue),
-        _StatCard(label:'Active Lines',   value:'${_stats['activeRentals']}', icon:Icons.handshake,    color:Colors.orange),
-        _StatCard(label:'Customers',      value:'${_stats['customers']}',     icon:Icons.people,       color:Colors.purple),
-        _StatCard(label:'Returned Lines', value:'${_stats['returned']}',      icon:Icons.check_circle, color:Colors.green),
-      ]),
+      Column(
+        children: [
+          Row(
+            children: [
+              Expanded(child: _StatCard(label:'Total Items',    value:'${_stats['items']}',         icon:Icons.inventory_2,  color:Colors.blue)),
+              const SizedBox(width: 12),
+              Expanded(child: _StatCard(label:'Active Lines',   value:'${_stats['activeRentals']}', icon:Icons.handshake,    color:Colors.orange)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _StatCard(label:'Customers',      value:'${_stats['customers']}',     icon:Icons.people,       color:Colors.purple)),
+              const SizedBox(width: 12),
+              Expanded(child: _StatCard(label:'Returned Lines', value:'${_stats['returned']}',      icon:Icons.check_circle, color:Colors.green)),
+            ],
+          ),
+        ],
+      ),
       const SizedBox(height: 14),
       Card(
         child: ListTile(
@@ -1851,11 +2545,14 @@ class _StatCard extends StatelessWidget {
   const _StatCard({required this.label, required this.value, required this.icon, required this.color});
   @override
   Widget build(BuildContext context) => Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(
-    crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween,
-    children: [Icon(icon, color: color, size: 28), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-      Text(label, style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
-    ])],
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Icon(icon, color: color, size: 28),
+      const SizedBox(height: 12),
+      Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
+      Text(label, style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color), maxLines: 1, overflow: TextOverflow.ellipsis),
+    ],
   )));
 }
 
@@ -2029,7 +2726,10 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
 
   Future<void> _load() async {
     final all = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
-    final pending = all.where((g) => g.isFullyReturned && !g.isSettled && g.balance != 0).toList();
+    final pending = all.where((g) {
+      final isReturnedOrCancelled = g.isFullyReturned || g.isCancelled;
+      return isReturnedOrCancelled && !g.isSettled && g.balance != 0;
+    }).toList();
     if (!mounted) return;
     setState(() { _allPending = pending; _applyFilter(); });
   }
@@ -2078,8 +2778,7 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
     final amount = double.parse(result['amount']!);
     final method = result['method']!;
     final discount = double.parse(result['discount']!);
-
-final isBadDebt = result['isBadDebt'] == 'true';
+    final isBadDebt = result['isBadDebt'] == 'true';
     final isFull = (amount + discount) >= absBalance - 0.01;
     final adjustedAmount = isRefund ? -amount : amount;
 
@@ -2191,32 +2890,40 @@ final isBadDebt = result['isBadDebt'] == 'true';
         itemCount: _ledger.length,
         itemBuilder: (_, i) {
           final g = _ledger[i];
+          final isRefund = g.balance < 0;
           return Card(
             margin: const EdgeInsets.only(bottom: 12),
-            shape: RoundedRectangleBorder(side: BorderSide(color: g.balance < 0 ? Colors.green : Colors.orange), borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(side: BorderSide(color: isRefund ? Colors.green : Colors.orange), borderRadius: BorderRadius.circular(12)),
             child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Expanded(child: Text(g.contractor, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18))),
-                if (g.orderId != null) Text('INV #${g.orderId}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
+                Expanded(child: Text(g.contractor, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18), overflow: TextOverflow.ellipsis)),
+                if (g.orderId != null) Text('INV #${g.orderId}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontWeight: FontWeight.w500)),
               ]),
-              const SizedBox(height: 8),
-              Text('Out: ${DatabaseHelper.formatDateString(g.checkoutDate)}'),
-              const Divider(),
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Billed:'), Text(formatMoney(g.calculateTotalCost()))]),
+              const SizedBox(height: 6),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Text('Out: ${DatabaseHelper.formatDateString(g.checkoutDate)}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 13)),
+                if (g.isCancelled) Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6), border: Border.all(color: Colors.red.withValues(alpha: 0.5), width: 0.8)),
+                  child: const Text('CANCELLED INVOICE', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                ),
+              ]),
+              const Divider(height: 20),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Billed:'), Text(formatMoney(g.calculateTotalCost()), style: TextStyle(decoration: g.isCancelled ? TextDecoration.lineThrough : null))]),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Paid:'), Text('- ${formatMoney(g.advance)}')]),
               if (g.discount > 0) Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Discount Applied:'), Text('- ${formatMoney(g.discount)}')]),
               const SizedBox(height: 4),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text(g.balance < 0 ? 'Refund Due:' : 'Amount Due:', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                Text(formatMoney(g.balance, absolute: true), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: g.balance < 0 ? Colors.green : Colors.orange)),
+                Text(isRefund ? 'Refund Due:' : 'Amount Due:', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                Text(formatMoney(g.balance, absolute: true), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: isRefund ? Colors.green : Colors.orange)),
               ]),
               const SizedBox(height: 16),
               SizedBox(width: double.infinity, child: ElevatedButton.icon(
-                icon: Icon(g.balance < 0 ? Icons.undo : Icons.payment),
-                label: Text(g.balance < 0 ? 'Record Refund/Discount' : 'Record Payment/Discount'),
+                icon: Icon(isRefund ? Icons.undo : Icons.payment),
+                label: Text(isRefund ? 'Record Refund/Discount' : 'Record Payment/Discount'),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: g.balance < 0 ? Colors.green.withValues(alpha: 0.2) : Colors.orange.withValues(alpha: 0.2),
-                  foregroundColor: g.balance < 0 ? Colors.greenAccent : Colors.orangeAccent,
+                  backgroundColor: isRefund ? Colors.green.withValues(alpha: 0.2) : Colors.orange.withValues(alpha: 0.2),
+                  foregroundColor: isRefund ? Colors.greenAccent : Colors.orangeAccent,
                 ),
                 onPressed: () => _settleGroup(g),
               )),
@@ -2320,13 +3027,13 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
   }
 
   Widget _tag(String text, Color color) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
     decoration: BoxDecoration(
       color: color.withValues(alpha: 0.14),
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(10),
       border: Border.all(color: color.withValues(alpha: 0.5), width: 0.8),
     ),
-    child: Text(text, style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w600)),
+    child: Text(text, style: TextStyle(fontSize: 10.5, color: color, fontWeight: FontWeight.w600)),
   );
 
   @override
@@ -2463,6 +3170,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                       (r['paidAt'] as String? ?? ''),
                       (r['baseDate'] as String? ?? ''),
                     );
+                    final isCancelled = (r['isCancelled'] as int? ?? 0) == 1;
                     final showTime = appSettingsNotifier.showPaymentHistoryTime;
                     final refLine = showTime && timeText.isNotEmpty
                         ? '$ref  |  $dateText  |  $timeText'
@@ -2474,38 +3182,50 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                       margin: const EdgeInsets.only(bottom: 8),
                       child: Padding(
                         padding: appSettingsNotifier.cardPadding,
-                        child: Row(
+                        child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            CircleAvatar(
-                              radius: 16,
-                              backgroundColor: amountColor.withValues(alpha: 0.15),
-                              child: Icon(isRefund ? Icons.undo : Icons.payments, color: amountColor, size: 17),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(customer.isEmpty ? 'Unknown Customer' : customer, style: const TextStyle(fontWeight: FontWeight.w700)),
-                                  const SizedBox(height: 2),
-                                  Text(refLine, style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
-                                  const SizedBox(height: 5),
-                                  Wrap(
-                                    spacing: 6,
-                                    runSpacing: 4,
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                CircleAvatar(
+                                  radius: 13.5,
+                                  backgroundColor: amountColor.withValues(alpha: 0.15),
+                                  child: Icon(isRefund ? Icons.undo : Icons.payments, color: amountColor, size: 14.5),
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
-                                      _tag(isRefund ? 'Refund' : (isAdvance ? 'Advance' : 'Payment'), amountColor),
-                                      _tag(method.isEmpty ? 'Method: N/A' : 'Method: $method', Colors.blueGrey),
+                                      Text(customer.isEmpty ? 'Unknown Customer' : customer, style: const TextStyle(fontWeight: FontWeight.w700)),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        refLine,
+                                        maxLines: 1,
+                                        softWrap: false,
+                                        overflow: TextOverflow.visible,
+                                        style: TextStyle(fontSize: 11.5, color: Theme.of(context).textTheme.bodySmall?.color),
+                                      ),
                                     ],
                                   ),
-                                ],
-                              ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  '${isRefund ? '-' : '+'}${formatMoney(amount, absolute: true)}',
+                                  style: TextStyle(fontWeight: FontWeight.bold, color: amountColor),
+                                ),
+                              ],
                             ),
-                            const SizedBox(width: 8),
-                            Text(
-                              '${isRefund ? '-' : '+'}${formatMoney(amount, absolute: true)}',
-                              style: TextStyle(fontWeight: FontWeight.bold, color: amountColor),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              children: [
+                                _tag(isRefund ? 'Refund' : (isAdvance ? 'Advance' : 'Payment'), amountColor),
+                                _tag(method.isEmpty ? 'Method: N/A' : 'Method: $method', Colors.blueGrey),
+                                if (isCancelled) _tag('Cancelled Invoice', Colors.red),
+                              ],
                             ),
                           ],
                         ),
@@ -3075,25 +3795,39 @@ class _EditGroupDialogState extends State<_EditGroupDialog> {
           ),
         ]),
       ])),
+      actionsAlignment: MainAxisAlignment.spaceBetween,
       actions: [
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        TextButton(
+          style: TextButton.styleFrom(foregroundColor: Colors.red),
+          onPressed: () async {
+            final nav = Navigator.of(context);
+            final messenger = ScaffoldMessenger.of(context);
+            final ok = await _confirmDialog(context, title: 'Delete Record', message: 'Permanently delete this entire record? This cannot be undone.');
+            if (!ok || !context.mounted) return;
+            try {
+              await DatabaseHelper.deleteRentalGroup(g.items);
+              nav.pop();
+            } catch (e) { messenger.showSnackBar(SnackBar(content: Text('Delete failed: $e'))); }
+          },
+          child: const Text('Delete'),
+        ),
         ElevatedButton(
           onPressed: () async {
             final nav = Navigator.of(context);
             final messenger = ScaffoldMessenger.of(context);
             try {
-              bool isFirst = true;
-              for (final r in g.items) {
-                await DatabaseHelper.updateRental(r['id'] as int,
-                    contractor: nameC.text.trim(), phone: phoneC.text.trim(), phone2: phone2C.text.trim(),
-                    address: addressC.text.trim(),
-                    advanceDeposit: isFirst ? (double.tryParse(advC.text) ?? 0.0) : 0.0,
-                    rentalRate: (r['rentalRate'] as num?)?.toDouble() ?? 0.0,
-                    checkoutDate: DatabaseHelper.isoDate(selected),
-                    notes: notesC.text.trim(),
-                    paymentMethod: isFirst ? editMethod : '');
-                isFirst = false;
-              }
+              await DatabaseHelper.updateRentalGroup(
+                g,
+                contractor: nameC.text.trim(),
+                phone: phoneC.text.trim(),
+                phone2: phone2C.text.trim(),
+                address: addressC.text.trim(),
+                advanceDeposit: double.tryParse(advC.text) ?? 0.0,
+                paymentMethod: editMethod,
+                checkoutDate: DatabaseHelper.isoDate(selected),
+                notes: notesC.text.trim(),
+              );
               nav.pop();
             } catch (e) { messenger.showSnackBar(SnackBar(content: Text('Save failed: $e'))); }
           },
@@ -3126,13 +3860,21 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
 
   Future<void> _load() async {
     final all = groupRentalsByInvoice(await DatabaseHelper.getAllRentals(search: _searchCtrl.text));
+    final active = all.where((g) => !g.isFullyReturned).toList();
+    _applySort(active, _sortMode);
     if (!mounted) return;
-    var filtered = all.where((g) => !g.isFullyReturned).toList();
-    _applySort(filtered, _sortMode);
-    setState(() => _groups = filtered);
+    setState(() => _groups = active);
   }
 
-  void _onSearch(String _) { _debounce?.cancel(); _debounce = Timer(const Duration(milliseconds: 300), _load); }
+  void _onSearch(String _) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), _load);
+  }
+
+  Future<void> _editGroup(RentalGroup group) async {
+    await showDialog<void>(context: context, builder: (_) => _EditGroupDialog(group: group));
+    if (mounted) _load();
+  }
 
   Future<void> _handleReturn(RentalGroup group) async {
     final messenger = ScaffoldMessenger.of(context);
@@ -3162,8 +3904,8 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
         title: const Text('Full Return Date'), content: const Text('When were the remaining items returned?'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(d),           child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(d,'today'),   child: const Text('Today')),
-          ElevatedButton(onPressed: () => Navigator.pop(d,'pick'), child: const Text('Pick Date')),
+          TextButton(onPressed: () => Navigator.pop(d,'pick'),    child: const Text('Pick Date')),
+          ElevatedButton(onPressed: () => Navigator.pop(d,'today'), child: const Text('Today')),
         ],
       ));
       if (choice == null) return;
@@ -3183,191 +3925,66 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
     }
   }
 
-  Future<void> _editGroup(RentalGroup group) async {
-    await showDialog<void>(
-      context: context,
-      builder: (_) => _EditGroupDialog(group: group),
+  Widget _buildCard(RentalGroup g) {
+    return UniversalRentalCard(
+      group: g,
+      showCustomerName: true,
+      onEdit: () => _editGroup(g),
+      onReturn: () => _handleReturn(g),
     );
-    if (mounted) _load();
   }
 
   @override
-  Widget build(BuildContext context) {
-    final compact = appSettingsNotifier.cardDensity == 'compact';
-    return Scaffold(
-      body: Column(children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-          child: TextField(
-            controller: _searchCtrl,
-            decoration: InputDecoration(
-              hintText: 'Search by contractor or item...',
-              prefixIcon: const Icon(Icons.search),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-              suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
-                if (_searchCtrl.text.isNotEmpty)
-                  IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); _load(); }),
-                PopupMenuButton<String>(
-                  icon: Stack(clipBehavior: Clip.none, children: [
-                    Icon(Icons.filter_list, color: _sortMode != kSortOptions.first ? Colors.amber : null),
-                    if (_sortMode != kSortOptions.first) Positioned(
-                      right: -2, top: -2,
-                      child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)),
-                    ),
+  Widget build(BuildContext context) => Scaffold(
+    body: Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+        child: TextField(
+          controller: _searchCtrl,
+          decoration: InputDecoration(
+            hintText: 'Search active rentals...',
+            prefixIcon: const Icon(Icons.search),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
+              if (_searchCtrl.text.isNotEmpty)
+                IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); _load(); }),
+              PopupMenuButton<String>(
+                icon: Stack(clipBehavior: Clip.none, children: [
+                  Icon(Icons.filter_list, color: _sortMode != kSortOptions.first ? Colors.amber : null),
+                  if (_sortMode != kSortOptions.first) Positioned(
+                    right: -2, top: -2,
+                    child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)),
+                  ),
+                ]),
+                tooltip: 'Sort by',
+                initialValue: _sortMode,
+                onSelected: (v) { setState(() => _sortMode = v); _load(); },
+                itemBuilder: (_) => kSortOptions.map((o) => PopupMenuItem(
+                  value: o,
+                  child: Row(children: [
+                    Icon(_sortMode == o ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber),
+                    const SizedBox(width: 8),
+                    Text(o),
                   ]),
-                  tooltip: 'Sort by',
-                  initialValue: _sortMode,
-                  onSelected: (v) { setState(() { _sortMode = v; _applySort(_groups, v); }); },
-                  itemBuilder: (_) => kSortOptions.map((o) => PopupMenuItem(
-                    value: o,
-                    child: Row(children: [
-                      Icon(_sortMode == o ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber),
-                      const SizedBox(width: 8),
-                      Text(o),
-                    ]),
-                  )).toList(),
-                ),
-              ]),
-            ),
-            onChanged: _onSearch,
+                )).toList(),
+              ),
+            ]),
           ),
+          onChanged: _onSearch,
         ),
-        const SizedBox(height: 8),
-        Expanded(child: _groups.isEmpty
-            ? const Center(child: Text('No active rentals.'))
-            : RefreshIndicator(onRefresh: _load, child: ListView.builder(
-          padding: EdgeInsets.fromLTRB(12, compact ? 8 : 12, 12, 80),
-          itemCount: _groups.length,
-          itemBuilder: (_, i) => _buildCard(_groups[i]),
-        ))),
-      ]),
-      floatingActionButton: FloatingActionButton.extended(
-        icon: const Icon(Icons.add), label: const Text('New Rental'),
-        onPressed: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => const NewOrderScreen())); if (mounted) _load(); },
       ),
-    );
-  }
-
-Widget _buildCard(RentalGroup g) {
-    DateTime checkoutDt; try { checkoutDt = DateTime.parse(g.checkoutDate); } catch (_) { checkoutDt = DateTime.now(); }
-    final compact = appSettingsNotifier.cardDensity == 'compact';
-    final dividerHeight = compact ? 10.0 : 16.0;
-    final overdueDays = appSettingsNotifier.overdueDays;
-    final isOverdue = DateTime.now().difference(checkoutDt).inDays > overdueDays;
-    final totalCost = g.calculateTotalCost(); final balance = totalCost - g.advance - g.discount;
-    final dayCount = DateTime.now().difference(checkoutDt).inDays;
-    return Card(
-      margin: EdgeInsets.only(bottom: compact ? 8 : 10),
-      clipBehavior: Clip.antiAlias,
-      child: Container(
-        decoration: isOverdue
-            ? const BoxDecoration(border: Border(left: BorderSide(color: Colors.orange, width: 4)))
-            : null,
-        child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Row 1: Contractor name + phone(s) + edit button
-          Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
-            if (isOverdue) Padding(
-              padding: EdgeInsets.only(right: compact ? 4 : 6),
-              child: Icon(Icons.warning_amber_rounded, color: Colors.orange, size: compact ? 16 : 18),
-            ),
-            Expanded(child: Text.rich(
-              TextSpan(children: [
-                TextSpan(text: g.contractor, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                if (g.phone.isNotEmpty) TextSpan(
-                  text: '  | Ph# ${g.phone}${g.phone2.isNotEmpty ? ' / ${g.phone2}' : ''}',
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.normal, color: Theme.of(context).textTheme.bodySmall?.color),
-                ),
-              ]),
-              overflow: TextOverflow.ellipsis,
-            )),
-            SizedBox(
-              width: 28,
-              child: Tooltip(
-                message: 'Edit',
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(6),
-                  onTap: () => _editGroup(g),
-                  child: Align(
-                    alignment: Alignment.centerRight,
-                    child: Icon(Icons.edit_outlined, size: compact ? 18 : 20),
-                  ),
-                ),
-              ),
-            ),
-          ]),
-          // Row 2: Site address
-          if (g.address.isNotEmpty)
-            Padding(
-              padding: EdgeInsets.only(top: compact ? 1 : 2),
-              child: Text('Site: ${g.address}', style: TextStyle(fontSize: 13, color: Theme.of(context).textTheme.bodySmall?.color)),
-            ),
-          // Row 3: Invoice # + Checkout date + days pill inline
-          Padding(padding: EdgeInsets.only(top: compact ? 1 : 2), child: Row(children: [
-            Expanded(child: Text.rich(
-              TextSpan(
-                style: const TextStyle(fontSize: 12),
-                children: [
-                  if (g.orderId != null) ...[
-                    TextSpan(text: 'Invoice #${g.orderId}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
-                    const TextSpan(text: '  |  '),
-                  ],
-                  TextSpan(text: 'Checkout: ${DatabaseHelper.formatDateString(g.checkoutDate)}'),
-                  const TextSpan(text: '  |  '),
-                  TextSpan(
-                    text: '$dayCount days',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: isOverdue ? Colors.orange : Colors.blue,
-                    ),
-                  ),
-                ],
-              ),
-              overflow: TextOverflow.ellipsis,
-            )),
-          ])),
-          Divider(height: dividerHeight),
-          // Items list
-          ...g.items.map((r) {
-            final isRet = r['returned'] == 1;
-            return Padding(padding: EdgeInsets.symmetric(vertical: compact ? 2 : 4), child: Row(children: [
-              Icon(isRet ? Icons.check_circle : Icons.radio_button_checked, size: compact ? 14 : 16, color: isRet ? Colors.green : Colors.redAccent),
-              SizedBox(width: compact ? 6 : 8),
-              Expanded(child: Text('${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))}/day', style: TextStyle(fontSize: 13, color: isRet ? Colors.grey : null))),
-              if (isRet) Text('Returned ${DatabaseHelper.formatDateString(r['returnDate'] as String?)}', style: const TextStyle(color: Colors.green, fontSize: 11)),
-            ]));
-          }),
-          if (g.notes.isNotEmpty) Padding(
-            padding: EdgeInsets.only(top: compact ? 2 : 4),
-            child: Text('Note: ${g.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12)),
-          ),
-          Divider(height: dividerHeight),
-          Row(children: [
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Live Cost: ${formatMoney(totalCost)}', style: const TextStyle(fontWeight: FontWeight.w600)),
-              Row(children: [Text('Advance: ${formatMoney(g.advance)}'), _PaymentLabel(g.paymentMethod)]),
-              Text('Balance: ${formatMoney(balance)}', style: TextStyle(color: balance>0?Colors.orangeAccent:Colors.greenAccent, fontWeight: FontWeight.bold)),
-            ])),
-            ElevatedButton.icon(
-              icon: Icon(Icons.check_circle_outline, size: compact ? 16 : 18),
-              label: const Text('Return Items'),
-              style: ElevatedButton.styleFrom(
-                padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 14, vertical: compact ? 8 : 10),
-                minimumSize: Size(0, compact ? 32 : 38),
-                tapTargetSize: compact ? MaterialTapTargetSize.shrinkWrap : MaterialTapTargetSize.padded,
-                visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
-              ),
-              onPressed: () => _handleReturn(g),
-            ),
-          ]),
-        ])),
-      ),
-    );
-  }
+      const SizedBox(height: 8),
+      Expanded(child: _groups.isEmpty
+          ? const Center(child: Text('No active rentals.'))
+          : RefreshIndicator(onRefresh: _load, child: ListView.builder(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        itemCount: _groups.length,
+        itemBuilder: (_, i) => _buildCard(_groups[i]),
+      ))),
+    ]),
+  );
 }
 
-// =================================================
-// History Tab
-// =================================================
 class HistoryTab extends StatefulWidget {
   const HistoryTab({super.key});
   @override
@@ -3410,18 +4027,48 @@ class _HistoryTabState extends State<HistoryTab> {
     messenger.showSnackBar(const SnackBar(content: Text('Invoice history deleted.')));
   }
 
+  Future<void> _cancel(RentalGroup group) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await _confirmDialog(context, title:'Cancel Invoice', message:'Are you sure you want to cancel this invoice? It will be permanently marked as CANCELLED.');
+    if (!ok) return;
+    await DatabaseHelper.cancelRentalGroup(group.items.map((i) => i['id'] as int).toList());
+    if (!mounted) return;
+    _load();
+    messenger.showSnackBar(const SnackBar(content: Text('Invoice successfully cancelled.')));
+  }
+
   void _openPaymentHistoryForGroup(RentalGroup g) {
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => PaymentHistoryScreen(
           initialOrderId: g.orderId,
-          initialFallbackRentalId: g.orderId == null
-              ? (g.fallbackId ?? (g.items.firstOrNull?['id'] as int?))
-              : null,
+          initialFallbackRentalId: g.orderId == null ? (g.fallbackId ?? (g.items.firstOrNull?['id'] as int?)) : null,
         ),
       ),
     );
+  }
+
+  Future<void> _openInvoicePdf(int orderId) async {
+    final size = await pickPdfSize(context);
+    if (size == null || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('Generating PDF...')));
+    try {
+      final bytes = await DatabaseHelper.generatePdfFinalInvoiceForOrder(orderId, pageSize: size);
+      if (!mounted) return;
+      await Navigator.push(context, MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: const Text('Final Invoice Preview')),
+          body: PdfPreview(build: (_) async => bytes),
+        ),
+      ));
+    } catch (e) { if (mounted) messenger.showSnackBar(SnackBar(content: Text('Failed: $e'))); }
+  }
+
+  Future<void> _editGroup(RentalGroup group) async {
+    await showDialog<void>(context: context, builder: (_) => _EditGroupDialog(group: group));
+    if (mounted) _load();
   }
 
   @override
@@ -3469,104 +4116,20 @@ class _HistoryTabState extends State<HistoryTab> {
           : RefreshIndicator(onRefresh: _load, child: ListView.builder(
         padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
         itemCount: _groups.length,
+
         itemBuilder: (_, i) {
-          final g = _groups[i]; final totalCost = g.calculateTotalCost(); final balance = totalCost - g.advance - g.discount;
-          final payments = _paymentLogsByGroup[g.paymentGroupKey] ?? const <Map<String, dynamic>>[];
-
-          double initialAdvance = 0.0;
-          double laterPaid = 0.0;
-          if (payments.isNotEmpty) {
-            initialAdvance = (payments.first['amount'] as num?)?.toDouble() ?? 0.0;
-            for (int j = 1; j < payments.length; j++) {
-              laterPaid += (payments[j]['amount'] as num?)?.toDouble() ?? 0.0;
-            }
-          } else {
-            initialAdvance = g.advance;
-          }
-
-          return Card(margin: const EdgeInsets.only(bottom: 8), child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            // Row 1: Contractor name + phone(s) + PAID badge + delete
-            Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
-              Expanded(child: Text.rich(
-                TextSpan(children: [
-                  TextSpan(text: g.contractor, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  if (g.phone.isNotEmpty) TextSpan(
-                    text: '  | Ph# ${g.phone}${g.phone2.isNotEmpty ? ' / ${g.phone2}' : ''}',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.normal, color: Theme.of(context).textTheme.bodySmall?.color),
-                  ),
-                ]),
-                overflow: TextOverflow.ellipsis,
-              )),
-              if (g.isSettled) Container(
-                margin: const EdgeInsets.only(left: 6),
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-                child: const Text('PAID', style: TextStyle(color: Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold)),
-              ),
-              SizedBox(
-                width: 28,
-                child: Tooltip(
-                  message: 'Delete',
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(6),
-                    onTap: () => _delete(g),
-                    child: const Align(
-                      alignment: Alignment.centerRight,
-                      child: Icon(Icons.delete_outline, size: 20),
-                    ),
-                  ),
-                ),
-              ),
-            ]),
-            // Row 2: Site address
-            if (g.address.isNotEmpty)
-              Padding(padding: const EdgeInsets.only(top: 2), child: Text('Site: ${g.address}', style: TextStyle(fontSize: 13, color: Theme.of(context).textTheme.bodySmall?.color))),
-            // Row 3: Invoice # + Checkout date
-            Padding(padding: const EdgeInsets.only(top: 2), child: Row(children: [
-              if (g.orderId != null) ...[
-                Text('Invoice #${g.orderId}', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
-                const Text('  |  ', style: TextStyle(fontSize: 12)),
-              ],
-              Text('Checkout: ${DatabaseHelper.formatDateString(g.checkoutDate)}', style: const TextStyle(fontSize: 12)),
-            ])),
-            const Divider(height: 16),
-            // Items list
-            ...g.items.map((r) => Padding(padding: const EdgeInsets.only(bottom: 4), child: Row(children: [
-              const Icon(Icons.check_circle, size: 14, color: Colors.green), const SizedBox(width: 8),
-              Expanded(child: Text('${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))}/day', style: const TextStyle(fontSize: 13))),
-              Text(DatabaseHelper.formatDateString(r['returnDate'] as String?), style: const TextStyle(fontSize: 11, color: Colors.grey)),
-            ]))),
-            if (g.notes.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4, bottom: 4), child: Text('Note: ${g.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12))),
-            const Divider(height: 16),
-            Text('Total Billed: ${formatMoney(totalCost)}'),
-            Text('Advance: ${formatMoney(initialAdvance)}'),
-            if (laterPaid != 0) Text('Payment(s): ${formatMoney(laterPaid)}'),
-            if (g.discount != 0) Text('Discount: ${formatMoney(g.discount)}'),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    g.isSettled ? 'Settled: Balance Paid' : 'Final Balance: ${formatMoney(balance)}',
-                    style: TextStyle(color: g.isSettled ? Colors.grey : (balance>0?Colors.orange:Colors.green), fontWeight: FontWeight.bold),
-                  ),
-                ),
-                SizedBox(
-                  width: 28,
-                  child: Tooltip(
-                    message: 'View Payments',
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(6),
-                      onTap: () => _openPaymentHistoryForGroup(g),
-                      child: const Align(
-                        alignment: Alignment.centerRight,
-                        child: Icon(Icons.receipt_long, color: Colors.amber, size: 18),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ])));
+          final g = _groups[i];
+          final payments = _paymentLogsByGroup[g.paymentGroupKey];
+          return UniversalRentalCard(
+            group: g,
+            paymentLogs: payments,
+            showCustomerName: true,
+            onPdf: g.orderId != null ? () => _openInvoicePdf(g.orderId!) : null,
+            onEdit: () => _editGroup(g),
+            onCancel: () => _cancel(g),
+            onDelete: () => _delete(g),
+            onViewPayments: () => _openPaymentHistoryForGroup(g),
+          );
         },
       ))),
     ]),
@@ -3810,7 +4373,7 @@ class CustomersManagementScreen extends StatefulWidget {
 
 class _CustomersManagementScreenState extends State<CustomersManagementScreen> {
   List<Map<String, dynamic>> _customers = [];
-  Map<String, double> _owedBalances = {};
+  Map<int, double> _owedBalances = {}; // Changed to track by ID
   final _searchCtrl = TextEditingController();
   Timer? _debounce;
 
@@ -3827,10 +4390,11 @@ class _CustomersManagementScreenState extends State<CustomersManagementScreen> {
   }
 
   Future<void> _loadBalances(List<Map<String, dynamic>> customers) async {
-    final balances = <String, double>{};
+    final balances = <int, double>{};
     for (final c in customers) {
+      final id = c['id'] as int;
       final name = c['name'] as String? ?? '';
-      if (name.isNotEmpty) balances[name] = await DatabaseHelper.getCustomerOwedBalance(name);
+      balances[id] = await DatabaseHelper.getCustomerOwedBalance(id, name);
     }
     if (!mounted) return;
     setState(() => _owedBalances = balances);
@@ -3875,7 +4439,7 @@ class _CustomersManagementScreenState extends State<CustomersManagementScreen> {
               secondary: Icon(Icons.block, color: isBlacklisted ? Colors.red : Colors.grey),
               title: const Text('Blacklist Customer'),
               value: isBlacklisted,
-              activeThumbColor: Colors.red, // Modern SDK standard
+              activeThumbColor: Colors.red,
               onChanged: (v) => setSt(() => isBlacklisted = v),
             ),
           ],
@@ -3887,7 +4451,6 @@ class _CustomersManagementScreenState extends State<CustomersManagementScreen> {
       ),
     ));
 
-    // Capture text values BEFORE disposing controllers to avoid the red-screen crash
     final nameVal    = nameC.text.trim();
     final phoneVal   = phoneC.text.trim();
     final phone2Val  = phone2C.text.trim();
@@ -3909,10 +4472,15 @@ class _CustomersManagementScreenState extends State<CustomersManagementScreen> {
   }
 
   Future<void> _delete(int id) async {
-    final ok = await _confirmDialog(context, title:'Delete Customer', message:'Delete this customer? Their rental history will remain.');
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await _confirmDialog(context, title:'Delete Customer', message:'Permanently delete this customer?');
     if (!ok) return;
-    await DatabaseHelper.deleteCustomer(id);
-    if (mounted) _load();
+    try {
+      await DatabaseHelper.deleteCustomer(id);
+      if (mounted) _load();
+    } catch (e) {
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Cannot delete: $e')));
+    }
   }
 
   @override
@@ -3924,8 +4492,9 @@ class _CustomersManagementScreenState extends State<CustomersManagementScreen> {
           ? const Center(child: Text('No customers yet.'))
           : ListView.builder(itemCount: _customers.length, itemBuilder: (_, i) {
         final c             = _customers[i];
+        final id            = c['id'] as int;
         final name          = c['name'] as String? ?? '';
-        final owed          = _owedBalances[name] ?? 0.0;
+        final owed          = _owedBalances[id] ?? 0.0;
         final isBlacklisted = (c['isBlacklisted'] as int? ?? 0) == 1;
         final joinedDate    = c['joinedDate'] as String? ?? '';
         final phone         = c['phone'] as String? ?? '';
@@ -4061,10 +4630,11 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
   void dispose() { _searchCtrl.dispose(); _debounce?.cancel(); super.dispose(); }
 
   Future<void> _load() async {
+    final id      = _customer['id'] as int;
     final name    = _customer['name'] as String? ?? '';
-    final history = await DatabaseHelper.getCustomerRentalHistory(name);
+    final history = await DatabaseHelper.getCustomerRentalHistory(id, name);
     final paymentMap = await DatabaseHelper.getPaymentLogsForGroups(history);
-    final stats   = await DatabaseHelper.getCustomerLifetimeStats(name);
+    final stats   = await DatabaseHelper.getCustomerLifetimeStats(id, name);
     final fresh   = await DatabaseHelper.getCustomers();
     final updated = fresh.where((c) => c['id'] == _customer['id']).firstOrNull;
     if (!mounted) return;
@@ -4158,8 +4728,8 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
         title: const Text('Full Return Date'), content: const Text('When were the remaining items returned?'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(d),           child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(d,'today'),   child: const Text('Today')),
-          ElevatedButton(onPressed: () => Navigator.pop(d,'pick'), child: const Text('Pick Date')),
+          TextButton(onPressed: () => Navigator.pop(d,'pick'),    child: const Text('Pick Date')),
+          ElevatedButton(onPressed: () => Navigator.pop(d,'today'), child: const Text('Today')),
         ],
       ));
       if (choice == null) return;
@@ -4237,6 +4807,16 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
     messenger.showSnackBar(const SnackBar(content: Text('Invoice history deleted.')));
   }
 
+  Future<void> _cancel(RentalGroup group) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await _confirmDialog(context, title:'Cancel Invoice', message:'Are you sure you want to cancel this invoice? It will be permanently marked as CANCELLED.');
+    if (!ok) return;
+    await DatabaseHelper.cancelRentalGroup(group.items.map((i) => i['id'] as int).toList());
+    if (!mounted) return;
+    _load();
+    messenger.showSnackBar(const SnackBar(content: Text('Invoice successfully cancelled.')));
+  }
+
   void _openPaymentHistoryForGroup(RentalGroup g) {
     Navigator.push(
       context,
@@ -4250,177 +4830,19 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
   }
 
   Widget _buildCard(RentalGroup g) {
-    DateTime checkoutDt; try { checkoutDt = DateTime.parse(g.checkoutDate); } catch (_) { checkoutDt = DateTime.now(); }
-    final compact = appSettingsNotifier.cardDensity == 'compact';
-    final dividerHeight = compact ? 10.0 : 16.0;
-    final totalCost = g.calculateTotalCost();
-    final balance = totalCost - g.advance - g.discount - g.badDebt;
-
-    // IF RENTAL IS ACTIVE
-    if (!g.isFullyReturned) {
-      final overdueDays = appSettingsNotifier.overdueDays;
-      final isOverdue = DateTime.now().difference(checkoutDt).inDays > overdueDays;
-      final dayCount = DateTime.now().difference(checkoutDt).inDays;
-
-      return Card(
-        margin: EdgeInsets.only(bottom: compact ? 8 : 10),
-        clipBehavior: Clip.antiAlias,
-        child: Container(
-          decoration: isOverdue ? const BoxDecoration(border: Border(left: BorderSide(color: Colors.orange, width: 4))) : null,
-          child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
-              if (isOverdue) Padding(padding: EdgeInsets.only(right: compact ? 4 : 6), child: Icon(Icons.warning_amber_rounded, color: Colors.orange, size: compact ? 16 : 18)),
-              Expanded(child: Text(g.orderId != null ? 'Invoice #${g.orderId}' : 'Active Rental', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold))),
-              IconButton(
-                icon: Icon(Icons.edit_outlined, size: compact ? 18 : 20),
-                tooltip: 'Edit', visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
-                padding: EdgeInsets.zero, constraints: BoxConstraints.tightFor(width: compact ? 30 : 36, height: compact ? 30 : 36),
-                onPressed: () => _editGroup(g),
-              ),
-            ]),
-            Padding(padding: EdgeInsets.only(top: compact ? 1 : 2), child: Row(children: [
-              Expanded(child: Text.rich(TextSpan(style: const TextStyle(fontSize: 12), children: [
-                TextSpan(text: 'Checkout: ${DatabaseHelper.formatDateString(g.checkoutDate)}'), const TextSpan(text: '  |  '),
-                TextSpan(text: '$dayCount days', style: TextStyle(fontWeight: FontWeight.w600, color: isOverdue ? Colors.orange : Colors.blue)),
-              ]), overflow: TextOverflow.ellipsis)),
-            ])),
-            Divider(height: dividerHeight),
-            ...g.items.map((r) {
-              final isRet = r['returned'] == 1;
-              return Padding(padding: EdgeInsets.symmetric(vertical: compact ? 2 : 4), child: Row(children: [
-                Icon(isRet ? Icons.check_circle : Icons.radio_button_checked, size: compact ? 14 : 16, color: isRet ? Colors.green : Colors.redAccent),
-                SizedBox(width: compact ? 6 : 8),
-                Expanded(child: Text('${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))}/day', style: TextStyle(fontSize: 13, color: isRet ? Colors.grey : null))),
-                if (isRet) Text('Returned ${DatabaseHelper.formatDateString(r['returnDate'] as String?)}', style: const TextStyle(color: Colors.green, fontSize: 11)),
-              ]));
-            }),
-            if (g.notes.isNotEmpty) Padding(padding: EdgeInsets.only(top: compact ? 2 : 4), child: Text('Note: ${g.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12))),
-            Divider(height: dividerHeight),
-            Row(children: [
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Live Cost: ${formatMoney(totalCost)}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                Row(children: [Text('Advance: ${formatMoney(g.advance)}'), _PaymentLabel(g.paymentMethod)]),
-                Text('Balance: ${formatMoney(balance)}', style: TextStyle(color: balance>0?Colors.orangeAccent:Colors.greenAccent, fontWeight: FontWeight.bold)),
-              ])),
-              ElevatedButton.icon(
-                icon: Icon(Icons.check_circle_outline, size: compact ? 16 : 18), label: const Text('Return Items'),
-                style: ElevatedButton.styleFrom(padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 14, vertical: compact ? 8 : 10), minimumSize: Size(0, compact ? 32 : 38), tapTargetSize: compact ? MaterialTapTargetSize.shrinkWrap : MaterialTapTargetSize.padded, visualDensity: compact ? VisualDensity.compact : VisualDensity.standard),
-                onPressed: () => _handleReturn(g),
-              ),
-            ]),
-          ])),
-        ),
-      );
-    }
-    // IF RENTAL IS HISTORICAL
-    else {
-      final payments = _paymentLogsByGroup[g.paymentGroupKey] ?? const <Map<String, dynamic>>[];
-      double initialAdvance = 0.0;
-      double laterPaid = 0.0;
-      if (payments.isNotEmpty) {
-        initialAdvance = (payments.first['amount'] as num?)?.toDouble() ?? 0.0;
-        for (int j = 1; j < payments.length; j++) { laterPaid += (payments[j]['amount'] as num?)?.toDouble() ?? 0.0; }
-      } else { initialAdvance = g.advance; }
-
-      return Card(margin: EdgeInsets.only(bottom: compact ? 8 : 10), child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
-          Expanded(child: Text(g.orderId != null ? 'Invoice #${g.orderId}' : 'Settled Rental', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
-          if (g.isSettled) Container(
-            margin: const EdgeInsets.only(left: 6), padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-            child: const Text('PAID', style: TextStyle(color: Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold)),
-          ),
-          if (g.badDebt > 0) Container(
-            margin: const EdgeInsets.only(left: 6), padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-            child: const Text('BAD DEBT', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
-          ),
-          SizedBox(width: 28, child: Tooltip(message: 'Delete', child: InkWell(borderRadius: BorderRadius.circular(6), onTap: () => _delete(g), child: const Align(alignment: Alignment.centerRight, child: Icon(Icons.delete_outline, size: 20))))),
-        ]),
-        Padding(padding: const EdgeInsets.only(top: 2), child: Row(children: [
-          Text('Checkout: ${DatabaseHelper.formatDateString(g.checkoutDate)}', style: const TextStyle(fontSize: 12)),
-          const Spacer(),
-          if (g.orderId != null) SizedBox(
-            width: 28,
-            child: Tooltip(
-              message: 'View Final Invoice',
-              child: InkWell(
-                borderRadius: BorderRadius.circular(6),
-                onTap: () => _openInvoicePdf(g.orderId!, finalInvoice: true),
-                child: const Align(
-                  alignment: Alignment.centerRight,
-                  child: Icon(Icons.picture_as_pdf_outlined, size: 20, color: Colors.amber),
-                ),
-              ),
-            ),
-          ),
-        ])),
-        Divider(height: dividerHeight),
-        ...g.items.map((r) => Padding(padding: const EdgeInsets.only(bottom: 4), child: Row(children: [
-          const Icon(Icons.check_circle, size: 14, color: Colors.green), const SizedBox(width: 8),
-          Expanded(child: Text('${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble()??0.0))}/day', style: const TextStyle(fontSize: 13))),
-          Text(DatabaseHelper.formatDateString(r['returnDate'] as String?), style: const TextStyle(fontSize: 11, color: Colors.grey)),
-        ]))),
-        if (g.notes.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4, bottom: 4), child: Text('Note: ${g.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12))),
-        Divider(height: dividerHeight),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Total Billed: ${formatMoney(totalCost)}'),
-                  Text('Advance: ${formatMoney(initialAdvance)}'),
-                  if (laterPaid != 0) Text('Payments: ${formatMoney(laterPaid)}'),
-                  if (g.discount != 0) Text('Discount: ${formatMoney(g.discount)}'),
-                  if (g.badDebt != 0) Text('Written Off: ${formatMoney(g.badDebt)}', style: const TextStyle(color: Colors.redAccent)),
-                  const SizedBox(height: 4),
-                  Text(
-                    g.isSettled ? 'Settled: Balance Cleared' : 'Final Balance: ${formatMoney(balance)}',
-                    style: TextStyle(color: g.isSettled ? Colors.grey : (balance>0?Colors.orange:Colors.green), fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-            ),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                SizedBox(
-                  width: 28,
-                  child: Tooltip(
-                    message: 'View Payments',
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(6),
-                      onTap: () => _openPaymentHistoryForGroup(g),
-                      child: const Align(
-                        alignment: Alignment.centerRight,
-                        child: Icon(Icons.receipt_long, color: Colors.amber, size: 20),
-                      ),
-                    ),
-                  ),
-                ),
-                if (!g.isSettled) ...[
-                  const SizedBox(height: 8),
-                  ElevatedButton.icon(
-                    icon: Icon(balance < 0 ? Icons.undo : Icons.payment, size: 16),
-                    label: Text(compact ? 'Settle' : (balance < 0 ? 'Record Refund' : 'Record Payment')),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: balance < 0 ? Colors.green.withValues(alpha: 0.2) : Colors.orange.withValues(alpha: 0.2),
-                      foregroundColor: balance < 0 ? Colors.greenAccent : Colors.orangeAccent,
-                      padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 14, vertical: compact ? 8 : 10),
-                      minimumSize: Size(0, compact ? 32 : 38),
-                      visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
-                    ),
-                    onPressed: () => _settleGroup(g),
-                  ),
-                ],
-              ],
-            ),
-          ],
-        ),
-      ])));
-    }
+    final payments = _paymentLogsByGroup[g.paymentGroupKey];
+    return UniversalRentalCard(
+      group: g,
+      paymentLogs: payments,
+      showCustomerName: false,
+      onEdit: () => _editGroup(g),
+      onReturn: !g.isFullyReturned ? () => _handleReturn(g) : null,
+      onSettle: g.isFullyReturned && !g.isSettled ? () => _settleGroup(g) : null,
+      onPdf: g.isFullyReturned && g.orderId != null ? () => _openInvoicePdf(g.orderId!, finalInvoice: true) : null,
+      onCancel: g.isFullyReturned && !g.isCancelled ? () => _cancel(g) : null,
+      onDelete: g.isFullyReturned ? () => _delete(g) : null,
+      onViewPayments: () => _openPaymentHistoryForGroup(g),
+    );
   }
 
   @override
@@ -4701,9 +5123,23 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
       final id = it['id'] as int; final qty = int.tryParse(_qtyC[id]?.text??'')??0;
       if (qty <= 0) continue;
       final rate = double.tryParse(_rateC[id]?.text??'')??0.0;
-      sel.add({'itemId':id,'qty':qty,'rate':rate,'contractor':customerName,'phone':customer['phone']??'','phone2':customer['phone2']??'','address':customer['address']??'','checkoutDate':checkoutDateStr,'advanceDeposit':isFirst?advance:0.0,'notes':_notesC.text.trim(),'paymentMethod':isFirst?_selectedPaymentMethod:''});
+      sel.add({
+        'itemId': id,
+        'customerId': customerId, // Fixed Name Collision
+        'qty': qty,
+        'rate': rate,
+        'contractor': customerName,
+        'phone': customer['phone'] ?? '',
+        'phone2': customer['phone2'] ?? '',
+        'address': customer['address'] ?? '',
+        'checkoutDate': checkoutDateStr,
+        'advanceDeposit': isFirst ? advance : 0.0,
+        'notes': _notesC.text.trim(),
+        'paymentMethod': isFirst ? _selectedPaymentMethod : ''
+      });
       isFirst = false;
     }
+
     if (sel.isEmpty) { messenger.showSnackBar(const SnackBar(content: Text('Add at least one item with a quantity.'))); return; }
     try {
       final orderId = await DatabaseHelper.createOrder(customerId, customerName, checkoutDateStr);
@@ -5480,7 +5916,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const ListTile(
           leading: Icon(Icons.construction, color: Colors.amber),
           title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: Text('Version 2.5.1  |  Database v21'),
+          subtitle: Text('Version 2.5.3  |  Database v23'),
         ),
         ListTile(
           leading: const Icon(Icons.privacy_tip_outlined, color: Colors.amber),
