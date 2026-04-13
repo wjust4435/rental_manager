@@ -121,8 +121,6 @@ class AppSettingsNotifier extends ChangeNotifier {
   bool   _notifyOverdue      = true;
   bool   _notifyPendingPayments = true;
   bool   _notifySummary      = false;
-  bool   _notifyRefundWait   = true;
-  bool   _notifyAnniversary  = false;
   String _language           = 'English';
   String _appIcon            = 'default';
 
@@ -141,8 +139,6 @@ class AppSettingsNotifier extends ChangeNotifier {
   bool   get notifyOverdue       => _notifyOverdue;
   bool   get notifyPendingPayments => _notifyPendingPayments;
   bool   get notifySummary       => _notifySummary;
-  bool   get notifyRefundWait    => _notifyRefundWait;
-  bool   get notifyAnniversary   => _notifyAnniversary;
   String get language            => _language;
 
   double get textScale {
@@ -178,8 +174,6 @@ class AppSettingsNotifier extends ChangeNotifier {
     _notifyOverdue             = p.getBool('notifyOverdue')               ?? true;
     _notifyPendingPayments     = p.getBool('notifyPendingPayments')       ?? true;
     _notifySummary             = p.getBool('notifySummary')               ?? false;
-    _notifyRefundWait          = p.getBool('notifyRefundWait')            ?? true;
-    _notifyAnniversary         = p.getBool('notifyAnniversary')           ?? false;
     _language                  = p.getString('language')                  ?? 'English';
     _appIcon                   = p.getString('appIcon')                   ?? 'default';
     notifyListeners();
@@ -199,8 +193,6 @@ class AppSettingsNotifier extends ChangeNotifier {
     await p.setBool('notifyOverdue',         _notifyOverdue);
     await p.setBool('notifyPendingPayments', _notifyPendingPayments);
     await p.setBool('notifySummary',         _notifySummary);
-    await p.setBool('notifyRefundWait',      _notifyRefundWait);
-    await p.setBool('notifyAnniversary',     _notifyAnniversary);
     await p.setString('language',            _language);
     await p.setString('appIcon',             _appIcon);
   }
@@ -217,8 +209,6 @@ class AppSettingsNotifier extends ChangeNotifier {
   Future<void> setNotifyOverdue(bool v)         async { _notifyOverdue = v; notifyListeners(); await _save(); }
   Future<void> setNotifyPendingPayments(bool v) async { _notifyPendingPayments = v; notifyListeners(); await _save(); }
   Future<void> setNotifySummary(bool v)         async { _notifySummary = v; notifyListeners(); await _save(); }
-  Future<void> setNotifyRefundWait(bool v)      async { _notifyRefundWait = v; notifyListeners(); await _save(); }
-  Future<void> setNotifyAnniversary(bool v)     async { _notifyAnniversary = v; notifyListeners(); await _save(); }
   Future<void> setLanguage(String v)            async { _language = v; notifyListeners(); await _save(); }
   Future<void> setAppIcon(String v)             async { _appIcon = v; notifyListeners(); await _save(); }
 }
@@ -236,8 +226,6 @@ class NotificationService {
   static const int _idOverdue     = 1;
   static const int _idPending     = 2;
   static const int _idSummary     = 3;
-  static const int _idRefund      = 4;
-  static const int _idAnniversary = 5;
 
   static Future<void> initialize() async {
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -277,7 +265,6 @@ class NotificationService {
 
     // 1. Determine if we even need to run the heavy rental query today
     final needsGroups = (s.notifyPendingPayments && prefs.getString('notif_pending') != today) ||
-        (s.notifyRefundWait      && prefs.getString('notif_refund') != today) ||
         (s.notifySummary         && prefs.getString('notif_summary') != today);
 
     // 2. Fetch and group rentals exactly ONCE if needed
@@ -286,11 +273,9 @@ class NotificationService {
       cachedGroups = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
     }
 
-    if (s.notifyOverdue         && await once('overdue'))     await _checkOverdue(s.overdueDays);
-    if (s.notifyPendingPayments && await once('pending'))     await _checkPendingPayments(cachedGroups);
-    if (s.notifyRefundWait      && await once('refund'))      await _checkRefundWait(cachedGroups);
-    if (s.notifyAnniversary     && await once('anniversary')) await _checkAnniversaries();
-    if (s.notifySummary         && await once('summary'))     await _checkSummary(s.overdueDays, cachedGroups);
+    if (s.notifyOverdue         && await once('overdue')) await _checkOverdue(s.overdueDays);
+    if (s.notifyPendingPayments && await once('pending')) await _checkPendingPayments(cachedGroups);
+    if (s.notifySummary         && await once('summary')) await _checkSummary(s.overdueDays, cachedGroups);
   }
 
   static Future<void> _checkOverdue(int days) async {
@@ -320,39 +305,7 @@ class NotificationService {
     );
   }
 
-  static Future<void> _checkRefundWait(List<RentalGroup> groups) async {
-    final refunds = groups.where((g) => g.isFullyReturned && !g.isSettled && g.balance < 0).toList();
-    if (refunds.isEmpty) return;
-    await _show(
-      _idRefund,
-      'Refund Pending',
-      '${refunds.length} customer${refunds.length > 1 ? 's are' : ' is'} waiting for a refund.',
-    );
-  }
 
-  static Future<void> _checkAnniversaries() async {
-    final db     = await DatabaseHelper.getDatabase();
-    final active = await db.rawQuery(
-      'SELECT rentals.contractor, items.name as itemName, rentals.checkoutDate '
-          'FROM rentals JOIN items ON rentals.itemId=items.id '
-          'WHERE rentals.returned=0 OR rentals.returned IS NULL',
-    );
-    const milestones = [7, 14, 30, 60, 90];
-    final hits = <String>[];
-    for (final r in active) {
-      try {
-        final days = DateTime.now()
-            .difference(DateTime.parse(r['checkoutDate'] as String))
-            .inDays;
-        if (milestones.contains(days)) {
-          hits.add('${r['contractor']} - ${r['itemName']} ($days days)');
-        }
-      } catch (_) {}
-    }
-    if (hits.isEmpty) return;
-    final body = hits.first + (hits.length > 1 ? '  +${hits.length - 1} more' : '');
-    await _show(_idAnniversary, 'Rental Milestone', body);
-  }
 
   static Future<void> _checkSummary(int overdueDays, List<RentalGroup> groups) async {
     final stats  = await DatabaseHelper.getDashboardStats(overdueDays: overdueDays);
@@ -452,7 +405,18 @@ class _RentalManagerAppState extends State<RentalManagerApp> {
     useMaterial3: true,
     colorScheme: ColorScheme.fromSeed(seedColor: Colors.amber, brightness: b),
     appBarTheme: const AppBarTheme(backgroundColor: Colors.amber, foregroundColor: Colors.black87, centerTitle: true, elevation: 2),
-    cardTheme: CardThemeData(elevation: 2, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+    cardTheme: CardThemeData(elevation: 2, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+    elevatedButtonTheme: ElevatedButtonThemeData(
+      style: ElevatedButton.styleFrom(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+    ),
+    chipTheme: ChipThemeData(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    ),
+    floatingActionButtonTheme: FloatingActionButtonThemeData(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ),
   );
 
   @override
@@ -460,7 +424,6 @@ class _RentalManagerAppState extends State<RentalManagerApp> {
     notifier: appSettingsNotifier,
     child: Builder(
         builder: (appContext) {
-          // Now safely consuming settings from the InheritedNotifier context
           final settings = AppProvider.of(appContext);
 
           return MaterialApp(
@@ -2059,14 +2022,14 @@ class UniversalRentalCard extends StatelessWidget {
                       margin: const EdgeInsets.only(left: 6),
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-                      child: const Text('BAD DEBT', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                      child: const Text('BAD DEBT', style: TextStyle(color: Colors.redAccent, fontSize: 10.5, fontWeight: FontWeight.bold)),
                     )
                   else if (group.isFullyReturned && group.isSettled)
                       Container(
                         margin: const EdgeInsets.only(left: 6),
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-                        child: const Text('PAID', style: TextStyle(color: Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                        child: const Text('PAID', style: TextStyle(color: Colors.greenAccent, fontSize: 10.5, fontWeight: FontWeight.bold)),
                       ),
                   SizedBox(
                     width: 32,
@@ -2105,7 +2068,7 @@ class UniversalRentalCard extends StatelessWidget {
                     Expanded(
                       child: Text.rich(
                         TextSpan(
-                          style: const TextStyle(fontSize: 12),
+                          style: const TextStyle(fontSize: 14),
                           children: [
                             if (group.orderId != null && showCustomerName) ...[
                               TextSpan(text: 'Invoice #${group.orderId}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
@@ -2314,20 +2277,84 @@ class _MainShellState extends State<MainShell> {
   );
 
   Widget _buildDrawer() => Drawer(child: SafeArea(child: Column(children: [
-    Container(
-      padding: const EdgeInsets.symmetric(vertical: 20), width: double.infinity, color: Colors.amber,
-      child: const Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Icon(Icons.construction, size: 40, color: Colors.black87), SizedBox(height: 10),
-        Text('Rental Manager', style: TextStyle(color: Colors.black87, fontSize: 20, fontWeight: FontWeight.bold)),
-      ]),
+    FutureBuilder<Map<String, dynamic>>(
+      future: DatabaseHelper.getBusinessInfo(),
+      builder: (context, snapshot) {
+        final bizName = snapshot.data?['name'] as String? ?? '';
+        final displayBizName = bizName.trim().isEmpty ? 'Rental Manager' : bizName;
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final bgColor = isDark ? const Color(0xFF1E1E1E) : const Color(0xFF2A2A2A);
+
+        return Material(
+          color: bgColor,
+          child: InkWell(
+            onTap: () => _nav(const BusinessInfoScreen()),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+              width: double.infinity,
+              child: Row(
+                children: [
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Container(
+                        width: 56,
+                        height: 56,
+                        decoration: BoxDecoration(
+                          color: Colors.grey[800],
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: Colors.amber.shade600, width: 2),
+                        ),
+                        child: const Icon(Icons.person, color: Colors.white70, size: 32),
+                      ),
+                      Positioned(
+                        bottom: -3,
+                        right: -3,
+                        child: Container(
+                          width: 16,
+                          height: 16,
+                          decoration: BoxDecoration(
+                            color: Colors.greenAccent[400],
+                            shape: BoxShape.circle,
+                            border: Border.all(color: bgColor, width: 2.5),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          displayBizName,
+                          style: TextStyle(color: Colors.amber.shade500, fontSize: 18, fontWeight: FontWeight.bold),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Admin',
+                          style: TextStyle(color: Colors.grey.shade400, fontSize: 13, fontWeight: FontWeight.w500),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     ),
     Expanded(child: ListView(padding: EdgeInsets.zero, children: [
-      _drawerNavItem(icon: Icons.account_balance_wallet, title: 'Payment Ledger', onTap: () => _nav(const PaymentLedgerScreen())),
-      _drawerNavItem(icon: Icons.history, title: 'Payment History', onTap: () => _nav(const PaymentHistoryScreen())),
+      _drawerNavItem(icon: Icons.account_balance_wallet, title: 'Transactions', onTap: () => _nav(const PaymentLedgerScreen())),
       _drawerNavItem(icon: Icons.money_off, title: 'Losses & Bad Debt', onTap: () => _nav(const LossesAndBadDebtScreen())),
       const Divider(height: 1),
       _drawerNavItem(icon: Icons.store, title: 'Business Info', onTap: () => _nav(const BusinessInfoScreen())),
-      _drawerNavItem(icon: Icons.group, title: 'Manage Customers', onTap: () => _nav(const CustomersManagementScreen())),
+      _drawerNavItem(icon: Icons.group, title: 'Customers', onTap: () => _nav(const CustomersManagementScreen())),
       _drawerNavItem(icon: Icons.receipt_long, title: 'Proforma', onTap: () => _nav(const OrdersListScreen())),
       _drawerNavItem(icon: Icons.request_quote, title: 'Invoice', onTap: () => _nav(const FinalInvoicesScreen())),
       const Divider(height: 1),
@@ -2450,32 +2477,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
     }
 
-    // Now safely consuming settings from the InheritedNotifier context
+// Now safely consuming settings from the InheritedNotifier context
     final settings = AppProvider.of(context);
-    final overdueDays = settings.overdueDays;
     final showTopCustomers = settings.showTopCustomersByRevenue;
 
     return RefreshIndicator(onRefresh: _load, child: ListView(padding: const EdgeInsets.all(16), children: [
-      Column(
+      Row(
         children: [
-          Row(
-            children: [
-              Expanded(child: _StatCard(label:'Total Items',    value:'${_stats['items']}',         icon:Icons.inventory_2,  color:Colors.blue)),
-              const SizedBox(width: 12),
-              Expanded(child: _StatCard(label:'Active Lines',   value:'${_stats['activeRentals']}', icon:Icons.handshake,    color:Colors.orange)),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(child: _StatCard(label:'Customers',      value:'${_stats['customers']}',     icon:Icons.people,       color:Colors.purple)),
-              const SizedBox(width: 12),
-              Expanded(child: _StatCard(label:'Returned Lines', value:'${_stats['returned']}',      icon:Icons.check_circle, color:Colors.green)),
-            ],
-          ),
+          Expanded(child: _StatCard(label:'Total Items',    value:'${_stats['items']}',         icon:Icons.inventory_2,  color:Colors.blue)),
+          const SizedBox(width: 8),
+          Expanded(child: _StatCard(label:'Active Lines',   value:'${_stats['activeRentals']}', icon:Icons.handshake,    color:Colors.orange)),
+        ],
+      ),
+      const SizedBox(height: 8),
+      Row(
+        children: [
+          Expanded(child: _StatCard(label:'Customers',      value:'${_stats['customers']}',     icon:Icons.people,       color:Colors.purple)),
+          const SizedBox(width: 8),
+          Expanded(child: _StatCard(label:'Returned Lines', value:'${_stats['returned']}',      icon:Icons.check_circle, color:Colors.green)),
         ],
       ),
       const SizedBox(height: 14),
+
       Card(
         child: ListTile(
           leading: const Icon(Icons.account_balance_wallet, color: Colors.orange),
@@ -2487,21 +2510,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       ),
       const SizedBox(height: 20),
+
       const Text('Quick Actions', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-      const SizedBox(height: 8),
-      Wrap(spacing: 8, runSpacing: 8, children: [
-        _QuickAction(icon:Icons.playlist_add,          label:'New Order',  onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const NewOrderScreen()))),
-        _QuickAction(icon:Icons.account_balance_wallet, label:'Ledger',    onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const PaymentLedgerScreen()))),
-        _QuickAction(icon:Icons.store,                 label:'Biz Info',   onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const BusinessInfoScreen()))),
-        _QuickAction(icon:Icons.receipt_long,          label:'Proforma',   onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const OrdersListScreen()))),
-        _QuickAction(icon:Icons.request_quote,         label:'Invoice',    onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const FinalInvoicesScreen()))),
-        _QuickAction(icon:Icons.people,                label:'Customers',  onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const CustomersManagementScreen()))),
-      ]),
+      const SizedBox(height: 12),
+
+      GridView.count(
+        crossAxisCount: 3,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
+        childAspectRatio: 1.4, // Keeps the flatter, compact button layout
+        children: [
+          _QuickAction(icon:Icons.playlist_add,           label:'New Order', onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const NewOrderScreen()))),
+          _QuickAction(icon:Icons.account_balance_wallet, label:'Ledger',    onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const PaymentLedgerScreen()))),
+          _QuickAction(icon:Icons.store,                  label:'Biz Info',  onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const BusinessInfoScreen()))),
+          _QuickAction(icon:Icons.receipt_long,           label:'Proforma',  onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const OrdersListScreen()))),
+          _QuickAction(icon:Icons.request_quote,          label:'Invoice',   onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const FinalInvoicesScreen()))),
+          _QuickAction(icon:Icons.people,                 label:'Customers', onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const CustomersManagementScreen()))),
+        ],
+      ),
+
       if ((_stats['overdue'] ?? 0) > 0) ...[
         const SizedBox(height: 20),
         Row(children: [
           const Icon(Icons.warning_amber_rounded, color: Colors.orange), const SizedBox(width: 8),
-          Text('Overdue Rentals ($overdueDays+ days)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.orange[300])),
+          Text('Overdue Rentals', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.orange[300])),
         ]),
         const SizedBox(height: 8),
         ..._overdueRentals.map((r) {
@@ -2546,27 +2580,46 @@ class _StatCard extends StatelessWidget {
   final String label, value; final IconData icon; final Color color;
   const _StatCard({required this.label, required this.value, required this.icon, required this.color});
   @override
-  Widget build(BuildContext context) => Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Icon(icon, color: color, size: 28),
-      const SizedBox(height: 12),
-      Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
-      Text(label, style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color), maxLines: 1, overflow: TextOverflow.ellipsis),
-    ],
-  )));
+  Widget build(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(height: 10),
+          Text(label, style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+          const SizedBox(height: 2),
+          Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
+        ],
+      ),
+    ),
+  );
 }
 
 class _QuickAction extends StatelessWidget {
   final IconData icon; final String label; final VoidCallback onTap;
   const _QuickAction({required this.icon, required this.label, required this.onTap});
   @override
-  Widget build(BuildContext context) => InkWell(onTap: onTap, borderRadius: BorderRadius.circular(12), child: Container(
-    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-    decoration: BoxDecoration(border: Border.all(color: Colors.amber.withValues(alpha: 0.4)), borderRadius: BorderRadius.circular(12)),
-    child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(icon, size: 18, color: Colors.amber), const SizedBox(width: 6), Text(label, style: const TextStyle(fontWeight: FontWeight.w600))]),
-  ));
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(8),
+    child: Container(
+      decoration: BoxDecoration(
+          border: Border.all(color: Colors.amber.withValues(alpha: 0.4)),
+          borderRadius: BorderRadius.circular(8)
+      ),
+      child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 24, color: Colors.amber),
+            const SizedBox(height: 6),
+            Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+          ]
+      ),
+    ),
+  );
 }
 
 // =================================================
@@ -2715,6 +2768,7 @@ class PaymentLedgerScreen extends StatefulWidget {
 }
 
 class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
+  // Logic for Ledger Tab
   List<RentalGroup> _allPending = [];
   List<RentalGroup> _ledger     = [];
   String _filterMode = kLedgerFilterOptions.first;
@@ -2811,131 +2865,159 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Payment Ledger')),
-    body: Column(children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-        child: TextField(
-          controller: _searchCtrl,
-          decoration: InputDecoration(
-            hintText: 'Search customer, phone, or invoice...',
-            prefixIcon: const Icon(Icons.search),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-            suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
-              if (_searchCtrl.text.isNotEmpty)
-                IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); setState(_applyFilter); }),
-              PopupMenuButton<String>(
-                icon: Stack(clipBehavior: Clip.none, children: [
-                  Icon(Icons.filter_list, color: _filterMode != kLedgerFilterOptions.first ? Colors.amber : null),
-                  if (_filterMode != kLedgerFilterOptions.first) Positioned(
-                    right: -2, top: -2,
-                    child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)),
-                  ),
+  Widget build(BuildContext context) => DefaultTabController(
+    length: 2,
+    child: Scaffold(
+      appBar: AppBar(
+        titleSpacing: 0,
+        title: TabBar(
+          tabs: const [
+            Tab(text: 'OUTSTANDING'),
+            Tab(text: 'HISTORY'),
+          ],
+          indicator: BoxDecoration(
+            borderRadius: BorderRadius.circular(24),
+            color: Colors.black12,
+          ),
+          indicatorSize: TabBarIndicatorSize.tab,
+          dividerColor: Colors.transparent,
+          labelColor: Colors.black,
+          unselectedLabelColor: Colors.black54,
+          labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+          splashBorderRadius: BorderRadius.circular(24),
+        ),
+      ),
+      body: TabBarView(
+        children: [
+          _buildLedgerTab(),
+          const PaymentHistoryScreen(isTab: true),
+        ],
+      ),
+    ),
+  );
+
+  Widget _buildLedgerTab() => Column(children: [
+    Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+      child: TextField(
+        controller: _searchCtrl,
+        decoration: InputDecoration(
+          hintText: 'Search customer, phone, or invoice...',
+          prefixIcon: const Icon(Icons.search),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (_searchCtrl.text.isNotEmpty)
+              IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); setState(_applyFilter); }),
+            PopupMenuButton<String>(
+              icon: Stack(clipBehavior: Clip.none, children: [
+                Icon(Icons.filter_list, color: _filterMode != kLedgerFilterOptions.first ? Colors.amber : null),
+                if (_filterMode != kLedgerFilterOptions.first) Positioned(
+                  right: -2, top: -2,
+                  child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)),
+                ),
+              ]),
+              tooltip: 'Filter by',
+              initialValue: _filterMode,
+              onSelected: (v) => setState(() { _filterMode = v; _applyFilter(); }),
+              itemBuilder: (_) => kLedgerFilterOptions.map((opt) => PopupMenuItem(
+                value: opt,
+                child: Row(children: [
+                  Icon(_filterMode == opt ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber),
+                  const SizedBox(width: 8),
+                  Text(opt),
                 ]),
-                tooltip: 'Filter by',
-                initialValue: _filterMode,
-                onSelected: (v) => setState(() { _filterMode = v; _applyFilter(); }),
-                itemBuilder: (_) => kLedgerFilterOptions.map((opt) => PopupMenuItem(
-                  value: opt,
-                  child: Row(children: [
-                    Icon(_filterMode == opt ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber),
-                    const SizedBox(width: 8),
-                    Text(opt),
-                  ]),
-                )).toList(),
+              )).toList(),
+            ),
+          ]),
+        ),
+        onChanged: _onSearch,
+      ),
+    ),
+    Card(
+      margin: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+      child: Padding(
+        padding: appSettingsNotifier.cardPadding,
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Total Due', style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)),
+                  const SizedBox(height: 2),
+                  Text(formatMoney(_ledger.where((g) => g.balance > 0).fold(0.0, (s, g) => s + g.balance)), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Total Refunds', style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)),
+                  const SizedBox(height: 2),
+                  Text(formatMoney(_ledger.where((g) => g.balance < 0).fold(0.0, (s, g) => s + g.balance.abs())), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                ],
+              ),
+            ),
+            Text('${_ledger.length} inv', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+          ],
+        ),
+      ),
+    ),
+    Expanded(child: _ledger.isEmpty
+        ? Center(child: Text(
+        _filterMode == 'Amount Due' ? 'No pending collections.' :
+        _filterMode == 'Refund Due' ? 'No pending refunds.' :
+        'All returned invoices are settled!',
+        style: const TextStyle(fontSize: 16, color: Colors.green)))
+        : RefreshIndicator(onRefresh: _load, child: ListView.builder(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+      itemCount: _ledger.length,
+      itemBuilder: (_, i) {
+        final g = _ledger[i];
+        final isRefund = g.balance < 0;
+        return Card(
+          margin: const EdgeInsets.only(bottom: 12),
+          shape: RoundedRectangleBorder(side: BorderSide(color: isRefund ? Colors.green : Colors.orange), borderRadius: BorderRadius.circular(12)),
+          child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Expanded(child: Text(g.contractor, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), overflow: TextOverflow.ellipsis)),
+              if (g.orderId != null) Text('INV #${g.orderId}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontWeight: FontWeight.w500)),
+            ]),
+            const SizedBox(height: 6),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Text('Out: ${DatabaseHelper.formatDateString(g.checkoutDate)}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 14)),
+              if (g.isCancelled) Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6), border: Border.all(color: Colors.red.withValues(alpha: 0.5), width: 0.8)),
+                child: const Text('CANCELLED INVOICE', style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
               ),
             ]),
-          ),
-          onChanged: _onSearch,
-        ),
-      ),
-      Card(
-        margin: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-        child: Padding(
-          padding: appSettingsNotifier.cardPadding,
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Total Due', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
-                    const SizedBox(height: 2),
-                    Text(formatMoney(_ledger.where((g) => g.balance > 0).fold(0.0, (s, g) => s + g.balance)), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
-                  ],
-                ),
+            const Divider(height: 20),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Billed:'), Text(formatMoney(g.calculateTotalCost()), style: TextStyle(decoration: g.isCancelled ? TextDecoration.lineThrough : null))]),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Paid:'), Text('- ${formatMoney(g.advance)}')]),
+            if (g.discount > 0) Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Discount Applied:'), Text('- ${formatMoney(g.discount)}')]),
+            const SizedBox(height: 4),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Text(isRefund ? 'Refund Due:' : 'Amount Due:', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+              Text(formatMoney(g.balance, absolute: true), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: isRefund ? Colors.green : Colors.orange)),
+            ]),
+            const SizedBox(height: 16),
+            SizedBox(width: double.infinity, child: ElevatedButton.icon(
+              icon: Icon(isRefund ? Icons.undo : Icons.payment),
+              label: Text(isRefund ? 'Record Refund/Discount' : 'Record Payment/Discount'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: isRefund ? Colors.green.withValues(alpha: 0.2) : Colors.orange.withValues(alpha: 0.2),
+                foregroundColor: isRefund ? Colors.greenAccent : Colors.orangeAccent,
               ),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Total Refunds', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
-                    const SizedBox(height: 2),
-                    Text(formatMoney(_ledger.where((g) => g.balance < 0).fold(0.0, (s, g) => s + g.balance.abs())), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
-                  ],
-                ),
-              ),
-              Text('${_ledger.length} inv', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
-            ],
-          ),
-        ),
-      ),
-      Expanded(child: _ledger.isEmpty
-          ? Center(child: Text(
-          _filterMode == 'Amount Due' ? 'No pending collections.' :
-          _filterMode == 'Refund Due' ? 'No pending refunds.' :
-          'All returned invoices are settled!',
-          style: const TextStyle(fontSize: 16, color: Colors.green)))
-          : RefreshIndicator(onRefresh: _load, child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-        itemCount: _ledger.length,
-        itemBuilder: (_, i) {
-          final g = _ledger[i];
-          final isRefund = g.balance < 0;
-          return Card(
-            margin: const EdgeInsets.only(bottom: 12),
-            shape: RoundedRectangleBorder(side: BorderSide(color: isRefund ? Colors.green : Colors.orange), borderRadius: BorderRadius.circular(12)),
-            child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Expanded(child: Text(g.contractor, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18), overflow: TextOverflow.ellipsis)),
-                if (g.orderId != null) Text('INV #${g.orderId}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontWeight: FontWeight.w500)),
-              ]),
-              const SizedBox(height: 6),
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text('Out: ${DatabaseHelper.formatDateString(g.checkoutDate)}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 13)),
-                if (g.isCancelled) Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6), border: Border.all(color: Colors.red.withValues(alpha: 0.5), width: 0.8)),
-                  child: const Text('CANCELLED INVOICE', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
-                ),
-              ]),
-              const Divider(height: 20),
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Billed:'), Text(formatMoney(g.calculateTotalCost()), style: TextStyle(decoration: g.isCancelled ? TextDecoration.lineThrough : null))]),
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Paid:'), Text('- ${formatMoney(g.advance)}')]),
-              if (g.discount > 0) Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Discount Applied:'), Text('- ${formatMoney(g.discount)}')]),
-              const SizedBox(height: 4),
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text(isRefund ? 'Refund Due:' : 'Amount Due:', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                Text(formatMoney(g.balance, absolute: true), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: isRefund ? Colors.green : Colors.orange)),
-              ]),
-              const SizedBox(height: 16),
-              SizedBox(width: double.infinity, child: ElevatedButton.icon(
-                icon: Icon(isRefund ? Icons.undo : Icons.payment),
-                label: Text(isRefund ? 'Record Refund/Discount' : 'Record Payment/Discount'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: isRefund ? Colors.green.withValues(alpha: 0.2) : Colors.orange.withValues(alpha: 0.2),
-                  foregroundColor: isRefund ? Colors.greenAccent : Colors.orangeAccent,
-                ),
-                onPressed: () => _settleGroup(g),
-              )),
-            ])),
-          );
-        },
-      )),
-      ),
-    ]),
-  );
+              onPressed: () => _settleGroup(g),
+            )),
+          ])),
+        );
+      },
+    )),
+    ),
+  ]);
 }
 
 // =================================================
@@ -2944,7 +3026,13 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
 class PaymentHistoryScreen extends StatefulWidget {
   final int? initialOrderId;
   final int? initialFallbackRentalId;
-  const PaymentHistoryScreen({super.key, this.initialOrderId, this.initialFallbackRentalId});
+  final bool isTab;
+  const PaymentHistoryScreen({
+    super.key,
+    this.initialOrderId,
+    this.initialFallbackRentalId,
+    this.isTab = false,
+  });
   @override
   State<PaymentHistoryScreen> createState() => _PaymentHistoryScreenState();
 }
@@ -3032,15 +3120,15 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
     padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
     decoration: BoxDecoration(
       color: color.withValues(alpha: 0.14),
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: BorderRadius.circular(4),
       border: Border.all(color: color.withValues(alpha: 0.5), width: 0.8),
     ),
-    child: Text(text, style: TextStyle(fontSize: 10.5, color: color, fontWeight: FontWeight.w600)),
+    child: Text(text, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w600)),
   );
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Payment History')),
+    appBar: widget.isTab ? null : AppBar(title: const Text('Payment History')),
     body: Column(
       children: [
         if (_scopedOrderId != null || _scopedFallbackRentalId != null)
@@ -3119,7 +3207,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
             child: RefreshIndicator(
               onRefresh: _load,
               child: ListView(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
                 children: [
                   Card(
                     margin: const EdgeInsets.only(bottom: 10),
@@ -3131,7 +3219,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text('Total Payments', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+                                Text('Total Payments', style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)),
                                 const SizedBox(height: 2),
                                 Text(formatMoney(_totalPayments), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
                               ],
@@ -3141,7 +3229,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text('Total Refunds', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+                                Text('Total Refunds', style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)),
                                 const SizedBox(height: 2),
                                 Text(formatMoney(_totalRefunds), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
                               ],
@@ -3207,7 +3295,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                                         maxLines: 1,
                                         softWrap: false,
                                         overflow: TextOverflow.visible,
-                                        style: TextStyle(fontSize: 11.5, color: Theme.of(context).textTheme.bodySmall?.color),
+                                        style: TextStyle(fontSize: 14.0, color: Theme.of(context).textTheme.bodySmall?.color),
                                       ),
                                     ],
                                   ),
@@ -3616,7 +3704,7 @@ class _StockChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-    decoration: BoxDecoration(color: color.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(10)),
+    decoration: BoxDecoration(color: color.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(4)),
     child: Text(label, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w600)),
   );
 }
@@ -4611,7 +4699,11 @@ class _CustomersManagementScreenState extends State<CustomersManagementScreen> {
         );
       })),
     ]),
-    floatingActionButton: FloatingActionButton.extended(icon: const Icon(Icons.person_add), label: const Text('Add Customer'), onPressed: () => _showCustomerDialog()),
+    floatingActionButton: FloatingActionButton(
+      onPressed: () => _showCustomerDialog(),
+      tooltip: 'Add Customer',
+      child: const Icon(Icons.person_add),
+    ),
   );
 }
 
@@ -4913,7 +5005,7 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
                       Expanded(child: Text(name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
                       if (isBlacklisted) Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.red, width: 0.8)),
+                        decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.red, width: 0.8)),
                         child: const Row(mainAxisSize: MainAxisSize.min, children: [
                           Icon(Icons.block, size: 11, color: Colors.red),
                           SizedBox(width: 4),
@@ -5869,9 +5961,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
         _switchSettingTile(icon: Icons.alarm_on, color: Colors.amber, title: 'Overdue Rental Alert', subtitle: 'Alert when a rental exceeds ${s.overdueDays} days', value: s.notifyOverdue, onChanged: s.setNotifyOverdue),
         _switchSettingTile(icon: Icons.payments_outlined, color: Colors.amber, title: 'Pending Payment Reminder', subtitle: 'Remind about unsettled returned invoices', value: s.notifyPendingPayments, onChanged: s.setNotifyPendingPayments),
-        _switchSettingTile(icon: Icons.undo, color: Colors.amber, title: 'Refund Wait Alert', subtitle: 'Alert when a customer has been waiting too long for a refund', value: s.notifyRefundWait, onChanged: s.setNotifyRefundWait),
-        _switchSettingTile(icon: Icons.event_note_outlined, color: Colors.amber, title: 'Rental Anniversary Alert', subtitle: 'Notify on milestone days - 7, 14, 30, 60...', value: s.notifyAnniversary, onChanged: s.setNotifyAnniversary),
-
 
         const Divider(height: 1, indent: 16, endIndent: 16),
         Padding(
@@ -5929,7 +6018,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const ListTile(
           leading: Icon(Icons.construction, color: Colors.amber),
           title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: Text('Version 2.5.3  |  Database v23'),
+          subtitle: Text('Version 2.5.4  |  Database v23'),
         ),
         ListTile(
           leading: const Icon(Icons.privacy_tip_outlined, color: Colors.amber),
