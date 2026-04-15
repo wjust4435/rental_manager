@@ -1,7 +1,7 @@
 name: rental_manager
 description: Offline rental and inventory manager for any item type
 publish_to: none
-version: 2.5.4+14
+version: 2.5.5+14
 
 # ---------------------------------------------------------------------------
 # License: GNU General Public License v3.0 or later (GPL-3.0-or-later)
@@ -26,6 +26,7 @@ dependencies:
   flutter_local_notifications: ^17.2.4
   fl_chart: ^0.70.0
   share_plus: ^10.1.2
+  url_launcher: ^6.3.0
 
 dev_dependencies:
   flutter_test:
