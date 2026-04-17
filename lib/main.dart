@@ -2382,7 +2382,6 @@ List<RentalGroup> groupRentalsByInvoice(List<Map<String, dynamic>> rawData) {
   return groups;
 }
 
-// NEW CODE
 // =================================================
 // Universal Rental Card
 // =================================================
@@ -3241,11 +3240,13 @@ class _SettleGroupDialogState extends State<_SettleGroupDialog> {
 class PaymentLedgerScreen extends StatefulWidget {
   final int? initialOrderId;
   final int? initialFallbackRentalId;
+  final String? initialDisplayDocNumber; // NEW: FY-compliant document number
   final int initialTabIndex;
   const PaymentLedgerScreen({
     super.key,
     this.initialOrderId,
     this.initialFallbackRentalId,
+    this.initialDisplayDocNumber,
     this.initialTabIndex = 0,
   });
   @override
@@ -3271,6 +3272,7 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
   late final int _initialTabIndex;
   int? _scopedOrderId;
   int? _scopedFallbackRentalId;
+  String? _displayDocNumber;
 
   @override
   void initState() {
@@ -3279,6 +3281,7 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
     _initialTabIndex = widget.initialTabIndex < 0 ? 0 : (widget.initialTabIndex > 1 ? 1 : widget.initialTabIndex);
     _scopedOrderId = widget.initialOrderId;
     _scopedFallbackRentalId = widget.initialFallbackRentalId;
+    _displayDocNumber = widget.initialDisplayDocNumber;
     _scrollCtrl.addListener(_onScroll);
     _load();
   }
@@ -3385,6 +3388,7 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
     final adjustedAmount = isRefund ? -amount : amount;
 
     if (isBadDebt) {
+      // Fiscal Note: Writing off debt clears the ledger balance and moves the loss to the Bad Debt module.
       await DatabaseHelper.writeOffBadDebt(
         group.items.first['id'] as int,
         amount,
@@ -3443,6 +3447,7 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
             isTab: true,
             initialOrderId: _scopedOrderId,
             initialFallbackRentalId: _scopedFallbackRentalId,
+            initialDisplayDocNumber: _displayDocNumber, // NEW: Pass the doc number down to history
           ),
         ],
       ),
@@ -3469,7 +3474,9 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                'Showing ledger for Invoice #${_scopedOrderId ?? _scopedFallbackRentalId}',
+                _displayDocNumber != null
+                    ? 'Showing Outstanding for $_displayDocNumber'
+                    : 'Showing Outstanding for Invoice #${_scopedOrderId ?? _scopedFallbackRentalId}',
                 style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
               ),
             ),
@@ -3609,11 +3616,13 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
 class PaymentHistoryScreen extends StatefulWidget {
   final int? initialOrderId;
   final int? initialFallbackRentalId;
+  final String? initialDisplayDocNumber; // NEW: FY-compliant document number
   final bool isTab;
   const PaymentHistoryScreen({
     super.key,
     this.initialOrderId,
     this.initialFallbackRentalId,
+    this.initialDisplayDocNumber,
     this.isTab = false,
   });
   @override
@@ -3630,12 +3639,14 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
   double _totalRefunds = 0.0;
   late final int? _scopedOrderId;
   late final int? _scopedFallbackRentalId;
+  late final String? _displayDocNumber;
 
   @override
   void initState() {
     super.initState();
     _scopedOrderId = widget.initialOrderId;
     _scopedFallbackRentalId = widget.initialFallbackRentalId;
+    _displayDocNumber = widget.initialDisplayDocNumber;
     _load();
   }
 
@@ -3660,6 +3671,7 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
     );
     double inAmt = 0.0;
     double outAmt = 0.0;
+    // Fiscal Note: Accurately separating inbound cash flows from outbound refunds for ledger reconciliation.
     for (final r in rows) {
       final a = (r['amount'] as num?)?.toDouble() ?? 0.0;
       if (a >= 0) {
@@ -3730,9 +3742,11 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    _scopedOrderId != null
-                        ? 'Showing payments for Invoice #$_scopedOrderId'
-                        : 'Showing payments for linked record #$_scopedFallbackRentalId',
+                    _displayDocNumber != null
+                        ? 'Showing Payments History for $_displayDocNumber'
+                        : (_scopedOrderId != null
+                        ? 'Showing payments History for Invoice #$_scopedOrderId'
+                        : 'Showing payments History for linked record #$_scopedFallbackRentalId'),
                     style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
                   ),
                 ),
@@ -5332,6 +5346,12 @@ class _HistoryTabState extends State<HistoryTab> {
 
   void _openPaymentHistoryForGroup(RentalGroup g) {
     // Both actions open the unified Transactions screen; selected tab changes by intent.
+    // Fiscal Note: We intelligently extract the final invoice number, falling back to proforma,
+    // to guarantee the UI ledger perfectly mirrors the generated PDF documents.
+    final displayDocNumber = g.invoiceNumber.isNotEmpty
+        ? g.invoiceNumber
+        : (g.proformaNumber.isNotEmpty ? g.proformaNumber : null);
+
     showDialog(
       context: context,
       builder: (ctx) => SimpleDialog(
@@ -5344,6 +5364,7 @@ class _HistoryTabState extends State<HistoryTab> {
                 initialTabIndex: 1,
                 initialOrderId: g.orderId,
                 initialFallbackRentalId: g.orderId == null ? (g.fallbackId ?? (g.items.firstOrNull?['id'] as int?)) : null,
+                initialDisplayDocNumber: displayDocNumber,
               )));
             },
             child: const Row(children: [Icon(Icons.history, color: Colors.blue), SizedBox(width: 12), Text('Payment History')]),
@@ -5354,6 +5375,7 @@ class _HistoryTabState extends State<HistoryTab> {
               Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentLedgerScreen(
                 initialOrderId: g.orderId,
                 initialFallbackRentalId: g.orderId == null ? (g.fallbackId ?? (g.items.firstOrNull?['id'] as int?)) : null,
+                initialDisplayDocNumber: displayDocNumber,
               )));
             },
             child: const Row(children: [Icon(Icons.account_balance_wallet, color: Colors.orange), SizedBox(width: 12), Text('Outstanding Ledger')]),
@@ -7480,7 +7502,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const ListTile(
           leading: Icon(Icons.construction, color: Colors.amber),
           title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: Text('Version 2.6.0  |  Database v26'),
+          subtitle: Text('Version 2.6.1  |  Database v26'),
         ),
         ListTile(
           leading: const Icon(Icons.privacy_tip_outlined, color: Colors.amber),

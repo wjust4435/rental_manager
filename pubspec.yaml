@@ -1,7 +1,7 @@
 name: rental_manager
 description: Offline rental and inventory manager for any item type
 publish_to: none
-version: 2.6.0+14
+version: 2.6.1+14
 
 # ---------------------------------------------------------------------------
 # License: GNU General Public License v3.0 or later (GPL-3.0-or-later)
