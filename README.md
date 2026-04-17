@@ -10,9 +10,9 @@ See [LICENSE](LICENSE).
 ## Current App Scope
 
 - Platform target: Android-first Flutter app (offline operation).
-- Version: `2.5.5`
+- Version: `2.6.0`
 - Local database: `siteyard_v3.db`
-- Database schema version in app: `v24`
+- Database schema version in app: `v26`
 
 ## Key Features
 

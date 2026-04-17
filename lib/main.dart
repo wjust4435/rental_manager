@@ -21,6 +21,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:fl_chart/fl_chart.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -120,12 +121,14 @@ class AppSettingsNotifier extends ChangeNotifier {
   String _timeFormat         = '12h';
   bool   _showTopCustomersByRevenue = false;
   bool   _showPaymentHistoryTime = true;
-  bool   _showPdfSignatures  = true;
+  bool   _showProformaSignatures = true;
+  bool   _showInvoiceSignatures  = false;
   bool   _notifyOverdue      = true;
   bool   _notifyPendingPayments = true;
   bool   _notifySummary      = false;
   String _language           = 'English';
   String _appIcon            = 'default';
+  bool   _allowFinalInvoiceEditing = true;
 
   SharedPreferences? _prefs;
 
@@ -138,11 +141,13 @@ class AppSettingsNotifier extends ChangeNotifier {
   String get timeFormat          => _timeFormat;
   bool   get showTopCustomersByRevenue => _showTopCustomersByRevenue;
   bool   get showPaymentHistoryTime => _showPaymentHistoryTime;
-  bool   get showPdfSignatures   => _showPdfSignatures;
+  bool   get showProformaSignatures => _showProformaSignatures;
+  bool   get showInvoiceSignatures  => _showInvoiceSignatures;
   bool   get notifyOverdue       => _notifyOverdue;
   bool   get notifyPendingPayments => _notifyPendingPayments;
   bool   get notifySummary       => _notifySummary;
   String get language            => _language;
+  bool   get allowFinalInvoiceEditing => _allowFinalInvoiceEditing;
 
   double get textScale {
     if (_fontSize == 'small') return 0.9;
@@ -173,12 +178,14 @@ class AppSettingsNotifier extends ChangeNotifier {
     _timeFormat                = p.getString('timeFormat')                ?? '12h';
     _showTopCustomersByRevenue = p.getBool('showTopCustomersByRevenue')   ?? false;
     _showPaymentHistoryTime    = p.getBool('showPaymentHistoryTime')      ?? true;
-    _showPdfSignatures         = p.getBool('showPdfSignatures')           ?? true;
+    _showProformaSignatures    = p.getBool('showProformaSignatures')      ?? p.getBool('showPdfSignatures') ?? true;
+    _showInvoiceSignatures     = p.getBool('showInvoiceSignatures')       ?? p.getBool('showPdfSignatures') ?? false;
     _notifyOverdue             = p.getBool('notifyOverdue')               ?? true;
     _notifyPendingPayments     = p.getBool('notifyPendingPayments')       ?? true;
     _notifySummary             = p.getBool('notifySummary')               ?? false;
     _language                  = p.getString('language')                  ?? 'English';
     _appIcon                   = p.getString('appIcon')                   ?? 'default';
+    _allowFinalInvoiceEditing  = p.getBool('allowFinalInvoiceEditing')    ?? true;
     notifyListeners();
   }
 
@@ -192,12 +199,14 @@ class AppSettingsNotifier extends ChangeNotifier {
     await p.setString('timeFormat',          _timeFormat);
     await p.setBool('showTopCustomersByRevenue', _showTopCustomersByRevenue);
     await p.setBool('showPaymentHistoryTime', _showPaymentHistoryTime);
-    await p.setBool('showPdfSignatures',     _showPdfSignatures);
+    await p.setBool('showProformaSignatures', _showProformaSignatures);
+    await p.setBool('showInvoiceSignatures',  _showInvoiceSignatures);
     await p.setBool('notifyOverdue',         _notifyOverdue);
     await p.setBool('notifyPendingPayments', _notifyPendingPayments);
     await p.setBool('notifySummary',         _notifySummary);
     await p.setString('language',            _language);
     await p.setString('appIcon',             _appIcon);
+    await p.setBool('allowFinalInvoiceEditing', _allowFinalInvoiceEditing);
   }
 
   Future<void> setCurrencySymbol(String v)      async { _currencySymbol = v; notifyListeners(); await _save(); }
@@ -208,12 +217,14 @@ class AppSettingsNotifier extends ChangeNotifier {
   Future<void> setTimeFormat(String v)          async { _timeFormat = v; notifyListeners(); await _save(); }
   Future<void> setShowTopCustomersByRevenue(bool v) async { _showTopCustomersByRevenue = v; notifyListeners(); await _save(); }
   Future<void> setShowPaymentHistoryTime(bool v) async { _showPaymentHistoryTime = v; notifyListeners(); await _save(); }
-  Future<void> setShowPdfSignatures(bool v)     async { _showPdfSignatures = v; notifyListeners(); await _save(); }
+  Future<void> setShowProformaSignatures(bool v) async { _showProformaSignatures = v; notifyListeners(); await _save(); }
+  Future<void> setShowInvoiceSignatures(bool v)  async { _showInvoiceSignatures = v; notifyListeners(); await _save(); }
   Future<void> setNotifyOverdue(bool v)         async { _notifyOverdue = v; notifyListeners(); await _save(); }
   Future<void> setNotifyPendingPayments(bool v) async { _notifyPendingPayments = v; notifyListeners(); await _save(); }
   Future<void> setNotifySummary(bool v)         async { _notifySummary = v; notifyListeners(); await _save(); }
   Future<void> setLanguage(String v)            async { _language = v; notifyListeners(); await _save(); }
   Future<void> setAppIcon(String v)             async { _appIcon = v; notifyListeners(); await _save(); }
+  Future<void> setAllowFinalInvoiceEditing(bool v) async { _allowFinalInvoiceEditing = v; notifyListeners(); await _save(); }
 }
 
 // =================================================
@@ -258,7 +269,10 @@ class NotificationService {
   static Future<void> checkAndNotify() async {
     final prefs = await SharedPreferences.getInstance();
     final today = DateTime.now().toIso8601String().split('T')[0];
-    final s     = appSettingsNotifier;
+    final s = appSettingsNotifier;
+
+    // Check if any notifications are actually enabled before doing anything
+    if (!s.notifyOverdue && !s.notifyPendingPayments && !s.notifySummary) return;
 
     Future<bool> once(String key) async {
       if (prefs.getString('notif_$key') == today) return false;
@@ -266,19 +280,22 @@ class NotificationService {
       return true;
     }
 
-    // 1. Determine if we even need to run the heavy rental query today
-    final needsGroups = (s.notifyPendingPayments && prefs.getString('notif_pending') != today) ||
-        (s.notifySummary         && prefs.getString('notif_summary') != today);
+    // Offload processing to avoid UI jank during emulator startup
+    Future.microtask(() async {
+      final needsGroups = (s.notifyPendingPayments && prefs.getString('notif_pending') != today) ||
+          (s.notifySummary && prefs.getString('notif_summary') != today);
 
-    // 2. Fetch and group rentals exactly ONCE if needed
-    List<RentalGroup> cachedGroups = [];
-    if (needsGroups) {
-      cachedGroups = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
-    }
+      List<RentalGroup> cachedGroups = [];
+      if (needsGroups) {
+        // Optimized fetch: We only need returned/unsettled items for notifications
+        final allRaw = await DatabaseHelper.getAllRentals();
+        cachedGroups = groupRentalsByInvoice(allRaw);
+      }
 
-    if (s.notifyOverdue         && await once('overdue')) await _checkOverdue(s.overdueDays);
-    if (s.notifyPendingPayments && await once('pending')) await _checkPendingPayments(cachedGroups);
-    if (s.notifySummary         && await once('summary')) await _checkSummary(s.overdueDays, cachedGroups);
+      if (s.notifyOverdue && await once('overdue')) await _checkOverdue(s.overdueDays);
+      if (s.notifyPendingPayments && await once('pending')) await _checkPendingPayments(cachedGroups);
+      if (s.notifySummary && await once('summary')) await _checkSummary(s.overdueDays, cachedGroups);
+    });
   }
 
   static Future<void> _checkOverdue(int days) async {
@@ -573,7 +590,7 @@ void _applySort(List<RentalGroup> list, String mode) {
 // Database Helper
 // =================================================
 class DatabaseHelper {
-  static const int _dbVersion = 24;
+  static const int _dbVersion = 26;
   static Database? _db;
 
   static Future<void> closeDatabase() async {
@@ -591,26 +608,33 @@ class DatabaseHelper {
       path,
       version: _dbVersion,
       onCreate: (db, v) async {
+        // v26 Schema updates included in base creation
         await db.execute(
-            "CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, category TEXT DEFAULT 'General', total INTEGER NOT NULL DEFAULT 0, rented INTEGER DEFAULT 0, lostQty INTEGER DEFAULT 0, notes TEXT DEFAULT '')"
+            "CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, category TEXT DEFAULT 'General', total INTEGER NOT NULL DEFAULT 0, rented INTEGER DEFAULT 0, lostQty INTEGER DEFAULT 0, notes TEXT DEFAULT '', purchasePrice REAL DEFAULT 0, purchaseDate TEXT DEFAULT '', expectedLifeMonths INTEGER DEFAULT 0)"
         );
         await db.execute(
-            "CREATE TABLE rentals(id INTEGER PRIMARY KEY AUTOINCREMENT, itemId INTEGER, orderId INTEGER, customerId INTEGER, contractor TEXT, phone TEXT, phone2 TEXT DEFAULT '', address TEXT, advanceDeposit REAL DEFAULT 0, discount REAL DEFAULT 0, badDebt REAL DEFAULT 0, qty INTEGER, checkoutDate TEXT, rentalRate REAL DEFAULT 0, returned INTEGER DEFAULT 0, returnDate TEXT, notes TEXT DEFAULT '', isSettled INTEGER DEFAULT 0, paymentMethod TEXT DEFAULT '', penaltyFee REAL DEFAULT 0, damagedQty INTEGER DEFAULT 0, isCancelled INTEGER DEFAULT 0)"
+            "CREATE TABLE rentals(id INTEGER PRIMARY KEY AUTOINCREMENT, itemId INTEGER, orderId INTEGER, customerId INTEGER, contractor TEXT, phone TEXT, phone2 TEXT DEFAULT '', address TEXT, advanceDeposit REAL DEFAULT 0, discount REAL DEFAULT 0, badDebt REAL DEFAULT 0, qty INTEGER, checkoutDate TEXT, rentalRate REAL DEFAULT 0, returned INTEGER DEFAULT 0, returnDate TEXT, notes TEXT DEFAULT '', isSettled INTEGER DEFAULT 0, paymentMethod TEXT DEFAULT '', penaltyFee REAL DEFAULT 0, damagedQty INTEGER DEFAULT 0, isCancelled INTEGER DEFAULT 0, invoiceNumber TEXT DEFAULT '', voidedAt TEXT DEFAULT '')"
         );
         await db.execute(
             "CREATE TABLE customers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, phone TEXT, phone2 TEXT DEFAULT '', email TEXT DEFAULT '', address TEXT, notes TEXT DEFAULT '', joinedDate TEXT DEFAULT '', isBlacklisted INTEGER DEFAULT 0)"
         );
         await db.execute(
-            "CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT, customerId INTEGER, customerName TEXT, createdDate TEXT)"
+            "CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT, customerId INTEGER, customerName TEXT, createdDate TEXT, proformaNumber TEXT DEFAULT '', invoiceNumber TEXT DEFAULT '', voidedAt TEXT DEFAULT '')"
         );
         await db.execute(
-            "CREATE TABLE payment_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, orderId INTEGER, fallbackRentalId INTEGER, amount REAL NOT NULL, method TEXT DEFAULT '', paidAt TEXT DEFAULT '')"
+            "CREATE TABLE payment_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, orderId INTEGER, fallbackRentalId INTEGER, amount REAL NOT NULL, method TEXT DEFAULT '', paidAt TEXT DEFAULT '', isCleared INTEGER DEFAULT 0)"
         );
         await db.execute(
-            "CREATE TABLE business_info(id INTEGER PRIMARY KEY, name TEXT DEFAULT '', phone TEXT DEFAULT '', phone2 TEXT DEFAULT '', email TEXT DEFAULT '', address TEXT DEFAULT '', upiId TEXT DEFAULT '', upiName TEXT DEFAULT '', taxProfile TEXT DEFAULT 'No Tax', taxType TEXT DEFAULT 'none', taxRate REAL DEFAULT 0, taxMode TEXT DEFAULT 'exclusive', taxRegNo TEXT DEFAULT '')"
+            "CREATE TABLE business_info(id INTEGER PRIMARY KEY, name TEXT DEFAULT '', phone TEXT DEFAULT '', phone2 TEXT DEFAULT '', email TEXT DEFAULT '', address TEXT DEFAULT '', upiId TEXT DEFAULT '', upiName TEXT DEFAULT '', taxProfile TEXT DEFAULT 'No Tax', taxType TEXT DEFAULT 'none', taxRate REAL DEFAULT 0, taxMode TEXT DEFAULT 'exclusive', taxRegNo TEXT DEFAULT '', fyStartMonth INTEGER DEFAULT 4)"
+        );
+        await db.execute(
+            "CREATE TABLE sequences(seqKey TEXT PRIMARY KEY, seqValue INTEGER)"
+        );
+        await db.execute(
+            "CREATE TABLE expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, paymentMethod TEXT, vendor TEXT, receiptPath TEXT, notes TEXT)"
         );
         await db.insert('business_info', {
-          'id': 1, 'name': '', 'phone': '', 'phone2': '', 'email': '', 'address': '', 'upiId': '', 'upiName': '', 'taxProfile': 'No Tax', 'taxType': 'none', 'taxRate': 0.0, 'taxMode': 'exclusive', 'taxRegNo': ''
+          'id': 1, 'name': '', 'phone': '', 'phone2': '', 'email': '', 'address': '', 'upiId': '', 'upiName': '', 'taxProfile': 'No Tax', 'taxType': 'none', 'taxRate': 0.0, 'taxMode': 'exclusive', 'taxRegNo': '', 'fyStartMonth': 4
         });
         await db.execute("CREATE INDEX IF NOT EXISTS idx_items_name ON items(name)");
         await db.execute("CREATE INDEX IF NOT EXISTS idx_rentals_checkout ON rentals(checkoutDate)");
@@ -619,7 +643,6 @@ class DatabaseHelper {
         await db.execute("CREATE INDEX IF NOT EXISTS idx_payment_logs_fallback ON payment_logs(fallbackRentalId)");
       },
       onUpgrade: (db, oldV, newV) async {
-        // Legacy migrations prior to v22 purged.
         if (oldV < 23) {
           try { await db.execute("ALTER TABLE rentals ADD COLUMN isCancelled INTEGER DEFAULT 0"); } catch (e, st) { debugPrint('Migration v23 error: $e\n$st'); }
         }
@@ -629,9 +652,98 @@ class DatabaseHelper {
             await db.execute("ALTER TABLE rentals ADD COLUMN damagedQty INTEGER DEFAULT 0");
           } catch (e, st) { debugPrint('Migration v24 error: $e\n$st'); }
         }
+        if (oldV < 25) {
+          try {
+            await db.execute("CREATE TABLE sequences(seqKey TEXT PRIMARY KEY, seqValue INTEGER)");
+            await db.execute("ALTER TABLE orders ADD COLUMN proformaNumber TEXT DEFAULT ''");
+            await db.execute("ALTER TABLE orders ADD COLUMN invoiceNumber TEXT DEFAULT ''");
+            await db.execute("ALTER TABLE rentals ADD COLUMN invoiceNumber TEXT DEFAULT ''");
+            await db.execute("ALTER TABLE business_info ADD COLUMN fyStartMonth INTEGER DEFAULT 4");
+
+            // --- OLD DATA INTELLIGENT BACKFILL ENGINE ---
+            final bizRows = await db.query('business_info', where: 'id=1');
+            final fyStartMonth = bizRows.isNotEmpty ? (bizRows.first['fyStartMonth'] as int? ?? 4) : 4;
+            final existingOrders = await db.query('orders', orderBy: 'id ASC');
+
+            for (final o in existingOrders) {
+              final orderId = o['id'] as int;
+
+              // 1. Generate Proforma based on Checkout Date
+              final dt = DateTime.tryParse(o['createdDate'] as String? ?? '') ?? DateTime.now();
+              final proformaFy = getFiscalYear(dt, fyStartMonth);
+              final pSeqKey = 'ORD-$proformaFy';
+
+              final pRows = await db.query('sequences', where: 'seqKey=?', whereArgs: [pSeqKey]);
+              int pNext = 1;
+              if (pRows.isEmpty) { await db.insert('sequences', {'seqKey': pSeqKey, 'seqValue': 1}); }
+              else { pNext = (pRows.first['seqValue'] as int) + 1; await db.update('sequences', {'seqValue': pNext}, where: 'seqKey=?', whereArgs: [pSeqKey]); }
+
+              final proformaNum = 'ORD-$proformaFy-$pNext';
+              await db.update('orders', {'proformaNumber': proformaNum}, where: 'id=?', whereArgs: [orderId]);
+
+              // 2. If Fully Returned, Generate Invoice based on Return Date
+              final activeCount = (await db.rawQuery('SELECT COUNT(*) as c FROM rentals WHERE orderId=? AND (returned=0 OR returned IS NULL)', [orderId])).first['c'] as int? ?? 0;
+              if (activeCount == 0) {
+                final rentalRows = await db.query('rentals', where: 'orderId=?', whereArgs: [orderId]);
+                if (rentalRows.isNotEmpty) {
+                  DateTime latestReturn = DateTime(2000);
+                  for(final r in rentalRows) {
+                    final rd = DateTime.tryParse(r['returnDate'] as String? ?? '');
+                    if (rd != null && rd.isAfter(latestReturn)) latestReturn = rd;
+                  }
+                  if (latestReturn.year == 2000) latestReturn = dt;
+
+                  final invFy = getFiscalYear(latestReturn, fyStartMonth);
+                  final iSeqKey = 'INV-$invFy';
+
+                  final iRows = await db.query('sequences', where: 'seqKey=?', whereArgs: [iSeqKey]);
+                  int iNext = 1;
+                  if (iRows.isEmpty) { await db.insert('sequences', {'seqKey': iSeqKey, 'seqValue': 1}); }
+                  else { iNext = (iRows.first['seqValue'] as int) + 1; await db.update('sequences', {'seqValue': iNext}, where: 'seqKey=?', whereArgs: [iSeqKey]); }
+
+                  final invoiceNum = 'INV-$invFy-$iNext';
+                  await db.update('orders', {'invoiceNumber': invoiceNum}, where: 'id=?', whereArgs: [orderId]);
+                }
+              }
+            }
+          } catch (e, st) { debugPrint('Migration v25 error: $e\n$st'); }
+        }
+
+        if (oldV < 26) {
+          try {
+            await db.execute("CREATE TABLE expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, paymentMethod TEXT, vendor TEXT, receiptPath TEXT, notes TEXT)");
+            await db.execute("ALTER TABLE items ADD COLUMN purchasePrice REAL DEFAULT 0");
+            await db.execute("ALTER TABLE items ADD COLUMN purchaseDate TEXT DEFAULT ''");
+            await db.execute("ALTER TABLE items ADD COLUMN expectedLifeMonths INTEGER DEFAULT 0");
+            await db.execute("ALTER TABLE payment_logs ADD COLUMN isCleared INTEGER DEFAULT 0");
+            await db.execute("ALTER TABLE rentals ADD COLUMN voidedAt TEXT DEFAULT ''");
+            await db.execute("ALTER TABLE orders ADD COLUMN voidedAt TEXT DEFAULT ''");
+          } catch (e, st) { debugPrint('Migration v26 error: $e\n$st'); }
+        }
       },
     );
     return _db!;
+  }
+
+  // --- EXPENSE TRACKING LOGIC ---
+  static Future<List<Map<String, dynamic>>> getExpenses({String? search}) async {
+    final db = await getDatabase();
+    if (search != null && search.isNotEmpty) {
+      return db.query('expenses', where: 'category LIKE ? OR vendor LIKE ? OR notes LIKE ?', whereArgs: ['%$search%', '%$search%', '%$search%'], orderBy: 'date DESC, id DESC');
+    }
+    return db.query('expenses', orderBy: 'date DESC, id DESC');
+  }
+
+  static Future<int> insertExpense(String date, String category, double amount, String method, String vendor, String notes) async {
+    final db = await getDatabase();
+    return db.insert('expenses', {
+      'date': date, 'category': category, 'amount': amount, 'paymentMethod': method, 'vendor': vendor, 'notes': notes, 'receiptPath': ''
+    });
+  }
+
+  static Future<void> deleteExpense(int id) async {
+    final db = await getDatabase();
+    await db.delete('expenses', where: 'id=?', whereArgs: [id]);
   }
 
   static Future<void> writeOffBadDebt(int firstId, double amount, List<int> allIds) async {
@@ -769,6 +881,8 @@ class DatabaseHelper {
       group.phone,
       group.phone2,
       group.address,
+      group.proformaNumber,
+      group.invoiceNumber,
       if (groupId != null) groupId.toString(),
       ...group.items.map((i) => i['orderCustomerName'] as String? ?? ''),
     ];
@@ -795,12 +909,13 @@ class DatabaseHelper {
     // Pull once, then apply business rules in Dart to keep search behavior deterministic.
     final lines = await db.rawQuery(
       "SELECT rentals.*, items.name as itemName, COALESCE(orders.customerName, '') as orderCustomerName, "
-      "CASE WHEN (rentals.phone2 IS NULL OR rentals.phone2 = '') THEN COALESCE(customers.phone2, '') ELSE rentals.phone2 END as phone2 "
-      "FROM rentals JOIN items ON rentals.itemId=items.id "
-      "LEFT JOIN customers ON customers.name=rentals.contractor "
-      "LEFT JOIN orders ON orders.id=rentals.orderId "
-      "WHERE COALESCE(rentals.isCancelled, 0) = 0 "
-      "ORDER BY rentals.checkoutDate ASC, rentals.id ASC",
+          "COALESCE(orders.proformaNumber, '') as proformaNumber, COALESCE(orders.invoiceNumber, '') as invoiceNumber, "
+          "CASE WHEN (rentals.phone2 IS NULL OR rentals.phone2 = '') THEN COALESCE(customers.phone2, '') ELSE rentals.phone2 END as phone2 "
+          "FROM rentals JOIN items ON rentals.itemId=items.id "
+          "LEFT JOIN customers ON customers.name=rentals.contractor "
+          "LEFT JOIN orders ON orders.id=rentals.orderId "
+          "WHERE COALESCE(rentals.isCancelled, 0) = 0 "
+          "ORDER BY rentals.checkoutDate ASC, rentals.id ASC",
     );
 
     var groups = groupRentalsByInvoice(lines).where((g) => !g.isCancelled).toList();
@@ -815,6 +930,8 @@ class DatabaseHelper {
     // Scoped mode (navigation from History/Transactions): bypass global outstanding rules.
     if (scopedGroupId != null) {
       groups = groups.where((g) => _ledgerGroupIdOf(g) == scopedGroupId).toList();
+      // Ensure we do not show fully paid/settled records in the Outstanding tab.
+      groups = groups.where((g) => !g.isSettled && g.balance != 0).toList();
       return groups;
     }
 
@@ -986,9 +1103,11 @@ class DatabaseHelper {
 
     final rows = await db.rawQuery(
       "SELECT rentals.*, items.name as itemName, "
+          "COALESCE(orders.proformaNumber, '') as proformaNumber, COALESCE(orders.invoiceNumber, '') as invoiceNumber, "
           "CASE WHEN (rentals.phone2 IS NULL OR rentals.phone2 = '') THEN COALESCE(customers.phone2, '') ELSE rentals.phone2 END as phone2 "
           "FROM rentals JOIN items ON rentals.itemId=items.id "
           "LEFT JOIN customers ON customers.name=rentals.contractor "
+          "LEFT JOIN orders ON orders.id=rentals.orderId "
           "$where ORDER BY rentals.checkoutDate ASC, rentals.id ASC$limitClause",
       args.isEmpty ? null : args,
     );
@@ -1037,6 +1156,14 @@ class DatabaseHelper {
       }
 
       if (group.orderId != null) {
+        // Check if a final invoice already exists for this order
+        final orderData = await txn.query('orders', columns: ['invoiceNumber'], where: 'id=?', whereArgs: [group.orderId]);
+        final hasInvoice = orderData.isNotEmpty && (orderData.first['invoiceNumber'] as String).isNotEmpty;
+
+        if (hasInvoice && !appSettingsNotifier.allowFinalInvoiceEditing) {
+          throw Exception('Cannot edit: A final invoice has already been issued. Change the lock setting in Business Preferences.');
+        }
+
         await txn.update('orders', {'customerName': contractor}, where: 'id=?', whereArgs: [group.orderId]);
       }
 
@@ -1076,14 +1203,32 @@ class DatabaseHelper {
         await txn.rawUpdate('UPDATE items SET rented=rented-? WHERE id=?', [(r['qty'] as int).clamp(0, rented), r['itemId']]);
         await txn.rawUpdate('UPDATE rentals SET returned=1, returnDate=? WHERE id=?', [returnDate, r['id']]);
       }
+
+      if (items.isNotEmpty && items.first['orderId'] != null) {
+        final orderId = items.first['orderId'] as int;
+        final activeCount = (await txn.rawQuery('SELECT COUNT(*) as c FROM rentals WHERE orderId=? AND (returned=0 OR returned IS NULL)', [orderId])).first['c'] as int? ?? 0;
+        if (activeCount == 0) {
+          final orderRow = (await txn.query('orders', where: 'id=?', whereArgs: [orderId])).firstOrNull;
+          if (orderRow != null && (orderRow['invoiceNumber'] as String? ?? '').isEmpty) {
+            final bizRows = await txn.query('business_info', where: 'id=1');
+            final fyStartMonth = bizRows.isNotEmpty ? (bizRows.first['fyStartMonth'] as int? ?? 4) : 4;
+            final dt = DateTime.parse(returnDate);
+            final fyPrefix = getFiscalYear(dt, fyStartMonth);
+            final invNum = await generateNextSequence(txn, 'INV', fyPrefix);
+            await txn.update('orders', {'invoiceNumber': invNum}, where: 'id=?', whereArgs: [orderId]);
+          }
+        }
+      }
     });
   }
 
   static Future<void> returnMultiplePartial(List<Map<String, dynamic>> returns, String returnDate) async {
     final db = await getDatabase();
     await db.transaction((txn) async {
+      int? orderId;
       for (final ret in returns) {
         final rental = ret['rental'] as Map<String, dynamic>;
+        orderId ??= rental['orderId'] as int?;
         final goodQty = ret['goodQty'] as int;
         final damagedQty = ret['damagedQty'] as int;
         final penalty = ret['penalty'] as double;
@@ -1126,6 +1271,21 @@ class DatabaseHelper {
             'damagedQty': damagedQty
           });
           await txn.rawUpdate('UPDATE rentals SET qty=qty-? WHERE id=?', [totalReturnQty, rentalId]);
+        }
+      }
+
+      if (orderId != null) {
+        final activeCount = (await txn.rawQuery('SELECT COUNT(*) as c FROM rentals WHERE orderId=? AND (returned=0 OR returned IS NULL)', [orderId])).first['c'] as int? ?? 0;
+        if (activeCount == 0) {
+          final orderRow = (await txn.query('orders', where: 'id=?', whereArgs: [orderId])).firstOrNull;
+          if (orderRow != null && (orderRow['invoiceNumber'] as String? ?? '').isEmpty) {
+            final bizRows = await txn.query('business_info', where: 'id=1');
+            final fyStartMonth = bizRows.isNotEmpty ? (bizRows.first['fyStartMonth'] as int? ?? 4) : 4;
+            final dt = DateTime.parse(returnDate);
+            final fyPrefix = getFiscalYear(dt, fyStartMonth);
+            final invNum = await generateNextSequence(txn, 'INV', fyPrefix);
+            await txn.update('orders', {'invoiceNumber': invNum}, where: 'id=?', whereArgs: [orderId]);
+          }
         }
       }
     });
@@ -1299,7 +1459,20 @@ class DatabaseHelper {
 
   static Future<int> createOrder(int? customerId, String customerName, String createdDate) async {
     final db = await getDatabase();
-    return db.insert('orders', {'customerId': customerId, 'customerName': customerName, 'createdDate': createdDate});
+    return db.transaction((txn) async {
+      final bizRows = await txn.query('business_info', where: 'id=1');
+      final fyStartMonth = bizRows.isNotEmpty ? (bizRows.first['fyStartMonth'] as int? ?? 4) : 4;
+      final dt = DateTime.parse(createdDate);
+      final fyPrefix = getFiscalYear(dt, fyStartMonth);
+      final proformaNum = await generateNextSequence(txn, 'ORD', fyPrefix);
+
+      return await txn.insert('orders', {
+        'customerId': customerId,
+        'customerName': customerName,
+        'createdDate': createdDate,
+        'proformaNumber': proformaNum
+      });
+    });
   }
 
   static Future<void> createOrderRentals(int orderId, List<Map<String, dynamic>> items) async {
@@ -1447,10 +1620,12 @@ class DatabaseHelper {
     if (s.isNotEmpty) {
       where.add(
         "(COALESCE(o.customerName, r.contractor, '') LIKE ? "
+            "OR COALESCE(o.proformaNumber, '') LIKE ? "
+            "OR COALESCE(o.invoiceNumber, '') LIKE ? "
             "OR COALESCE(p.method, '') LIKE ? "
             "OR CAST(COALESCE(p.orderId, p.fallbackRentalId) AS TEXT) LIKE ?)",
       );
-      args.addAll(['%$s%', '%$s%', '%$s%']);
+      args.addAll(['%$s%', '%$s%', '%$s%', '%$s%', '%$s%']);
     }
 
     final whereSql = where.isEmpty ? '' : 'WHERE ${where.join(' AND ')}';
@@ -1458,6 +1633,7 @@ class DatabaseHelper {
     final rows = await db.rawQuery(
       "SELECT p.id, p.orderId, p.fallbackRentalId, p.amount, p.method, p.paidAt, "
           "COALESCE(o.customerName, r.contractor, '') AS customerName, "
+          "COALESCE(o.proformaNumber, '') AS proformaNumber, COALESCE(o.invoiceNumber, '') AS invoiceNumber, "
           "COALESCE(o.createdDate, r.checkoutDate, '') AS baseDate, "
           "COALESCE(r.isCancelled, (SELECT MAX(isCancelled) FROM rentals WHERE orderId = p.orderId), 0) AS isCancelled, "
           "(SELECT MIN(id) FROM payment_logs p2 WHERE COALESCE(p2.orderId, -1) = COALESCE(p.orderId, -1) AND COALESCE(p2.fallbackRentalId, -1) = COALESCE(p.fallbackRentalId, -1)) AS firstLogId "
@@ -1487,7 +1663,7 @@ class DatabaseHelper {
     if (rows.isEmpty) {
       return {
         'name': '', 'phone': '', 'phone2': '', 'email': '', 'address': '', 'upiId': '', 'upiName': '',
-        'taxProfile': 'No Tax', 'taxType': 'none', 'taxRate': 0.0, 'taxMode': 'exclusive', 'taxRegNo': '',
+        'taxProfile': 'No Tax', 'taxType': 'none', 'taxRate': 0.0, 'taxMode': 'exclusive', 'taxRegNo': '', 'fyStartMonth': 4,
       };
     }
     return rows.first;
@@ -1495,7 +1671,7 @@ class DatabaseHelper {
 
   static Future<void> saveBusinessInfo(
       String name, String phone, String phone2, String email, String address, String upiId, String upiName, {
-        String taxProfile = 'No Tax', String taxType = 'none', double taxRate = 0.0, String taxMode = 'exclusive', String taxRegNo = '',
+        String taxProfile = 'No Tax', String taxType = 'none', double taxRate = 0.0, String taxMode = 'exclusive', String taxRegNo = '', int fyStartMonth = 4,
       }) async {
     final db = await getDatabase();
     await db.update('business_info', {
@@ -1511,6 +1687,7 @@ class DatabaseHelper {
       'taxRate': taxRate,
       'taxMode': taxMode,
       'taxRegNo': taxRegNo,
+      'fyStartMonth': fyStartMonth,
     }, where: 'id=?', whereArgs: [1]);
   }
 
@@ -1602,6 +1779,33 @@ class DatabaseHelper {
   }
 
   // =================================================
+  // PROFORMA & INVOICE NUMBER SETTING AS PER FY
+  // =================================================
+
+  static String getFiscalYear(DateTime date, int fyStartMonth) {
+    if (date.month >= fyStartMonth) {
+      return date.year.toString();
+    } else {
+      return (date.year - 1).toString();
+    }
+  }
+
+  static Future<String> generateNextSequence(Transaction txn, String docType, String fyPrefix) async {
+    final seqKey = '$docType-$fyPrefix'; // e.g., 'ORD-2024' or 'INV-2025'
+    final rows = await txn.query('sequences', where: 'seqKey=?', whereArgs: [seqKey]);
+    int nextVal = 1;
+
+    if (rows.isEmpty) {
+      await txn.insert('sequences', {'seqKey': seqKey, 'seqValue': 1});
+    } else {
+      nextVal = (rows.first['seqValue'] as int) + 1;
+      await txn.update('sequences', {'seqValue': nextVal}, where: 'seqKey=?', whereArgs: [seqKey]);
+    }
+
+    return '$docType-$fyPrefix-$nextVal';
+  }
+
+  // =================================================
   // PDF Invoice Generation
   // =================================================
   static Future<Uint8List> generatePdfProformaForOrder(int orderId, {String pageSize = 'A4'}) async {
@@ -1621,7 +1825,7 @@ class DatabaseHelper {
     final fontRegular = fonts['regular']!;
     final fontBold    = fonts['bold']!;
     final fontItalic  = fonts['italic']!;
-    final showSigs    = appSettingsNotifier.showPdfSignatures;
+    final showSigs    = appSettingsNotifier.showProformaSignatures;
 
     String s(String k) => (biz[k] as String?) ?? '';
     final bizName = s('name');
@@ -1668,80 +1872,72 @@ class DatabaseHelper {
 
     final doc = pw.Document();
     doc.addPage(pw.MultiPage(
-        pageFormat: format,
-        theme: pw.ThemeData.withFont(base: fontRegular, bold: fontBold, italic: fontItalic),
+        pageTheme: pw.PageTheme(
+          pageFormat: format,
+          theme: pw.ThemeData.withFont(base: fontRegular, bold: fontBold, italic: fontItalic),
+          buildBackground: (ctx) => isCancelled ? pw.FullPage(ignoreMargins: true, child: watermark()) : pw.SizedBox(),
+        ),
         build: (ctx) => [
-          pw.Stack(
-              children: [
-                if (isCancelled) pw.Positioned.fill(child: watermark()),
-                pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: [
-                      if (bizName.isNotEmpty) pw.Text(bizName, style: ts(d: 4, bold: true)),
-                      if (bizPhone.isNotEmpty || bizPhone2.isNotEmpty) pw.Text('Ph: $bizPhone${bizPhone2.isNotEmpty ? ' / $bizPhone2' : ''}', style: ts()),
-                      if (bizEmail.isNotEmpty) pw.Text(bizEmail, style: ts()),
-                      if (bizAddress.isNotEmpty) pw.Text(bizAddress, style: ts()),
-                      if (taxEnabled) pw.Text('$taxLabel: ${taxRate.toStringAsFixed(2)}% (${taxMode == 'inclusive' ? 'Inclusive' : 'Exclusive'})', style: ts()),
-                      if (taxEnabled && taxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $taxRegNo', style: ts()),
-                      if (bizUpi.isNotEmpty) pw.Text('UPI: $bizUpi', style: ts()),
-                      pw.Divider(),
-                      pw.Text('PROFORMA', style: ts(d: 2, bold: true)),
-                      pw.SizedBox(height: 4),
-                      pw.Text('Proforma #: $orderId', style: ts()),
-                      pw.Text('Date: ${formatDateString(order['createdDate'] as String? ?? '')}', style: ts()),
-                      pw.Divider(),
-                      pw.Text('BILL TO:', style: ts(bold: true)),
-                      pw.Text('${order['customerName'] ?? 'N/A'}', style: ts()),
-                      if (rentals.isNotEmpty) ...[
-                        if (((rentals.first['phone'] as String?) ?? '').isNotEmpty) pw.Text('Ph: ${rentals.first['phone']}', style: ts()),
-                        if (((rentals.first['address'] as String?) ?? '').isNotEmpty) pw.Text('Site: ${rentals.first['address']}', style: ts()),
-                      ],
-                      pw.Divider(),
-                      pw.TableHelper.fromTextArray(
-                        headerStyle: ts(bold: true),
-                        cellStyle: ts(),
-                        headers: ['Item', 'Qty', 'Rate/Day'],
-                        headerAlignments: {0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight},
-                        cellAlignments: {0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight},
-                        data: [
-                          for (final r in rentals) [
-                            r['itemName'] ?? '',
-                            (r['qty'] ?? 0).toString(),
-                            formatMoney(((r['rentalRate'] as num?)?.toDouble() ?? 0.0))
-                          ]
-                        ],
-                      ),
-                      pw.Divider(),
-                      if (advance > 0) pw.Text('Advance/Security: ${formatMoney(advance)}', style: ts()),
-                      pw.Text('Note: This is a Proforma (estimated rental summary).', style: ts(d: -1, italic: true)),
-                      pw.SizedBox(height: 6),
-                      pw.Text('Thank you for your business!', style: ts(italic: true)),
-
-                      if (showSigs) ...[
-                        pw.SizedBox(height: 40),
-                        pw.Align(alignment: pw.Alignment.center, child: sigLine('Customer Signature')),
-                        pw.SizedBox(height: 40),
-                        pw.Align(alignment: pw.Alignment.center, child: sigLine('Vendor Signature')),
-                      ],
-
-                      if (bizUpi.isNotEmpty) ...[
-                        pw.SizedBox(height: 30),
-                        pw.Center(
-                            child: pw.Column(
-                                crossAxisAlignment: pw.CrossAxisAlignment.center,
-                                children: [
-                                  pw.BarcodeWidget(barcode: pw.Barcode.qrCode(), data: upiString, width: 70, height: 70),
-                                  pw.SizedBox(height: 6),
-                                  if (bizUpiName.isNotEmpty) pw.Text(bizUpiName, style: ts(bold: true)),
-                                  pw.Text('UPI: $bizUpi', style: ts(d: -2)),
-                                ]
-                            )
-                        ),
-                      ],
-                    ]
-                ),
+          if (bizName.isNotEmpty) pw.Text(bizName, style: ts(d: 4, bold: true)),
+          if (bizPhone.isNotEmpty || bizPhone2.isNotEmpty) pw.Text('Ph: $bizPhone${bizPhone2.isNotEmpty ? ' / $bizPhone2' : ''}', style: ts()),
+          if (bizEmail.isNotEmpty) pw.Text(bizEmail, style: ts()),
+          if (bizAddress.isNotEmpty) pw.Text(bizAddress, style: ts()),
+          if (taxEnabled) pw.Text('$taxLabel: ${taxRate.toStringAsFixed(2)}% (${taxMode == 'inclusive' ? 'Inclusive' : 'Exclusive'})', style: ts()),
+          if (taxEnabled && taxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $taxRegNo', style: ts()),
+          if (bizUpi.isNotEmpty) pw.Text('UPI: $bizUpi', style: ts()),
+          pw.Divider(),
+          pw.Text('PROFORMA', style: ts(d: 2, bold: true)),
+          pw.SizedBox(height: 4),
+          pw.Text('Proforma #: ${order['proformaNumber']?.toString().isNotEmpty == true ? order['proformaNumber'] : 'ORD-$orderId'}', style: ts()),
+          pw.Text('Date: ${formatDateString(order['createdDate'] as String? ?? '')}', style: ts()),
+          pw.Divider(),
+          pw.Row(children: [pw.Text('BILL TO: ', style: ts(bold: true)), pw.Text('${order['customerName'] ?? 'N/A'}', style: ts())]),
+          if (rentals.isNotEmpty) ...[
+            if (((rentals.first['phone'] as String?) ?? '').isNotEmpty) pw.Text('Ph: ${rentals.first['phone']}', style: ts()),
+            if (((rentals.first['address'] as String?) ?? '').isNotEmpty) pw.Text('Site: ${rentals.first['address']}', style: ts()),
+          ],
+          pw.Divider(),
+          pw.TableHelper.fromTextArray(
+            headerStyle: ts(bold: true),
+            cellStyle: ts(),
+            headers: ['Item', 'Qty', 'Rate/Day'],
+            headerAlignments: {0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight},
+            cellAlignments: {0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight},
+            data: [
+              for (final r in rentals) [
+                r['itemName'] ?? '',
+                (r['qty'] ?? 0).toString(),
+                formatMoney(((r['rentalRate'] as num?)?.toDouble() ?? 0.0))
               ]
-          )
+            ],
+          ),
+          pw.Divider(),
+          if (advance > 0) pw.Text('Advance/Security: ${formatMoney(advance)}', style: ts()),
+          pw.Text('Note: This is a Proforma (estimated rental summary).', style: ts(d: -1, italic: true)),
+          pw.SizedBox(height: 6),
+          pw.Text('Thank you for your business!', style: ts(italic: true)),
+
+          if (showSigs) ...[
+            pw.SizedBox(height: 40),
+            pw.Align(alignment: pw.Alignment.center, child: sigLine('Customer Signature')),
+            pw.SizedBox(height: 40),
+            pw.Align(alignment: pw.Alignment.center, child: sigLine('Vendor Signature')),
+          ],
+
+          if (bizUpi.isNotEmpty) ...[
+            pw.SizedBox(height: 30),
+            pw.Center(
+                child: pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.center,
+                    children: [
+                      pw.BarcodeWidget(barcode: pw.Barcode.qrCode(), data: upiString, width: 70, height: 70),
+                      pw.SizedBox(height: 6),
+                      if (bizUpiName.isNotEmpty) pw.Text(bizUpiName, style: ts(bold: true)),
+                      pw.Text('UPI: $bizUpi', style: ts(d: -2)),
+                    ]
+                )
+            ),
+          ],
         ]));
     return doc.save();
   }
@@ -1767,7 +1963,7 @@ class DatabaseHelper {
     final fontRegular = fonts['regular']!;
     final fontBold    = fonts['bold']!;
     final fontItalic  = fonts['italic']!;
-    final showSigs    = appSettingsNotifier.showPdfSignatures;
+    final showSigs    = appSettingsNotifier.showInvoiceSignatures;
 
     String s(String k) => (biz[k] as String?) ?? '';
     final bizName = s('name');
@@ -1937,160 +2133,155 @@ class DatabaseHelper {
     // Render one canonical invoice document from already-computed financial values.
     final doc = pw.Document();
     doc.addPage(pw.MultiPage(
-      pageFormat: format,
-      theme: pw.ThemeData.withFont(base: fontRegular, bold: fontBold, italic: fontItalic),
+      pageTheme: pw.PageTheme(
+        pageFormat: format,
+        theme: pw.ThemeData.withFont(base: fontRegular, bold: fontBold, italic: fontItalic),
+        buildBackground: (ctx) => isCancelled ? pw.FullPage(ignoreMargins: true, child: watermark()) : pw.SizedBox(),
+      ),
       build: (ctx) => [
-        pw.Stack(
-            children: [
-              if (isCancelled) pw.Positioned.fill(child: watermark()),
-              pw.Column(
-                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+        if (bizName.isNotEmpty) pw.Text(bizName, style: ts(d: 4, bold: true)),
+        if (bizPhone.isNotEmpty || bizPhone2.isNotEmpty) pw.Text('Ph: $bizPhone${bizPhone2.isNotEmpty ? ' / $bizPhone2' : ''}', style: ts()),
+        if (bizEmail.isNotEmpty) pw.Text(bizEmail, style: ts()),
+        if (bizAddress.isNotEmpty) pw.Text(bizAddress, style: ts()),
+        if (taxEnabled && taxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $taxRegNo', style: ts()),
+        if (bizUpi.isNotEmpty) pw.Text('UPI: $bizUpi', style: ts()),
+        pw.Divider(),
+        pw.Text('FINAL INVOICE', style: ts(d: 2, bold: true)),
+        pw.SizedBox(height: 4),
+        pw.Text('Invoice #: ${order['invoiceNumber']?.toString().isNotEmpty == true ? order['invoiceNumber'] : 'INV-$orderId'}', style: ts()),
+        if (order['proformaNumber']?.toString().isNotEmpty == true) pw.Text('Ref Proforma: ${order['proformaNumber']}', style: ts(d: -1, italic: true)),
+        pw.Text('Order Date: ${formatDateString(order['createdDate'] as String? ?? '')}', style: ts()),
+        pw.Text('Invoice/Return Date: $finalReturnText', style: ts()),
+        pw.Divider(),
+        pw.Row(children: [pw.Text('BILL TO: ', style: ts(bold: true)), pw.Text('${order['customerName'] ?? 'N/A'}', style: ts())]),
+        if (rentals.isNotEmpty) ...[
+          if (((rentals.first['phone'] as String?) ?? '').isNotEmpty) pw.Text('Ph: ${rentals.first['phone']}', style: ts()),
+          if (((rentals.first['address'] as String?) ?? '').isNotEmpty) pw.Text('Site: ${rentals.first['address']}', style: ts()),
+        ],
+        pw.Divider(),
+        if (is57mm) ...[
+          for (final r in rentals) ...[
+            thermalItemRow(r),
+            pw.SizedBox(height: 2),
+          ],
+        ] else ...[
+          pw.TableHelper.fromTextArray(
+            headerStyle: ts(bold: true),
+            cellStyle: ts(d: -1),
+            headers: ['Item', 'Qty', 'Rate/Day', 'Days', 'Line Total'],
+            headerAlignments: {
+              0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight, 3: pw.Alignment.center, 4: pw.Alignment.centerRight
+            },
+            cellAlignments: {
+              0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight, 3: pw.Alignment.center, 4: pw.Alignment.centerRight
+            },
+            data: lineData,
+          ),
+        ],
+        pw.SizedBox(height: 4),
+        // --- FINANCIAL BREAKDOWN START ---
+        pw.Divider(borderStyle: pw.BorderStyle.dashed, thickness: 0.5),
+
+        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+          pw.Text('Rentals Subtotal:', style: ts()),
+          pw.Text(formatMoney(lineSubtotal, decimals: is57mm ? 0 : 2), style: ts()),
+        ]),
+
+        for (final p in penaltyData)
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+            pw.Text('Damage Penalty (${p['name']}):', style: ts()),
+            pw.Text('+ ${formatMoney(p['amount'], decimals: is57mm ? 0 : 2)}', style: ts()),
+          ]),
+
+        if (discount > 0) pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+          pw.Text('Discount:', style: ts()),
+          pw.Text('- ${formatMoney(discount, decimals: is57mm ? 0 : 2)}', style: ts()),
+        ]),
+
+        // CONDITIONAL TAX RENDERING
+        if (taxEnabled) ...[
+          pw.Divider(borderStyle: pw.BorderStyle.dashed, thickness: 0.5),
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+            pw.Text('Net Subtotal:', style: ts(bold: true)),
+            pw.Text(formatMoney(taxableBase, decimals: is57mm ? 0 : 2), style: ts(bold: true)),
+          ]),
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+            pw.Text('$taxLabel ${taxRate.toStringAsFixed(2)}%:', style: ts()),
+            pw.Text('+ ${formatMoney(taxAmount, decimals: is57mm ? 0 : 2)}', style: ts()),
+          ]),
+        ],
+
+        // GRAND TOTAL
+        pw.Divider(borderStyle: pw.BorderStyle.dashed, thickness: 0.5),
+        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+          pw.Text('TOTAL BILLED:', style: ts(bold: true)),
+          pw.Text(formatMoney(grandTotal, decimals: is57mm ? 0 : 2), style: ts(bold: true)),
+        ]),
+
+        // PAYMENTS & DEDUCTIONS
+        if (badDebt > 0) pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+          pw.Text('Written Off (Bad Debt):', style: ts()),
+          pw.Text('- ${formatMoney(badDebt, decimals: is57mm ? 0 : 2)}', style: ts()),
+        ]),
+
+        if (logs.isNotEmpty) ...[
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+            pw.Text('Advance/Security:', style: ts()),
+            pw.Text('- ${formatMoney(logs.first['amount'] as double, decimals: is57mm ? 0 : 2)}', style: ts()),
+          ]),
+          for (int i = 1; i < logs.length; i++)
+            pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+              pw.Text((logs[i]['amount'] as num) < 0
+                  ? 'Refunded ${((logs[i]['method'] as String?) ?? '').isEmpty ? '' : logs[i]['method']}:'
+                  : 'Paid ${((logs[i]['method'] as String?) ?? '').isEmpty ? 'Payment' : logs[i]['method']}:', style: ts()),
+              pw.Text(((logs[i]['amount'] as num) < 0 ? '+ ' : '- ') + formatMoney((logs[i]['amount'] as num).abs(), decimals: is57mm ? 0 : 2), style: ts()),
+            ]),
+        ] else if (totalPaid > 0) ...[
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+            pw.Text('Advance/Security Paid:', style: ts()),
+            pw.Text('- ${formatMoney(totalPaid, decimals: is57mm ? 0 : 2)}', style: ts()),
+          ]),
+        ],
+
+        // FINAL BALANCE
+        pw.Divider(thickness: is57mm ? 1.0 : 1.0),
+        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+          pw.Text(balance > 0 ? 'BALANCE DUE:' : balance < 0 ? 'REFUND DUE:' : 'BALANCE:', style: ts(bold: true, d: 1)),
+          pw.Text(formatMoney(balance.abs(), decimals: is57mm ? 0 : 2), style: ts(bold: true, d: 1)),
+        ]),
+
+        pw.SizedBox(height: 8),
+        pw.Center(child: pw.Text(
+            isSettled ? '*** SETTLED ***' : '*** PENDING ***',
+            style: ts(bold: true, d: 1)
+        )),
+        pw.SizedBox(height: 8),
+        // --- FINANCIAL BREAKDOWN END ---
+
+        if (showSigs) ...[
+          pw.SizedBox(height: is57mm ? 18 : 30),
+          pw.Align(alignment: pw.Alignment.center, child: sigLine('Customer Signature')),
+          pw.SizedBox(height: 5),
+          pw.SizedBox(height: is57mm ? 18 : 30),
+          pw.Align(alignment: pw.Alignment.center, child: sigLine('Vendor Signature')),
+        ],
+
+        pw.SizedBox(height: 8),
+        pw.Text('This is the final invoice based on actual return dates.', style: ts(d: -1, italic: true)),
+        if (bizUpi.isNotEmpty) ...[
+          pw.SizedBox(height: 20),
+          pw.Center(
+              child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.center,
                   children: [
-                    if (bizName.isNotEmpty) pw.Text(bizName, style: ts(d: 4, bold: true)),
-                    if (bizPhone.isNotEmpty || bizPhone2.isNotEmpty) pw.Text('Ph: $bizPhone${bizPhone2.isNotEmpty ? ' / $bizPhone2' : ''}', style: ts()),
-                    if (bizEmail.isNotEmpty) pw.Text(bizEmail, style: ts()),
-                    if (bizAddress.isNotEmpty) pw.Text(bizAddress, style: ts()),
-                    if (taxEnabled && taxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $taxRegNo', style: ts()),
-                    if (bizUpi.isNotEmpty) pw.Text('UPI: $bizUpi', style: ts()),
-                    pw.Divider(),
-                    pw.Text('FINAL INVOICE', style: ts(d: 2, bold: true)),
-                    pw.SizedBox(height: 4),
-                    pw.Text('Invoice #: $orderId', style: ts()),
-                    pw.Text('Order Date: ${formatDateString(order['createdDate'] as String? ?? '')}', style: ts()),
-                    pw.Text('Invoice Date: $finalReturnText', style: ts()),
-                    pw.Divider(),
-                    pw.Text('BILL TO:', style: ts(bold: true)),
-                    pw.Text('${order['customerName'] ?? 'N/A'}', style: ts()),
-                    if (rentals.isNotEmpty) ...[
-                      if (((rentals.first['phone'] as String?) ?? '').isNotEmpty) pw.Text('Ph: ${rentals.first['phone']}', style: ts()),
-                      if (((rentals.first['address'] as String?) ?? '').isNotEmpty) pw.Text('Site: ${rentals.first['address']}', style: ts()),
-                    ],
-                    pw.Divider(),
-                    if (is57mm) ...[
-                      for (final r in rentals) ...[
-                        thermalItemRow(r),
-                        pw.SizedBox(height: 2),
-                      ],
-                    ] else ...[
-                      pw.TableHelper.fromTextArray(
-                        headerStyle: ts(bold: true),
-                        cellStyle: ts(d: -1),
-                        headers: ['Item', 'Qty', 'Rate/Day', 'Days', 'Line Total'],
-                        headerAlignments: {
-                          0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight, 3: pw.Alignment.center, 4: pw.Alignment.centerRight
-                        },
-                        cellAlignments: {
-                          0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight, 3: pw.Alignment.center, 4: pw.Alignment.centerRight
-                        },
-                        data: lineData,
-                      ),
-                    ],
-                    pw.SizedBox(height: 4),
-                    // --- FINANCIAL BREAKDOWN START ---
-                    pw.Divider(borderStyle: pw.BorderStyle.dashed, thickness: 0.5),
-
-                    pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-                      pw.Text('Rentals Subtotal:', style: ts()),
-                      pw.Text(formatMoney(lineSubtotal, decimals: is57mm ? 0 : 2), style: ts()),
-                    ]),
-
-                    for (final p in penaltyData)
-                      pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-                        pw.Text('Damage Penalty (${p['name']}):', style: ts()),
-                        pw.Text('+ ${formatMoney(p['amount'], decimals: is57mm ? 0 : 2)}', style: ts()),
-                      ]),
-
-                    if (discount > 0) pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-                      pw.Text('Discount:', style: ts()),
-                      pw.Text('- ${formatMoney(discount, decimals: is57mm ? 0 : 2)}', style: ts()),
-                    ]),
-
-                    // CONDITIONAL TAX RENDERING
-                    if (taxEnabled) ...[
-                      pw.Divider(borderStyle: pw.BorderStyle.dashed, thickness: 0.5),
-                      pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-                        pw.Text('Net Subtotal:', style: ts(bold: true)),
-                        pw.Text(formatMoney(taxableBase, decimals: is57mm ? 0 : 2), style: ts(bold: true)),
-                      ]),
-                      pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-                        pw.Text('$taxLabel ${taxRate.toStringAsFixed(2)}%:', style: ts()),
-                        pw.Text('+ ${formatMoney(taxAmount, decimals: is57mm ? 0 : 2)}', style: ts()),
-                      ]),
-                    ],
-
-                    // GRAND TOTAL
-                    pw.Divider(borderStyle: pw.BorderStyle.dashed, thickness: 0.5),
-                    pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-                      pw.Text('TOTAL BILLED:', style: ts(bold: true)),
-                      pw.Text(formatMoney(grandTotal, decimals: is57mm ? 0 : 2), style: ts(bold: true)),
-                    ]),
-
-                    // PAYMENTS & DEDUCTIONS
-                    if (badDebt > 0) pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-                      pw.Text('Written Off (Bad Debt):', style: ts()),
-                      pw.Text('- ${formatMoney(badDebt, decimals: is57mm ? 0 : 2)}', style: ts()),
-                    ]),
-
-                    if (logs.isNotEmpty) ...[
-                      pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-                        pw.Text('Advance/Security:', style: ts()),
-                        pw.Text('- ${formatMoney(logs.first['amount'] as double, decimals: is57mm ? 0 : 2)}', style: ts()),
-                      ]),
-                      for (int i = 1; i < logs.length; i++)
-                        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-                          pw.Text((logs[i]['amount'] as num) < 0
-                              ? 'Refunded ${((logs[i]['method'] as String?) ?? '').isEmpty ? '' : logs[i]['method']}:'
-                              : 'Paid ${((logs[i]['method'] as String?) ?? '').isEmpty ? 'Payment' : logs[i]['method']}:', style: ts()),
-                          pw.Text(((logs[i]['amount'] as num) < 0 ? '+ ' : '- ') + formatMoney((logs[i]['amount'] as num).abs(), decimals: is57mm ? 0 : 2), style: ts()),
-                        ]),
-                    ] else if (totalPaid > 0) ...[
-                      pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-                        pw.Text('Advance/Security Paid:', style: ts()),
-                        pw.Text('- ${formatMoney(totalPaid, decimals: is57mm ? 0 : 2)}', style: ts()),
-                      ]),
-                    ],
-
-                    // FINAL BALANCE
-                    pw.Divider(thickness: is57mm ? 1.5 : 2.0),
-                    pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-                      pw.Text(balance > 0 ? 'BALANCE DUE:' : balance < 0 ? 'REFUND DUE:' : 'BALANCE:', style: ts(bold: true, d: 1)),
-                      pw.Text(formatMoney(balance.abs(), decimals: is57mm ? 0 : 2), style: ts(bold: true, d: 1)),
-                    ]),
-
-                    pw.SizedBox(height: 8),
-                    pw.Center(child: pw.Text(
-                        isSettled ? '*** SETTLED ***' : '*** PENDING ***',
-                        style: ts(bold: true, d: 1)
-                    )),
-                    // --- FINANCIAL BREAKDOWN END ---
-
-                    if (showSigs) ...[
-                      pw.SizedBox(height: is57mm ? 18 : 30),
-                      pw.Align(alignment: pw.Alignment.center, child: sigLine('Customer Signature')),
-                      pw.SizedBox(height: is57mm ? 18 : 30),
-                      pw.Align(alignment: pw.Alignment.center, child: sigLine('Vendor Signature')),
-                    ],
-
-                    pw.SizedBox(height: 8),
-                    pw.Text('This is the final invoice based on actual return dates.', style: ts(d: -1, italic: true)),
-                    if (bizUpi.isNotEmpty) ...[
-                      pw.SizedBox(height: 20),
-                      pw.Center(
-                          child: pw.Column(
-                              crossAxisAlignment: pw.CrossAxisAlignment.center,
-                              children: [
-                                pw.BarcodeWidget(barcode: pw.Barcode.qrCode(), data: upiString, width: 70, height: 70),
-                                pw.SizedBox(height: 6),
-                                if (bizUpiName.isNotEmpty) pw.Text(bizUpiName, style: ts(bold: true)),
-                                pw.Text('UPI: $bizUpi', style: ts(d: -2)),
-                              ]
-                          )
-                      ),
-                    ],
+                    pw.BarcodeWidget(barcode: pw.Barcode.qrCode(), data: upiString, width: 70, height: 70),
+                    pw.SizedBox(height: 6),
+                    if (bizUpiName.isNotEmpty) pw.Text(bizUpiName, style: ts(bold: true)),
+                    pw.Text('UPI: $bizUpi', style: ts(d: -2)),
                   ]
               )
-            ]
-        )
+          ),
+        ],
       ],
     ));
     return doc.save();
@@ -2134,6 +2325,9 @@ class RentalGroup {
   final List<Map<String, dynamic>> items;
   RentalGroup({this.orderId, this.fallbackId, required this.items});
 
+  String get proformaNumber => items.first['proformaNumber'] as String? ?? '';
+  String get invoiceNumber => items.first['invoiceNumber'] as String? ?? '';
+
   bool get isGroup         => orderId != null;
   bool get isFullyReturned => items.every((r) => r['returned'] == 1);
   bool get isSettled       => items.every((r) => r['isSettled'] == 1);
@@ -2145,7 +2339,9 @@ class RentalGroup {
   String get notes         => items.first['notes']         as String? ?? '';
   String get phone2        => items.first['phone2']        as String? ?? '';
   String get paymentMethod => items.first['paymentMethod'] as String? ?? '';
-  // Stable key used to join invoice groups with payment log groups.
+  String get proformaNo    => items.first['proformaNo']    as String? ?? '';
+  String get invoiceNo     => items.first['invoiceNo']     as String? ?? '';
+
   String get paymentGroupKey => orderId != null
       ? 'o:$orderId'
       : 'f:${fallbackId ?? (items.firstOrNull?['id'] as int? ?? 0)}';
@@ -2160,13 +2356,13 @@ class RentalGroup {
     for (final r in items) {
       final qty  = r['qty']  as int? ?? 0;
       final rate = (r['rentalRate'] as num?)?.toDouble() ?? 0.0;
-      final penalty = (r['penaltyFee'] as num?)?.toDouble() ?? 0.0; // Fetch Penalty
+      final penalty = (r['penaltyFee'] as num?)?.toDouble() ?? 0.0;
       final days = RentalUtils.calculateChargeDays(
         r['checkoutDate'] as String?,
         r['returnDate'] as String?,
         r['returned'] as int? ?? 0,
       );
-      total += (rate * days * qty) + penalty; // Add penalty to total
+      total += (rate * days * qty) + penalty;
     }
     return total;
   }
@@ -2284,7 +2480,11 @@ class UniversalRentalCard extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     )
                         : Text(
-                      group.orderId != null ? 'Invoice #${group.orderId}' : (group.isFullyReturned ? 'Settled Rental' : 'Active Rental'),
+                      group.orderId != null
+                          ? (group.invoiceNumber.isNotEmpty
+                          ? '${group.invoiceNumber}${group.proformaNumber.isNotEmpty ? " ref ${group.proformaNumber}" : ""}'
+                          : (group.proformaNumber.isNotEmpty ? group.proformaNumber : 'ORD-${group.orderId}'))
+                          : (group.isFullyReturned ? 'Settled Rental' : 'Active Rental'),
                       style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                     ),
                   ),
@@ -2337,10 +2537,30 @@ class UniversalRentalCard extends StatelessWidget {
                   ),
                 ],
               ),
-              if (group.address.isNotEmpty)
+              if (showCustomerName || group.address.isNotEmpty)
                 Padding(
                   padding: EdgeInsets.only(top: compact ? 1 : 2),
-                  child: Text('Site: ${group.address}', style: TextStyle(fontSize: 13, color: Theme.of(context).textTheme.bodySmall?.color)),
+                  child: Text.rich(
+                    TextSpan(
+                        style: TextStyle(fontSize: 13, color: Theme.of(context).textTheme.bodySmall?.color),
+                        children: [
+                          if (showCustomerName && group.orderId != null) ...[
+                            TextSpan(
+                                text: group.invoiceNumber.isNotEmpty ? group.invoiceNumber : (group.proformaNumber.isNotEmpty ? group.proformaNumber : 'ORD-${group.orderId}'),
+                                style: const TextStyle(fontWeight: FontWeight.bold)
+                            ),
+                            if (group.invoiceNumber.isNotEmpty && group.proformaNumber.isNotEmpty)
+                              TextSpan(
+                                text: ' ref ${group.proformaNumber}',
+                                style: const TextStyle(fontWeight: FontWeight.normal, fontStyle: FontStyle.italic, fontSize: 12),
+                              ),
+                            if (group.address.isNotEmpty) const TextSpan(text: '  |  '),
+                          ],
+                          if (group.address.isNotEmpty)
+                            TextSpan(text: 'Site: ${group.address}'),
+                        ]
+                    ),
+                  ),
                 ),
               Padding(
                 padding: EdgeInsets.only(top: compact ? 1 : 2),
@@ -2351,10 +2571,6 @@ class UniversalRentalCard extends StatelessWidget {
                         TextSpan(
                           style: const TextStyle(fontSize: 14),
                           children: [
-                            if (group.orderId != null && showCustomerName) ...[
-                              TextSpan(text: 'Invoice #${group.orderId}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
-                              const TextSpan(text: '  |  '),
-                            ],
                             TextSpan(text: 'Checkout: ${DatabaseHelper.formatDateString(group.checkoutDate)}'),
                             if (!group.isFullyReturned) ...[
                               const TextSpan(text: '  |  '),
@@ -2538,6 +2754,11 @@ class _MainShellState extends State<MainShell> {
     onTap: onTap,
   );
 
+  Widget _drawerHeader(String title) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+    child: Text(title, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.4, color: Colors.amber[600])),
+  );
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
@@ -2632,13 +2853,22 @@ class _MainShellState extends State<MainShell> {
       },
     ),
     Expanded(child: ListView(padding: EdgeInsets.zero, children: [
-      _drawerNavItem(icon: Icons.account_balance_wallet, title: 'Transactions', onTap: () => _nav(const PaymentLedgerScreen())),
+      _drawerHeader('TRANSACTIONS'),
+      _drawerNavItem(icon: Icons.account_balance_wallet, title: 'Revenue Ledger', onTap: () => _nav(const PaymentLedgerScreen())),
+      _drawerNavItem(icon: Icons.receipt_long, title: 'Proformas & Invoices', onTap: () => _nav(const InvoiceManagerScreen())),
+
+      _drawerHeader('ACCOUNTING'),
+      _drawerNavItem(icon: Icons.bar_chart, title: 'Financial Reports', onTap: () => _nav(const FinancialReportsScreen())),
+      _drawerNavItem(icon: Icons.outbox, title: 'Business Expenses', onTap: () => _nav(const ExpenseTrackingScreen())),
       _drawerNavItem(icon: Icons.money_off, title: 'Losses & Bad Debt', onTap: () => _nav(const LossesAndBadDebtScreen())),
+
       const Divider(height: 1),
+      _drawerHeader('MANAGEMENT'),
       _drawerNavItem(icon: Icons.store, title: 'Business Info', onTap: () => _nav(const BusinessInfoScreen())),
       _drawerNavItem(icon: Icons.group, title: 'Customers', onTap: () => _nav(const CustomersManagementScreen())),
-      _drawerNavItem(icon: Icons.receipt_long, title: 'Proforma & Invoice', onTap: () => _nav(const InvoiceManagerScreen())),
+
       const Divider(height: 1),
+      _drawerHeader('DATA & SYSTEM'),
       ListTile(leading: const Icon(Icons.save_alt), title: const Text('Export Backup'),
           onTap: () async { final m = ScaffoldMessenger.of(context); Navigator.pop(context); final result = await DatabaseHelper.exportBackup(); m.showSnackBar(SnackBar(content: Text(result))); }),
       ListTile(leading: const Icon(Icons.upload), title: const Text('Restore from Backup'),
@@ -3335,7 +3565,7 @@ class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
           child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
               Expanded(child: Text(g.contractor, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), overflow: TextOverflow.ellipsis)),
-              if (g.orderId != null) Text('INV #${g.orderId}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontWeight: FontWeight.w500)),
+              if (g.orderId != null) Text(g.invoiceNumber.isNotEmpty ? g.invoiceNumber : (g.proformaNumber.isNotEmpty ? g.proformaNumber : 'ORD-${g.orderId}'), style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontWeight: FontWeight.w500)),
             ]),
             const SizedBox(height: 6),
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
@@ -3600,8 +3830,11 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                     final method = (r['method'] as String? ?? '').trim();
                     final orderId = r['orderId'] as int?;
                     final fallbackId = r['fallbackRentalId'] as int?;
+                    final invNum = r['invoiceNumber'] as String? ?? '';
+                    final profNum = r['proformaNumber'] as String? ?? '';
+
                     final ref = orderId != null
-                        ? 'Invoice #$orderId'
+                        ? (invNum.isNotEmpty ? invNum : (profNum.isNotEmpty ? profNum : 'Invoice #$orderId'))
                         : fallbackId != null
                         ? 'Record #$fallbackId'
                         : 'Record';
@@ -3880,7 +4113,7 @@ class _LossesAndBadDebtScreenState extends State<LossesAndBadDebtScreen> {
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                       Expanded(child: Text(g.contractor, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
-                      if (g.orderId != null) Text('INV #${g.orderId}', style: const TextStyle(color: Colors.grey)),
+                      if (g.orderId != null) Text(g.invoiceNumber.isNotEmpty ? g.invoiceNumber : (g.proformaNumber.isNotEmpty ? g.proformaNumber : 'ORD-${g.orderId}'), style: const TextStyle(color: Colors.grey)),
                     ]),
                     const SizedBox(height: 8),
                     Text('Out: ${DatabaseHelper.formatDateString(g.checkoutDate)}'),
@@ -3917,8 +4150,579 @@ class _LossesAndBadDebtScreenState extends State<LossesAndBadDebtScreen> {
 }
 
 // =================================================
+// Financial Reports Screen
+// =================================================
+class FinancialReportsScreen extends StatefulWidget {
+  const FinancialReportsScreen({super.key});
+  @override
+  State<FinancialReportsScreen> createState() => _FinancialReportsScreenState();
+}
+
+class _FinancialReportsScreenState extends State<FinancialReportsScreen> {
+  bool _loading = true;
+
+  // A/R Aging Data
+  double _ar0to30 = 0.0;
+  double _ar31to60 = 0.0;
+  double _ar61to90 = 0.0;
+  double _ar90Plus = 0.0;
+  double _totalAR = 0.0;
+
+  // Tax Liability Data
+  Map<String, dynamic> _bizInfo = {};
+  double _totalPaymentsCollectedFY = 0.0;
+  double _taxLiabilityFY = 0.0;
+  String _fyString = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+  }
+
+  Future<void> _loadData() async {
+    final db = await DatabaseHelper.getDatabase();
+    final bizInfo = await DatabaseHelper.getBusinessInfo();
+
+    // 1. Calculate A/R Aging
+    final allGroups = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
+    final outstanding = allGroups.where((g) => g.isFullyReturned && !g.isSettled && g.balance > 0).toList();
+
+    double ar0 = 0, ar31 = 0, ar61 = 0, ar90 = 0, totalAr = 0;
+    final now = DateTime.now();
+
+    for (final g in outstanding) {
+      final checkoutDt = DateTime.tryParse(g.checkoutDate) ?? now;
+      final daysOld = now.difference(checkoutDt).inDays;
+      final bal = g.balance;
+
+      totalAr += bal;
+      if (daysOld <= 30) { ar0 += bal; }
+      else if (daysOld <= 60) { ar31 += bal; }
+      else if (daysOld <= 90) { ar61 += bal; }
+      else { ar90 += bal; }
+    }
+
+    // 2. Calculate Cash-Basis Tax Liability for Current FY
+    final fyStartMonth = bizInfo['fyStartMonth'] as int? ?? 4;
+    final currentYear = now.year;
+    final isPastStartMonth = now.month >= fyStartMonth;
+
+    final fyStartDate = DateTime(
+        isPastStartMonth ? currentYear : currentYear - 1,
+        fyStartMonth,
+        1
+    );
+
+    _fyString = '${fyStartDate.year}-${fyStartDate.year + 1}';
+
+    // Sum payments collected strictly within this FY
+    final payments = await db.rawQuery(
+        'SELECT SUM(amount) as total FROM payment_logs WHERE paidAt >= ? AND amount > 0',
+        [DatabaseHelper.isoDate(fyStartDate)]
+    );
+
+    final totalCollected = (payments.first['total'] as num?)?.toDouble() ?? 0.0;
+
+    // Tax Extraction Logic (Assumes payments collected include tax)
+    final taxRate = (bizInfo['taxRate'] as num?)?.toDouble() ?? 0.0;
+    final taxType = (bizInfo['taxType'] as String? ?? 'none');
+    double taxLiability = 0.0;
+
+    if (taxType != 'none' && taxRate > 0) {
+      // Formula: Tax = Total Paid - (Total Paid / (1 + (Rate/100)))
+      taxLiability = totalCollected - (totalCollected / (1 + (taxRate / 100.0)));
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _ar0to30 = ar0;
+      _ar31to60 = ar31;
+      _ar61to90 = ar61;
+      _ar90Plus = ar90;
+      _totalAR = totalAr;
+
+      _bizInfo = bizInfo;
+      _totalPaymentsCollectedFY = totalCollected;
+      _taxLiabilityFY = taxLiability;
+      _loading = false;
+    });
+  }
+
+  Widget _buildAgingIndicator(Color color, String label, double amount) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Container(width: 16, height: 16, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          Expanded(child: Text(label, style: const TextStyle(fontWeight: FontWeight.w500))),
+          Text(formatMoney(amount), style: const TextStyle(fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          titleSpacing: 0,
+          title: TabBar(
+            tabs: const [
+              Tab(text: 'A/R AGING'),
+              Tab(text: 'TAX LIABILITY'),
+            ],
+            indicator: BoxDecoration(borderRadius: BorderRadius.circular(24), color: Colors.black12),
+            indicatorSize: TabBarIndicatorSize.tab,
+            dividerColor: Colors.transparent,
+            labelColor: Colors.black,
+            unselectedLabelColor: Colors.black54,
+            labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+          ),
+        ),
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : TabBarView(
+          children: [
+            // TAB 1: Accounts Receivable Aging
+            SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Accounts Receivable Aging Summary', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  Text('Unpaid settled invoices categorized by age.', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
+                  const SizedBox(height: 24),
+
+                  if (_totalAR <= 0)
+                    const Center(child: Padding(
+                      padding: EdgeInsets.all(32.0),
+                      child: Text('Outstanding! Your Accounts Receivable is \$0.00.', style: TextStyle(color: Colors.green, fontSize: 16)),
+                    ))
+                  else ...[
+                    SizedBox(
+                      height: 250,
+                      child: PieChart(
+                        PieChartData(
+                          sectionsSpace: 2,
+                          centerSpaceRadius: 60,
+                          sections: [
+                            if (_ar0to30 > 0) PieChartSectionData(color: Colors.green, value: _ar0to30, title: '', radius: 50),
+                            if (_ar31to60 > 0) PieChartSectionData(color: Colors.amber, value: _ar31to60, title: '', radius: 50),
+                            if (_ar61to90 > 0) PieChartSectionData(color: Colors.orange, value: _ar61to90, title: '', radius: 50),
+                            if (_ar90Plus > 0) PieChartSectionData(color: Colors.red, value: _ar90Plus, title: '', radius: 50),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          children: [
+                            _buildAgingIndicator(Colors.green, 'Current (0-30 Days)', _ar0to30),
+                            const Divider(),
+                            _buildAgingIndicator(Colors.amber, 'Overdue (31-60 Days)', _ar31to60),
+                            const Divider(),
+                            _buildAgingIndicator(Colors.orange, 'Critical (61-90 Days)', _ar61to90),
+                            const Divider(),
+                            _buildAgingIndicator(Colors.red, 'High Risk (90+ Days)', _ar90Plus),
+                            const SizedBox(height: 16),
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(color: Colors.blue.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text('TOTAL A/R:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                  Text(formatMoney(_totalAR), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.blue)),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ]
+                ],
+              ),
+            ),
+
+            // TAB 2: Tax Liability
+            SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Estimated Tax Liability (Cash Basis)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  Text('Based on payments received in FY $_fyString.', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
+                  const SizedBox(height: 24),
+
+                  if (_bizInfo['taxType'] == 'none' || _bizInfo['taxType'] == null)
+                    const Center(child: Padding(
+                      padding: EdgeInsets.all(32.0),
+                      child: Text('Taxes are currently disabled in Business Info.', style: TextStyle(color: Colors.grey, fontSize: 16)),
+                    ))
+                  else
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('Tax Configuration:', style: TextStyle(fontWeight: FontWeight.bold)),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(color: Colors.amber.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(8)),
+                                  child: Text('${(_bizInfo['taxType'] as String).toUpperCase()} @ ${_bizInfo['taxRate']}%', style: const TextStyle(fontWeight: FontWeight.bold)),
+                                ),
+                              ],
+                            ),
+                            const Divider(height: 32),
+                            const Text('Total Payments Collected (FY)'),
+                            Text(formatMoney(_totalPaymentsCollectedFY), style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.blue)),
+                            const SizedBox(height: 24),
+                            const Text('Estimated Tax Remittance Due'),
+                            Text(formatMoney(_taxLiabilityFY), style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                            const SizedBox(height: 16),
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(color: Colors.orange.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.orange.withValues(alpha: 0.5))),
+                              child: const Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Icon(Icons.info_outline, size: 16, color: Colors.orange),
+                                  SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text('This is a cash-basis estimation extracted from gross payments received. Consult your CPA for final filings.', style: TextStyle(fontSize: 12, color: Colors.orange)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// =================================================
+// Expense Tracking Screen
+// =================================================
+class ExpenseTrackingScreen extends StatefulWidget {
+  const ExpenseTrackingScreen({super.key});
+  @override
+  State<ExpenseTrackingScreen> createState() => _ExpenseTrackingScreenState();
+}
+
+class _ExpenseTrackingScreenState extends State<ExpenseTrackingScreen> {
+  List<Map<String, dynamic>> _expenses = [];
+  final _searchCtrl = TextEditingController();
+  Timer? _debounce;
+  double _totalExpenses = 0.0;
+  String _sortMode = 'Date (Newest)';
+
+  final List<String> _expenseSortOptions = ['Date (Newest)', 'Date (Oldest)', 'Highest Amount'];
+
+  final List<String> _expenseCategories = [
+    'Fuel & Transport', 'Repairs & Maintenance', 'Warehouse Rent',
+    'Utilities', 'Payroll', 'Advertising', 'Office Supplies', 'Other'
+  ];
+
+  @override
+  void initState() { super.initState(); _load(); }
+  @override
+  void dispose() { _searchCtrl.dispose(); _debounce?.cancel(); super.dispose(); }
+
+  Future<void> _load() async {
+    final rawData = await DatabaseHelper.getExpenses(search: _searchCtrl.text);
+
+    // Create a mutable copy to apply our custom sorting
+    List<Map<String, dynamic>> data = List<Map<String, dynamic>>.from(rawData);
+
+    // Apply Sorting Rules for Tax/Auditing purposes
+    if (_sortMode == 'Date (Newest)') {
+      data.sort((a, b) => (b['date'] as String).compareTo(a['date'] as String));
+    } else if (_sortMode == 'Date (Oldest)') {
+      data.sort((a, b) => (a['date'] as String).compareTo(b['date'] as String));
+    } else if (_sortMode == 'Highest Amount') {
+      data.sort((a, b) => (b['amount'] as num).compareTo(a['amount'] as num));
+    }
+
+    double total = 0.0;
+    for (var row in data) {
+      total += (row['amount'] as num).toDouble();
+    }
+    if (!mounted) return;
+    setState(() { _expenses = data; _totalExpenses = total; });
+  }
+
+  void _onSearch(String _) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), _load);
+  }
+
+  Future<void> _showExpenseDialog() async {
+    final formKey = GlobalKey<FormState>();
+    final amountC = TextEditingController();
+    final vendorC = TextEditingController();
+    final notesC  = TextEditingController();
+    String category = _expenseCategories.first;
+    String method   = kPaymentMethods.first;
+    DateTime selectedDate = DateTime.now();
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setSt) => AlertDialog(
+          title: const Text('Log Business Expense'),
+          content: SingleChildScrollView(
+            child: Form(key: formKey, child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextFormField(
+                controller: amountC,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(labelText: 'Amount ($curr) *', border: const OutlineInputBorder()),
+                validator: (v) {
+                  final val = double.tryParse(v ?? '');
+                  if (val == null || val <= 0) return 'Invalid amount';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: category,
+                decoration: const InputDecoration(labelText: 'Category', border: OutlineInputBorder()),
+                items: _expenseCategories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                onChanged: (v) { if (v != null) setSt(() => category = v); },
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: method,
+                decoration: const InputDecoration(labelText: 'Paid Via', border: OutlineInputBorder()),
+                items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
+                onChanged: (v) { if (v != null) setSt(() => method = v); },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(controller: vendorC, decoration: const InputDecoration(labelText: 'Vendor / Payee', border: OutlineInputBorder())),
+              const SizedBox(height: 12),
+              TextFormField(controller: notesC, decoration: const InputDecoration(labelText: 'Notes', border: OutlineInputBorder()), maxLines: 2),
+              const SizedBox(height: 12),
+              Row(children: [
+                Expanded(child: Text('Date: ${DatabaseHelper.formatDateFromDt(selectedDate)}')),
+                TextButton(
+                  onPressed: () async {
+                    final p = await showDatePicker(context: context, initialDate: selectedDate, firstDate: DateTime(2000), lastDate: DateTime.now());
+                    if (p != null) setSt(() => selectedDate = p);
+                  },
+                  child: const Text('Change'),
+                ),
+              ]),
+            ])),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () { if (formKey.currentState!.validate()) Navigator.pop(ctx, true); },
+              child: const Text('Save Expense'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (result == true) {
+      await DatabaseHelper.insertExpense(
+        DatabaseHelper.isoDate(selectedDate),
+        category,
+        double.parse(amountC.text),
+        method,
+        vendorC.text.trim(),
+        notesC.text.trim(),
+      );
+      _load();
+    }
+    amountC.dispose(); vendorC.dispose(); notesC.dispose();
+  }
+
+  Future<void> _delete(int id) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Expense'),
+        content: const Text('Permanently delete this expense record?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), style: TextButton.styleFrom(foregroundColor: Colors.red), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await DatabaseHelper.deleteExpense(id);
+      _load();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Business Expenses')),
+    body: Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+        child: TextField(
+          controller: _searchCtrl,
+          decoration: InputDecoration(
+            hintText: 'Search category, vendor or notes...',
+            prefixIcon: const Icon(Icons.search),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            suffixIcon: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_searchCtrl.text.isNotEmpty)
+                    IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); _load(); }),
+                  PopupMenuButton<String>(
+                    icon: Stack(clipBehavior: Clip.none, children: [
+                      Icon(Icons.filter_list, color: _sortMode != 'Date (Newest)' ? Colors.amber : null),
+                      if (_sortMode != 'Date (Newest)') Positioned(
+                        right: -2, top: -2,
+                        child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)),
+                      ),
+                    ]),
+                    tooltip: 'Sort by',
+                    initialValue: _sortMode,
+                    onSelected: (v) { setState(() { _sortMode = v; _load(); }); },
+                    itemBuilder: (_) => _expenseSortOptions.map((opt) => PopupMenuItem(
+                      value: opt,
+                      child: Row(children: [
+                        Icon(_sortMode == opt ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber),
+                        const SizedBox(width: 8),
+                        Text(opt),
+                      ]),
+                    )).toList(),
+                  ),
+                ]
+            ),
+          ),
+          onChanged: _onSearch,
+        ),
+      ),
+      Card(
+        margin: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+        child: Padding(
+          padding: appSettingsNotifier.cardPadding,
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Total Expenses', style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)),
+                    const SizedBox(height: 2),
+                    Text(formatMoney(_totalExpenses), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                  ],
+                ),
+              ),
+              Text('${_expenses.length} txn', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+            ],
+          ),
+        ),
+      ),
+      Expanded(
+        child: _expenses.isEmpty
+            ? const Center(child: Text('No expenses logged yet.'))
+            : ListView.builder(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          itemCount: _expenses.length,
+          itemBuilder: (_, i) {
+            final e = _expenses[i];
+            final amount = (e['amount'] as num).toDouble();
+            final vendor = (e['vendor'] as String? ?? '').trim();
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: Padding(
+                padding: appSettingsNotifier.cardPadding,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start, // Absolute top alignment
+                  children: [
+                    CircleAvatar(
+                      backgroundColor: Colors.red.withValues(alpha: 0.1),
+                      child: const Icon(Icons.receipt, color: Colors.redAccent, size: 20),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              Expanded(child: Text(e['category'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), overflow: TextOverflow.ellipsis)),
+                              Text(formatMoney(amount), style: const TextStyle(fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          if (vendor.isNotEmpty) Text('Vendor: $vendor', style: const TextStyle(fontWeight: FontWeight.w600)),
+                          Text('Date: ${DatabaseHelper.formatDateString(e['date'])}  |  Via: ${e['paymentMethod']}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
+                          if ((e['notes'] as String).isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text('Note: ${e['notes']}', style: TextStyle(fontStyle: FontStyle.italic, color: Theme.of(context).textTheme.bodySmall?.color)),
+                            ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(
+                      width: 28, // Constrains ripple effect to match UniversalRentalCard
+                      child: PopupMenuButton<String>(
+                        icon: const Icon(Icons.more_vert, size: 20),
+                        padding: EdgeInsets.zero,
+                        tooltip: 'Options',
+                        onSelected: (val) {
+                          if (val == 'delete') _delete(e['id'] as int);
+                        },
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 8), Text('Delete', style: TextStyle(color: Colors.red))])),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    ]),
+    floatingActionButton: FloatingActionButton(
+      onPressed: _showExpenseDialog,
+      tooltip: 'Log Expense',
+      backgroundColor: Colors.redAccent,
+      foregroundColor: Colors.white,
+      child: const Icon(Icons.add),
+    ),
+  );
+}
+
+// =================================================
 // Inventory Tab
 // =================================================
+
 class InventoryTab extends StatefulWidget {
   const InventoryTab({super.key});
   @override
@@ -4663,6 +5467,14 @@ class _BusinessInfoScreenState extends State<BusinessInfoScreen> {
   String _taxProfile = 'No Tax';
   String _taxType = 'none';
   String _taxMode = 'exclusive';
+  int _fyStartMonth = 4; // Default to April
+
+  final List<Map<String, dynamic>> _months = [
+    {'val': 1, 'name': 'January'}, {'val': 2, 'name': 'February'}, {'val': 3, 'name': 'March'},
+    {'val': 4, 'name': 'April'}, {'val': 5, 'name': 'May'}, {'val': 6, 'name': 'June'},
+    {'val': 7, 'name': 'July'}, {'val': 8, 'name': 'August'}, {'val': 9, 'name': 'September'},
+    {'val': 10, 'name': 'October'}, {'val': 11, 'name': 'November'}, {'val': 12, 'name': 'December'},
+  ];
 
   String _taxTypeLabel(String type) {
     switch (type) {
@@ -4719,6 +5531,7 @@ class _BusinessInfoScreenState extends State<BusinessInfoScreen> {
       _addressC.text = (info['address'] as String?) ?? '';
       _upiC.text     = (info['upiId']   as String?) ?? '';
       _upiNameC.text = (info['upiName'] as String?) ?? '';
+      _fyStartMonth  = (info['fyStartMonth'] as int?) ?? 4;
       final profile = (info['taxProfile'] as String? ?? 'No Tax').trim();
       _taxProfile = kTaxProfiles.contains(profile) ? profile : 'Custom';
       _taxType = (info['taxType'] as String? ?? 'none').trim().toLowerCase();
@@ -4749,9 +5562,20 @@ class _BusinessInfoScreenState extends State<BusinessInfoScreen> {
       TextFormField(controller: _emailC,   decoration: const InputDecoration(labelText:'Email Address', border:OutlineInputBorder(), prefixIcon:Icon(Icons.email)), keyboardType: TextInputType.emailAddress),
       const SizedBox(height: 12),
       TextFormField(controller: _addressC, decoration: const InputDecoration(labelText:'Address', border:OutlineInputBorder(), prefixIcon:Icon(Icons.location_on)), maxLines: 2),
-      const SizedBox(height: 24),
-      const Text('Tax Setup', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber)),
+
+      const SizedBox(height: 32),
+      const Text('Fiscal & Tax Setup', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber)),
       const SizedBox(height: 12),
+      DropdownButtonFormField<int>(
+        initialValue: _fyStartMonth,
+        decoration: const InputDecoration(labelText: 'Financial Year Start Month', border: OutlineInputBorder(), prefixIcon: Icon(Icons.calendar_month)),
+        items: _months.map((m) => DropdownMenuItem<int>(value: m['val'] as int, child: Text(m['name'] as String))).toList(),
+        onChanged: (v) { if (v != null) setState(() => _fyStartMonth = v); },
+      ),
+      const SizedBox(height: 4),
+      Text('Proformas and Invoices will use this to generate numbers (e.g., INV-2025-1).', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+      const SizedBox(height: 16),
+
       DropdownButtonFormField<String>(
         initialValue: _taxProfile,
         decoration: const InputDecoration(labelText: 'Tax Profile', border: OutlineInputBorder(), prefixIcon: Icon(Icons.public)),
@@ -4863,6 +5687,7 @@ class _BusinessInfoScreenState extends State<BusinessInfoScreen> {
             taxRate: effectiveRate,
             taxMode: effectiveMode,
             taxRegNo: effectiveRegNo,
+            fyStartMonth: _fyStartMonth,
           );
           if (!mounted) return;
           messenger.showSnackBar(const SnackBar(content: Text('Business info saved'))); nav.pop();
@@ -5900,7 +6725,7 @@ class _OrdersListScreenState extends State<OrdersListScreen> {
                     children: [
                       Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                       const SizedBox(height: 4),
-                      Text('Proforma #${o['id']}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
+                      Text('Proforma: ${o['proformaNumber']?.toString().isNotEmpty == true ? o['proformaNumber'] : '#${o['id']}'}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
                       const SizedBox(height: 2),
                       Text('Date: ${DatabaseHelper.formatDateString(o['createdDate'] as String? ?? '')}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
                     ],
@@ -6020,7 +6845,22 @@ class _FinalInvoicesScreenState extends State<FinalInvoicesScreen> {
                       children: [
                         Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                         const SizedBox(height: 4),
-                        Text('Invoice #${g.orderId}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
+                        Text.rich(
+                          TextSpan(
+                            children: [
+                              TextSpan(
+                                text: g.invoiceNumber.isNotEmpty ? g.invoiceNumber : 'Invoice #${g.orderId}',
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              if (g.proformaNumber.isNotEmpty)
+                                TextSpan(
+                                  text: ' ref ${g.proformaNumber}',
+                                  style: const TextStyle(fontStyle: FontStyle.italic, fontWeight: FontWeight.normal),
+                                ),
+                            ],
+                          ),
+                          style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 13),
+                        ),
                         const SizedBox(height: 2),
                         Text('Out: ${DatabaseHelper.formatDateString(g.checkoutDate)}  |  In: ${_lastReturnDate(g)}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
                         const SizedBox(height: 4),
@@ -6536,10 +7376,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _switchSettingTile(
             icon: Icons.draw_outlined,
             color: Colors.amber,
-            title: 'PDF Signatures',
-            subtitle: 'Show customer and vendor signature lines on PDFs',
-            value: s.showPdfSignatures,
-            onChanged: s.setShowPdfSignatures
+            title: 'Proforma Signatures',
+            subtitle: 'Show signature lines on Proforma PDFs',
+            value: s.showProformaSignatures,
+            onChanged: s.setShowProformaSignatures
+        ),
+
+        _switchSettingTile(
+            icon: Icons.draw,
+            color: Colors.amber,
+            title: 'Invoice Signatures',
+            subtitle: 'Show signature lines on Final Invoice PDFs',
+            value: s.showInvoiceSignatures,
+            onChanged: s.setShowInvoiceSignatures
+        ),
+
+        _switchSettingTile(
+            icon: Icons.edit_document,
+            color: Colors.amber,
+            title: 'Allow Invoice Editing',
+            subtitle: 'Allow modifying records after a Final Invoice is issued',
+            value: s.allowFinalInvoiceEditing,
+            onChanged: s.setAllowFinalInvoiceEditing
         ),
 
         const Divider(height: 1),
@@ -6586,11 +7444,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           trailing: DropdownButton<String>(
             value: s.language,
             underline: const SizedBox(),
-            items: const [
-              DropdownMenuItem(value: 'English', child: Text('English')),
-              // Hindi temporarily removed as per user request
+            items: const <DropdownMenuItem<String>>[
+              DropdownMenuItem<String>(
+                value: 'English',
+                child: Text('English'),
+              ),
             ],
-            onChanged: (v) { if (v != null) s.setLanguage(v); },
+            onChanged: (String? v) {
+              if (v != null) s.setLanguage(v);
+            },
           ),
         ),
         ListTile(
@@ -6618,7 +7480,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const ListTile(
           leading: Icon(Icons.construction, color: Colors.amber),
           title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: Text('Version 2.5.5  |  Database v24'),
+          subtitle: Text('Version 2.6.0  |  Database v26'),
         ),
         ListTile(
           leading: const Icon(Icons.privacy_tip_outlined, color: Colors.amber),

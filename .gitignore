@@ -12,6 +12,7 @@
 .swiftpm/
 migrate_working_dir/
 android/key.properties
+pubspec.lock
 
 # IntelliJ related
 *.iml
