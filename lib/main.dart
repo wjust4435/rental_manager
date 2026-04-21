@@ -9,9 +9,8 @@
 // =================================================
 
 // ========Imports========
-
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart'; // Added for debugPrint
+import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
@@ -27,10 +26,23 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:fl_chart/fl_chart.dart';
+
+// ========Rental Manager App========
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const RentalManagerApp());
+  unawaited(_initializeServicesInBackground());
+}
+
+Future<void> _initializeServicesInBackground() async {
+  try {
+    await NotificationService.initialize();
+  } catch (_) {
+    // Keep app startup resilient even if a platform service init fails.
+  }
+}
 
 // ========App Provider========
-
 class AppProvider extends InheritedNotifier<AppSettingsNotifier> {
   const AppProvider({
     super.key,
@@ -195,8 +207,8 @@ class NotificationService {
   static final FlutterLocalNotificationsPlugin _plugin =
   FlutterLocalNotificationsPlugin();
 
-  static const String _channelId   = 'siteyard_main';
-  static const String _channelName = 'SITEYARD Alerts';
+  static const String _channelId   = 'rental_manager_main';
+  static const String _channelName = 'Rental Manager Alerts';
 
   static const int _idOverdue     = 1;
   static const int _idPending     = 2;
@@ -314,9 +326,70 @@ class NotificationService {
 
 // ========Database Helper========
 class DatabaseHelper {
-  static const int _dbVersion = 30;
+  static const int _dbVersion = 32;
   static Database? _db;
-  static String _activeDbFile = 'siteyard_v3.db';
+  static String _activeDbFile = 'rental_manager_v1.db';
+
+  // Financial Reversal Logic for Procurement
+  static Future<void> deletePurchaseOrder(int poId) async {
+    final db = await getDatabase();
+    await db.transaction((txn) async {
+      final items = await txn.query('purchase_order_items', where: 'poId = ?', whereArgs: [poId]);
+      for (var item in items) {
+        await txn.rawUpdate('UPDATE items SET total = MAX(0, total - ?) WHERE id = ?', [item['qty'], item['itemId']]);
+      }
+      await txn.delete('purchase_order_items', where: 'poId = ?', whereArgs: [poId]);
+      await txn.delete('purchase_orders', where: 'id = ?', whereArgs: [poId]);
+    });
+  }
+
+  static Future<void> cancelPurchaseOrder(int poId) async {
+    final db = await getDatabase();
+    await db.transaction((txn) async {
+      final po = (await txn.query('purchase_orders', where: 'id = ?', whereArgs: [poId])).firstOrNull;
+      if (po != null && (po['isCancelled'] as int? ?? 0) == 0) {
+        final items = await txn.query('purchase_order_items', where: 'poId = ?', whereArgs: [poId]);
+        for (var item in items) {
+          await txn.rawUpdate('UPDATE items SET total = MAX(0, total - ?) WHERE id = ?', [item['qty'], item['itemId']]);
+        }
+        await txn.update('purchase_orders', {'isCancelled': 1}, where: 'id = ?', whereArgs: [poId]);
+      }
+    });
+  }
+
+  static Future<void> _ensureVendorPaymentLogsTableExists(dynamic db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS vendor_payment_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        poId INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        method TEXT NOT NULL,
+        paidAt TEXT NOT NULL
+      )
+    ''');
+  }
+
+  static Future<List<Map<String, dynamic>>> getVendorPaymentHistory({String? poNumber}) async {
+    final db = await getDatabase();
+    await _ensureVendorPaymentLogsTableExists(db);
+
+    String where = '';
+    List<dynamic> args = [];
+    if (poNumber != null && poNumber.isNotEmpty) {
+      where = 'WHERE po.poNumber = ?';
+      args.add(poNumber);
+    }
+
+    return await db.rawQuery('''
+          SELECT v.*, po.poNumber, po.isCancelled, c.name as supplierName,
+                 (SELECT MIN(id) FROM vendor_payment_logs v2 WHERE v2.poId = v.poId) AS firstLogId
+          FROM vendor_payment_logs v
+          JOIN purchase_orders po ON v.poId = po.id
+          LEFT JOIN customers c ON po.supplierId = c.id
+          $where
+          ORDER BY v.paidAt DESC, v.id DESC
+        ''', args);
+  }
 
   static Future<void> closeDatabase() async {
     if (_db != null && _db!.isOpen) {
@@ -328,7 +401,7 @@ class DatabaseHelper {
   static Future<Database> getDatabase() async {
     if (_db != null) return _db!;
     final prefs = await SharedPreferences.getInstance();
-    _activeDbFile = prefs.getString('active_db_file') ?? 'siteyard_v3.db';
+    _activeDbFile = prefs.getString('active_db_file') ?? 'rental_manager_v1.db';
     final dir = await getApplicationDocumentsDirectory();
     final path = '${dir.path}/$_activeDbFile';
     _db = await openDatabase(
@@ -359,12 +432,11 @@ class DatabaseHelper {
         await db.execute(
             "CREATE TABLE expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, paymentMethod TEXT, vendor TEXT, receiptPath TEXT, notes TEXT)"
         );
-        // Phase 3: Procurement Database Base Setup
         await db.execute(
             "CREATE TABLE suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT, email TEXT, address TEXT, taxRegNo TEXT, notes TEXT, joinedDate TEXT)"
         );
         await db.execute(
-            "CREATE TABLE purchase_orders(id INTEGER PRIMARY KEY AUTOINCREMENT, supplierId INTEGER, poNumber TEXT, orderDate TEXT, subtotal REAL DEFAULT 0, taxAmount REAL DEFAULT 0, grandTotal REAL DEFAULT 0, amountPaid REAL DEFAULT 0, notes TEXT)"
+            "CREATE TABLE purchase_orders(id INTEGER PRIMARY KEY AUTOINCREMENT, supplierId INTEGER, poNumber TEXT, billNumber TEXT DEFAULT '', orderDate TEXT, subtotal REAL DEFAULT 0, taxAmount REAL DEFAULT 0, grandTotal REAL DEFAULT 0, amountPaid REAL DEFAULT 0, notes TEXT, isCancelled INTEGER DEFAULT 0)"
         );
         await db.execute(
             "CREATE TABLE purchase_order_items(id INTEGER PRIMARY KEY AUTOINCREMENT, poId INTEGER, itemId INTEGER, qty INTEGER, unitCost REAL, lineTotal REAL)"
@@ -380,96 +452,6 @@ class DatabaseHelper {
         await db.execute("CREATE INDEX IF NOT EXISTS idx_payment_logs_fallback ON payment_logs(fallbackRentalId)");
       },
       onUpgrade: (db, oldV, newV) async {
-        if (oldV < 23) {
-          try { await db.execute("ALTER TABLE rentals ADD COLUMN isCancelled INTEGER DEFAULT 0"); } catch (e, st) { debugPrint('Migration v23 error: $e\n$st'); }
-        }
-        if (oldV < 24) {
-          try {
-            await db.execute("ALTER TABLE items ADD COLUMN lostQty INTEGER DEFAULT 0");
-            await db.execute("ALTER TABLE rentals ADD COLUMN damagedQty INTEGER DEFAULT 0");
-          } catch (e, st) { debugPrint('Migration v24 error: $e\n$st'); }
-        }
-        if (oldV < 25) {
-          try {
-            await db.execute("CREATE TABLE sequences(seqKey TEXT PRIMARY KEY, seqValue INTEGER)");
-            await db.execute("ALTER TABLE orders ADD COLUMN proformaNumber TEXT DEFAULT ''");
-            await db.execute("ALTER TABLE orders ADD COLUMN invoiceNumber TEXT DEFAULT ''");
-            await db.execute("ALTER TABLE rentals ADD COLUMN invoiceNumber TEXT DEFAULT ''");
-            await db.execute("ALTER TABLE business_info ADD COLUMN fyStartMonth INTEGER DEFAULT 4");
-
-            // --- OLD DATA INTELLIGENT BACKFILL ENGINE ---
-            final bizRows = await db.query('business_info', where: 'id=1');
-            final fyStartMonth = bizRows.isNotEmpty ? (bizRows.first['fyStartMonth'] as int? ?? 4) : 4;
-            final existingOrders = await db.query('orders', orderBy: 'id ASC');
-
-            for (final o in existingOrders) {
-              final orderId = o['id'] as int;
-
-              // 1. Generate Proforma based on Checkout Date
-              final dt = DateTime.tryParse(o['createdDate'] as String? ?? '') ?? DateTime.now();
-              final proformaFy = getFiscalYear(dt, fyStartMonth);
-              final pSeqKey = 'ORD-$proformaFy';
-
-              final pRows = await db.query('sequences', where: 'seqKey=?', whereArgs: [pSeqKey]);
-              int pNext = 1;
-              if (pRows.isEmpty) { await db.insert('sequences', {'seqKey': pSeqKey, 'seqValue': 1}); }
-              else { pNext = (pRows.first['seqValue'] as int) + 1; await db.update('sequences', {'seqValue': pNext}, where: 'seqKey=?', whereArgs: [pSeqKey]); }
-
-              final proformaNum = 'ORD-$proformaFy-$pNext';
-              await db.update('orders', {'proformaNumber': proformaNum}, where: 'id=?', whereArgs: [orderId]);
-
-              // 2. If Fully Returned, Generate Invoice based on Return Date
-              final activeCount = (await db.rawQuery('SELECT COUNT(*) as c FROM rentals WHERE orderId=? AND (returned=0 OR returned IS NULL)', [orderId])).first['c'] as int? ?? 0;
-              if (activeCount == 0) {
-                final rentalRows = await db.query('rentals', where: 'orderId=?', whereArgs: [orderId]);
-                if (rentalRows.isNotEmpty) {
-                  DateTime latestReturn = DateTime(2000);
-                  for(final r in rentalRows) {
-                    final rd = DateTime.tryParse(r['returnDate'] as String? ?? '');
-                    if (rd != null && rd.isAfter(latestReturn)) latestReturn = rd;
-                  }
-                  if (latestReturn.year == 2000) latestReturn = dt;
-
-                  final invFy = getFiscalYear(latestReturn, fyStartMonth);
-                  final iSeqKey = 'INV-$invFy';
-
-                  final iRows = await db.query('sequences', where: 'seqKey=?', whereArgs: [iSeqKey]);
-                  int iNext = 1;
-                  if (iRows.isEmpty) { await db.insert('sequences', {'seqKey': iSeqKey, 'seqValue': 1}); }
-                  else { iNext = (iRows.first['seqValue'] as int) + 1; await db.update('sequences', {'seqValue': iNext}, where: 'seqKey=?', whereArgs: [iSeqKey]); }
-
-                  final invoiceNum = 'INV-$invFy-$iNext';
-                  await db.update('orders', {'invoiceNumber': invoiceNum}, where: 'id=?', whereArgs: [orderId]);
-                }
-              }
-            }
-          } catch (e, st) { debugPrint('Migration v25 error: $e\n$st'); }
-        }
-
-        if (oldV < 26) {
-          try {
-            await db.execute("CREATE TABLE expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, paymentMethod TEXT, vendor TEXT, receiptPath TEXT, notes TEXT)");
-            await db.execute("ALTER TABLE items ADD COLUMN purchasePrice REAL DEFAULT 0");
-            await db.execute("ALTER TABLE items ADD COLUMN purchaseDate TEXT DEFAULT ''");
-            await db.execute("ALTER TABLE items ADD COLUMN expectedLifeMonths INTEGER DEFAULT 0");
-            await db.execute("ALTER TABLE payment_logs ADD COLUMN isCleared INTEGER DEFAULT 0");
-            await db.execute("ALTER TABLE rentals ADD COLUMN voidedAt TEXT DEFAULT ''");
-            await db.execute("ALTER TABLE orders ADD COLUMN voidedAt TEXT DEFAULT ''");
-          } catch (e, st) { debugPrint('Migration v26 error: $e\n$st'); }
-        }
-
-        if (oldV < 27) {
-          try {
-            await db.execute("ALTER TABLE customers ADD COLUMN partyType TEXT DEFAULT 'Customer'");
-          } catch (e, st) { debugPrint('Migration v27 error: $e\n$st'); }
-        }
-
-        if (oldV < 28) {
-          try {
-            await db.execute("ALTER TABLE customers ADD COLUMN taxRegNo TEXT DEFAULT ''");
-          } catch (e, st) { debugPrint('Migration v28 error: $e\n$st'); }
-        }
-
         if (oldV < 29) {
           try {
             await db.execute("CREATE TABLE suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT, email TEXT, address TEXT, taxRegNo TEXT, notes TEXT, joinedDate TEXT)");
@@ -479,10 +461,22 @@ class DatabaseHelper {
 
         if (oldV < 30) {
           try {
-            // Fiscal Note: purchase_orders tracks input tax paid directly to suppliers for capital asset acquisition.
             await db.execute("CREATE TABLE purchase_orders(id INTEGER PRIMARY KEY AUTOINCREMENT, supplierId INTEGER, poNumber TEXT, orderDate TEXT, subtotal REAL DEFAULT 0, taxAmount REAL DEFAULT 0, grandTotal REAL DEFAULT 0, amountPaid REAL DEFAULT 0, notes TEXT)");
             await db.execute("CREATE TABLE purchase_order_items(id INTEGER PRIMARY KEY AUTOINCREMENT, poId INTEGER, itemId INTEGER, qty INTEGER, unitCost REAL, lineTotal REAL)");
           } catch (e, st) { debugPrint('Migration v30 error: $e\n$st'); }
+        }
+
+        if (oldV < 31) {
+          try {
+            await db.execute("ALTER TABLE purchase_orders ADD COLUMN billNumber TEXT DEFAULT ''");
+          } catch (e, st) { debugPrint('Migration v31 error: $e\n$st'); }
+        }
+
+        if (oldV < 32) {
+          try {
+            // FINANCIAL SYNC: Ensure existing databases have the cancellation flag for POs
+            await db.execute("ALTER TABLE purchase_orders ADD COLUMN isCancelled INTEGER DEFAULT 0");
+          } catch (e, st) { debugPrint('Migration v32 error: $e\n$st'); }
         }
       },
     );
@@ -516,8 +510,6 @@ class DatabaseHelper {
 
   static Future<List<Map<String, dynamic>>> getSuppliers() async {
     final db = await getDatabase();
-    // OLD CODE: return await db.query('suppliers', orderBy: 'name ASC');
-    // NEW CODE: Unified Party Ledger (Pulls from the Parties Management Screen)
     return await db.query('customers', where: 'partyType = ?', whereArgs: ['Supplier'], orderBy: 'name ASC');
   }
 
@@ -539,18 +531,54 @@ class DatabaseHelper {
   static Future<int> createPurchaseOrder(Map<String, dynamic> poData, List<Map<String, dynamic>> items) async {
     final db = await getDatabase();
     int poId = 0;
-
-    // Developer Note: Wrapping in a transaction ensures data integrity.
-    // If the PO fails, the items aren't orphaned.
     await db.transaction((txn) async {
+      final passedPoNum = poData['poNumber'] as String? ?? '';
+
+      // Auto-generate PO Sequence by Financial Year
+      final bizRows = await txn.query('business_info', where: 'id=1');
+      final fyStartMonth = bizRows.isNotEmpty ? (bizRows.first['fyStartMonth'] as int? ?? 4) : 4;
+      final dt = DateTime.tryParse(poData['orderDate'] as String? ?? '') ?? DateTime.now();
+      final fyPrefix = getFiscalYear(dt, fyStartMonth);
+
+      if (passedPoNum.trim().isEmpty) {
+        poData['poNumber'] = await generateNextSequence(txn, 'PO', fyPrefix);
+      } else {
+        // FINANCIAL SYNC: If user kept the pre-filled sequence, safely bump the tracker to prevent dupes later.
+        final seqKey = 'PO-$fyPrefix';
+        final rows = await txn.query('sequences', where: 'seqKey=?', whereArgs: [seqKey]);
+        int nextVal = rows.isEmpty ? 1 : (rows.first['seqValue'] as int) + 1;
+        String expectedNext = 'PO-$fyPrefix-$nextVal';
+
+        if (passedPoNum.trim() == expectedNext) {
+          if (rows.isEmpty) {
+            await txn.insert('sequences', {'seqKey': seqKey, 'seqValue': 1});
+          } else {
+            await txn.update('sequences', {'seqValue': nextVal}, where: 'seqKey=?', whereArgs: [seqKey]);
+          }
+        }
+      }
+
+      // FIX: Extract payment method and remove it from the map so SQL doesn't crash
+      final paymentMethod = poData.remove('paymentMethod') as String? ?? 'Cash';
+
       poId = await txn.insert('purchase_orders', poData);
+
+      // FINANCIAL SYNC: Log PO advances strictly to the dedicated A/P payment logs
+      final amtPaid = (poData['amountPaid'] as num?)?.toDouble() ?? 0.0;
+      if (amtPaid > 0) {
+        await _ensureVendorPaymentLogsTableExists(txn);
+        await txn.insert('vendor_payment_logs', {
+          'poId': poId,
+          'amount': amtPaid,
+          'method': paymentMethod,
+          'paidAt': poData['orderDate'],
+        });
+      }
 
       for (var item in items) {
         item['poId'] = poId;
         await txn.insert('purchase_order_items', item);
 
-        // Fiscal Note: Automatically update the master inventory record with the latest
-        // purchase price, associate it with the supplier, AND increase the physical stock count.
         await txn.rawUpdate(
             '''
             UPDATE items 
@@ -576,9 +604,13 @@ class DatabaseHelper {
   static Future<List<Map<String, dynamic>>> getPurchaseOrders() async {
     final db = await getDatabase();
     return await db.rawQuery('''
-        SELECT po.*, s.name as supplierName 
+        SELECT po.*, c.name as supplierName, c.phone, c.phone2,
+               (SELECT GROUP_CONCAT(i.name || '|' || poi.qty || '|' || poi.unitCost || '|' || poi.lineTotal, '^') 
+                FROM purchase_order_items poi 
+                JOIN items i ON poi.itemId = i.id 
+                WHERE poi.poId = po.id) as itemsSummary
         FROM purchase_orders po 
-        LEFT JOIN suppliers s ON po.supplierId = s.id 
+        LEFT JOIN customers c ON po.supplierId = c.id 
         ORDER BY po.id DESC
      ''');
   }
@@ -589,19 +621,14 @@ class DatabaseHelper {
   static Future<void> recordPOPayment(int poId, double amount, String method, String date, String poNumber, String supplierName) async {
     final db = await getDatabase();
     await db.transaction((txn) async {
-      // 1. Update the Purchase Order ledger balance
       await txn.rawUpdate('UPDATE purchase_orders SET amountPaid = amountPaid + ? WHERE id = ?', [amount, poId]);
 
-      // 2. Log the cash outflow in the general expense ledger.
-      // Fiscal Note: Categorized explicitly so the future P&L Engine knows this is CAPEX, not OPEX.
-      await txn.insert('expenses', {
-        'date': date,
-        'category': 'Asset Procurement (PO)',
+      await _ensureVendorPaymentLogsTableExists(txn);
+      await txn.insert('vendor_payment_logs', {
+        'poId': poId,
         'amount': amount,
-        'paymentMethod': method,
-        'vendor': supplierName,
-        'notes': 'Payment against PO: $poNumber',
-        'receiptPath': ''
+        'method': method,
+        'paidAt': date,
       });
     });
   }
@@ -1173,7 +1200,7 @@ class DatabaseHelper {
           await txn.insert('rentals', {
             'itemId': itemId,
             'orderId': rental['orderId'],
-            'customerId': rental['customerId'], // NEW DB BINDING
+            'customerId': rental['customerId'],
             'contractor': rental['contractor'],
             'phone': rental['phone'] ?? '',
             'phone2': rental['phone2'] ?? '',
@@ -1426,7 +1453,7 @@ class DatabaseHelper {
 
         await txn.insert('rentals', {
           'itemId': itemId,
-          'customerId': it['customerId'], // NEW DB BINDING
+          'customerId': it['customerId'],
           'contractor': it['contractor'] ?? '',
           'phone': it['phone'] ?? '',
           'phone2': it['phone2'] ?? '',
@@ -1610,6 +1637,11 @@ class DatabaseHelper {
       'taxRegNo': taxRegNo,
       'fyStartMonth': fyStartMonth,
     }, where: 'id=?', whereArgs: [1]);
+
+    // Update display name cache for the Account Switcher UI
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final String currentDb = prefs.getString('active_db_file') ?? 'rental_manager_v1.db';
+    await prefs.setString('display_name_$currentDb', name);
   }
 
   // ------------------------------------------
@@ -1712,7 +1744,7 @@ class DatabaseHelper {
   }
 
   static Future<String> generateNextSequence(Transaction txn, String docType, String fyPrefix) async {
-    final seqKey = '$docType-$fyPrefix'; // e.g., 'ORD-2024' or 'INV-2025'
+    final seqKey = '$docType-$fyPrefix';
     final rows = await txn.query('sequences', where: 'seqKey=?', whereArgs: [seqKey]);
     int nextVal = 1;
 
@@ -1726,507 +1758,235 @@ class DatabaseHelper {
     return '$docType-$fyPrefix-$nextVal';
   }
 
+  static Future<String> peekNextSequence(String docType, DateTime date) async {
+    final db = await getDatabase();
+    final bizRows = await db.query('business_info', where: 'id=1');
+    final fyStartMonth = bizRows.isNotEmpty ? (bizRows.first['fyStartMonth'] as int? ?? 4) : 4;
+    final fyPrefix = getFiscalYear(date, fyStartMonth);
+    final seqKey = '$docType-$fyPrefix';
+
+    final rows = await db.query('sequences', where: 'seqKey=?', whereArgs: [seqKey]);
+    int nextVal = rows.isEmpty ? 1 : (rows.first['seqValue'] as int) + 1;
+
+    return '$docType-$fyPrefix-$nextVal';
+  }
+
   // ------------------------------------------
-  // PDF Invoice Generation
+  // PDF Generation Optimization
   // ------------------------------------------
+
+  static Future<Map<String, dynamic>> _preparePdfTheme(Map<String, dynamic> biz, double fs, bool is57mm) async {
+    final fonts = await _loadPdfFonts();
+    final tax = _taxSettingsFromBiz(biz);
+    pw.TextStyle ts({double d = 0, bool bold = false, bool italic = false, PdfColor color = PdfColors.black}) => pw.TextStyle(fontSize: fs + d, font: bold ? fonts['bold'] : italic ? fonts['italic'] : fonts['regular'], color: color);
+
+    return {
+      'fonts': fonts, 'tax': tax, 'ts': ts,
+      'upiString': 'upi://pay?pa=${biz['upiId'] ?? ''}&pn=${Uri.encodeComponent(biz['upiName'] as String? ?? '')}&cu=${_getCurrencyCode(appSettingsNotifier.currencySymbol)}',
+      'watermark': () => pw.Center(child: pw.Transform.rotate(angle: 0.5, child: pw.Text('CANCELLED', style: ts(d: is57mm ? 30 : 60, bold: true, color: PdfColors.red100)))),
+      'sigLine': (String label) => pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.center, children: [pw.Container(width: is57mm ? 75 : 120, height: 1, color: PdfColors.black), pw.SizedBox(height: 4), pw.Text(label, style: ts(d: -1))]),
+      'header': [
+        if ((biz['name'] as String? ?? '').isNotEmpty) pw.Text(biz['name'] as String, style: ts(d: 4, bold: true)),
+        if ((biz['phone'] as String? ?? '').isNotEmpty) pw.Text('Ph: ${biz['phone']} ${biz['phone2'] ?? ''}', style: ts()),
+        if ((biz['email'] as String? ?? '').isNotEmpty) pw.Text(biz['email'] as String, style: ts()),
+        if ((biz['address'] as String? ?? '').isNotEmpty) pw.Text(biz['address'] as String, style: ts()),
+        if (tax['enabled'] == true) ...[pw.Text('${tax['label']}: ${tax['rate']}% (${tax['mode']})', style: ts()), if ((tax['regNo'] as String? ?? '').isNotEmpty) pw.Text('${tax['regLabel']}: ${tax['regNo']}', style: ts())],
+        if ((biz['upiId'] as String? ?? '').isNotEmpty) pw.Text('UPI: ${biz['upiId']}', style: ts()),
+        pw.Divider(),
+      ],
+      'finRow': (String l, String v, {bool bold = false}) => pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text(l, style: ts(bold: bold)), pw.Text(v, style: ts(bold: bold))])
+    };
+  }
+
   static Future<Uint8List> generatePdfProformaForOrder(int orderId, {String pageSize = 'A4'}) async {
     final db = await getDatabase();
-    final orderList = await db.query('orders', where: 'id=?', whereArgs: [orderId]);
-    if (orderList.isEmpty) throw Exception('Order not found');
-    final order = orderList.first;
+    final order = (await db.query('orders', where: 'id=?', whereArgs: [orderId])).first;
     final rentals = await getRentalsByOrder(orderId);
     final biz = await getBusinessInfo();
+    final custRows = await db.query('customers', where: 'name=?', whereArgs: [order['customerName']], limit: 1);
+    final custTaxRegNo = custRows.firstOrNull?['taxRegNo'] as String? ?? '';
+    final custEmail = custRows.firstOrNull?['email'] as String? ?? '';
 
-    // Fetch Customer Ledger Data to get Tax ID
-    final custName = order['customerName'] as String? ?? '';
-    final custQuery = await db.query('customers', where: 'name=?', whereArgs: [custName], limit: 1);
-    final custTaxRegNo = custQuery.isNotEmpty ? (custQuery.first['taxRegNo'] as String? ?? '') : '';
-
-    final isCancelled = rentals.any((r) => (r['isCancelled'] as int? ?? 0) == 1);
     final is57mm = pageSize == '57mm';
-    final format = is57mm ? const PdfPageFormat(57*PdfPageFormat.mm, 200*PdfPageFormat.mm, marginAll:4*PdfPageFormat.mm) : PdfPageFormat.a4;
-    final fs = is57mm ? 8.0 : 11.0;
-
-    final fonts = await _loadPdfFonts();
-    final fontRegular = fonts['regular']!;
-    final fontBold    = fonts['bold']!;
-    final fontItalic  = fonts['italic']!;
-    final showSigs    = appSettingsNotifier.showProformaSignatures;
-
-    String s(String k) => (biz[k] as String?) ?? '';
-    final bizName = s('name');
-    final bizPhone = s('phone');
-    final bizPhone2 = s('phone2');
-    final bizEmail = s('email');
-    final bizAddress = s('address');
-    final bizUpi = s('upiId');
-    final bizUpiName = s('upiName');
-
-    final tax = _taxSettingsFromBiz(biz);
-    final taxEnabled = tax['enabled'] == true;
-    final taxLabel = (tax['label'] as String?) ?? 'Tax';
-    final taxRate = (tax['rate'] as num?)?.toDouble() ?? 0.0;
-    final taxMode = (tax['mode'] as String?) ?? 'exclusive';
-    final taxRegNo = (tax['regNo'] as String?) ?? '';
-    final taxRegLabel = (tax['regLabel'] as String?) ?? 'Tax Reg. No.';
-
-    final currencyCode = _getCurrencyCode(appSettingsNotifier.currencySymbol);
-    final upiString = 'upi://pay?pa=$bizUpi&pn=${Uri.encodeComponent(bizUpiName)}&cu=$currencyCode';
-    final advance = rentals.fold(0.0, (sum, r) => sum + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0));
-
-    pw.TextStyle ts({double d = 0, bool bold = false, bool italic = false, PdfColor color = PdfColors.black}) => pw.TextStyle(
-      fontSize: fs + d,
-      font: bold ? fontBold : italic ? fontItalic : fontRegular,
-      color: color,
-    );
-
-    pw.Widget watermark() => pw.Center(
-      child: pw.Transform.rotate(
-        angle: 0.5,
-        child: pw.Text('CANCELLED', style: ts(d: 40, bold: true, color: PdfColors.red100)),
-      ),
-    );
-
-    pw.Widget sigLine(String label) => pw.Column(
-        crossAxisAlignment: pw.CrossAxisAlignment.center,
-        children: [
-          pw.Container(width: 120, height: 1, color: PdfColors.black),
-          pw.SizedBox(height: 4),
-          pw.Text(label, style: ts(d: -1))
-        ]
-    );
+    final theme = await _preparePdfTheme(biz, is57mm ? 8.0 : 11.0, is57mm);
+    final pw.TextStyle Function({double d, bool bold, bool italic, PdfColor color}) ts = theme['ts'];
 
     final doc = pw.Document();
     doc.addPage(pw.MultiPage(
-        pageTheme: pw.PageTheme(
-          pageFormat: format,
-          theme: pw.ThemeData.withFont(base: fontRegular, bold: fontBold, italic: fontItalic),
-          buildBackground: (ctx) => isCancelled ? pw.FullPage(ignoreMargins: true, child: watermark()) : pw.SizedBox(),
-        ),
-        build: (ctx) => [
-          if (bizName.isNotEmpty) pw.Text(bizName, style: ts(d: 4, bold: true)),
-          if (bizPhone.isNotEmpty || bizPhone2.isNotEmpty) pw.Text('Ph: $bizPhone${bizPhone2.isNotEmpty ? ' / $bizPhone2' : ''}', style: ts()),
-          if (bizEmail.isNotEmpty) pw.Text(bizEmail, style: ts()),
-          if (bizAddress.isNotEmpty) pw.Text(bizAddress, style: ts()),
-          if (taxEnabled) pw.Text('$taxLabel: ${taxRate.toStringAsFixed(2)}% (${taxMode == 'inclusive' ? 'Inclusive' : 'Exclusive'})', style: ts()),
-          if (taxEnabled && taxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $taxRegNo', style: ts()),
-          if (bizUpi.isNotEmpty) pw.Text('UPI: $bizUpi', style: ts()),
-          pw.Divider(),
-          pw.Text('PROFORMA', style: ts(d: 2, bold: true)),
-          pw.SizedBox(height: 4),
+        pageTheme: pw.PageTheme(pageFormat: is57mm ? const PdfPageFormat(57*PdfPageFormat.mm, 200*PdfPageFormat.mm, marginAll:4*PdfPageFormat.mm) : PdfPageFormat.a4, theme: pw.ThemeData.withFont(base: theme['fonts']['regular']!, bold: theme['fonts']['bold']!, italic: theme['fonts']['italic']!), buildBackground: (_) => rentals.any((r) => (r['isCancelled'] as int? ?? 0) == 1) ? pw.FullPage(ignoreMargins: true, child: theme['watermark']()) : pw.SizedBox()),
+        build: (_) => [
+          ...theme['header'],
+          pw.Text('PROFORMA', style: ts(d: 2, bold: true)), pw.SizedBox(height: 4),
           pw.Text('Proforma #: ${order['proformaNumber']?.toString().isNotEmpty == true ? order['proformaNumber'] : 'ORD-$orderId'}', style: ts()),
-          pw.Text('Date: ${formatDateString(order['createdDate'] as String? ?? '')}', style: ts()),
-          pw.Divider(),
-          pw.Row(children: [pw.Text('BILL TO: ', style: ts(bold: true)), pw.Text('${order['customerName'] ?? 'N/A'}', style: ts())]),
-          if (custTaxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $custTaxRegNo', style: ts()),
-          if (rentals.isNotEmpty) ...[
-            if (((rentals.first['phone'] as String?) ?? '').isNotEmpty) pw.Text('Ph: ${rentals.first['phone']}', style: ts()),
-            if (((rentals.first['address'] as String?) ?? '').isNotEmpty) pw.Text('Site: ${rentals.first['address']}', style: ts()),
-          ],
+          pw.Text('Date: ${formatDateString(order['createdDate'] as String? ?? '')}', style: ts()), pw.Divider(),
+          pw.Row(children: [pw.Text('BILL TO: ', style: ts(bold: true)), pw.Text(order['customerName'] as String? ?? '', style: ts())]),
+          if (custTaxRegNo.isNotEmpty && theme['tax']['enabled'] == true) pw.Text('${theme['tax']['regLabel']}: $custTaxRegNo', style: ts()),
+          if (rentals.isNotEmpty && ((rentals.first['phone'] as String?) ?? '').isNotEmpty) pw.Text('Ph: ${rentals.first['phone']}', style: ts()),
+          if (custEmail.isNotEmpty) pw.Text('Email: $custEmail', style: ts()),
+          if (rentals.isNotEmpty && ((rentals.first['address'] as String?) ?? '').isNotEmpty) pw.Text('Site: ${rentals.first['address']}', style: ts()),
           pw.Divider(),
           pw.TableHelper.fromTextArray(
-            headerStyle: ts(bold: true),
-            cellStyle: ts(),
-            headers: ['Item', 'Qty', 'Rate/Day'],
-            headerAlignments: {0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight},
-            cellAlignments: {0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight},
-            data: [
-              for (final r in rentals) [
-                r['itemName'] ?? '',
-                (r['qty'] ?? 0).toString(),
-                formatMoney(((r['rentalRate'] as num?)?.toDouble() ?? 0.0))
-              ]
-            ],
+              border: pw.TableBorder.all(width: 0.3),
+              cellPadding: const pw.EdgeInsets.symmetric(vertical: 2, horizontal: 4),
+              headerStyle: ts(bold: true),
+              cellStyle: ts(),
+              cellAlignments: {
+                0: pw.Alignment.centerLeft,
+                1: pw.Alignment.center,
+                2: pw.Alignment.center,
+              },
+              headers: ['Item', 'Qty', 'Rate/Day'],
+              data: rentals.map((r) => [r['itemName'] ?? '', (r['qty'] ?? 0).toString(), formatMoney(((r['rentalRate'] as num?)?.toDouble() ?? 0.0))]).toList()
           ),
           pw.Divider(),
-          if (advance > 0) pw.Text('Advance/Security: ${formatMoney(advance)}', style: ts()),
+          if (rentals.fold(0.0, (s, r) => s + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0)) > 0) pw.Text('Advance/Security: ${formatMoney(rentals.fold(0.0, (s, r) => s + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0)))}', style: ts()),
           pw.Text('Note: This is a Proforma (estimated rental summary).', style: ts(d: -1, italic: true)),
           pw.SizedBox(height: 6),
-          pw.Text('Thank you for your business!', style: ts(italic: true)),
-
-          if (showSigs) ...[
-            pw.SizedBox(height: 40),
-            pw.Align(alignment: pw.Alignment.center, child: sigLine('Customer Signature')),
-            pw.SizedBox(height: 40),
-            pw.Align(alignment: pw.Alignment.center, child: sigLine('Vendor Signature')),
-          ],
-
-          if (bizUpi.isNotEmpty) ...[
+          pw.Center(child: pw.Text('Thank you!', style: ts(italic: true))),
+          if (appSettingsNotifier.showProformaSignatures) ...[
             pw.SizedBox(height: 30),
-            pw.Center(
-                child: pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.center,
-                    children: [
-                      pw.BarcodeWidget(barcode: pw.Barcode.qrCode(), data: upiString, width: 70, height: 70),
-                      pw.SizedBox(height: 6),
-                      if (bizUpiName.isNotEmpty) pw.Text(bizUpiName, style: ts(bold: true)),
-                      pw.Text('UPI: $bizUpi', style: ts(d: -2)),
-                    ]
-                )
-            ),
+            is57mm
+                ? pw.Column(children: [pw.Center(child: theme['sigLine']('Customer Signature')), pw.SizedBox(height: 30), pw.Center(child: theme['sigLine']('Vendor Signature'))])
+                : pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceAround, children: [theme['sigLine']('Customer Signature'), theme['sigLine']('Vendor Signature')]),
           ],
-        ]));
+          if ((biz['upiId'] as String? ?? '').isNotEmpty) ...[pw.SizedBox(height: 30), pw.Center(child: pw.Column(children: [pw.BarcodeWidget(barcode: pw.Barcode.qrCode(), data: theme['upiString'], width: 70, height: 70), pw.Text(biz['upiName'] as String? ?? '', style: ts(bold: true)), pw.Text('UPI: ${biz['upiId']}', style: ts(d: -2))]))],
+        ]
+    ));
     return doc.save();
   }
 
   static Future<Uint8List> generatePdfFinalInvoiceForOrder(int orderId, {String pageSize = 'A4'}) async {
     final db = await getDatabase();
-    final orderList = await db.query('orders', where: 'id=?', whereArgs: [orderId]);
-    if (orderList.isEmpty) throw Exception('Order not found');
-    final order = orderList.first;
+    final order = (await db.query('orders', where: 'id=?', whereArgs: [orderId])).first;
     final rentals = await getRentalsByOrder(orderId);
-    if (rentals.isEmpty) throw Exception('No rentals found for order');
     final biz = await getBusinessInfo();
-
-    // Fetch Customer Ledger Data to get Tax ID
-    final custName = order['customerName'] as String? ?? '';
-    final custQuery = await db.query('customers', where: 'name=?', whereArgs: [custName], limit: 1);
-    final custTaxRegNo = custQuery.isNotEmpty ? (custQuery.first['taxRegNo'] as String? ?? '') : '';
-
-    final isCancelled = rentals.any((r) => (r['isCancelled'] as int? ?? 0) == 1);
-    final pMap = await getPaymentLogsForGroups([RentalGroup(orderId: orderId, items: rentals)]);
-    final logs = pMap.values.firstOrNull ?? [];
+    final custRows = await db.query('customers', where: 'name=?', whereArgs: [order['customerName']], limit: 1);
+    final custTaxRegNo = custRows.firstOrNull?['taxRegNo'] as String? ?? '';
+    final custEmail = custRows.firstOrNull?['email'] as String? ?? '';
+    final logs = (await getPaymentLogsForGroups([RentalGroup(orderId: orderId, items: rentals)])).values.firstOrNull ?? [];
 
     final is57mm = pageSize == '57mm';
-    final format = is57mm ? const PdfPageFormat(57*PdfPageFormat.mm, 220*PdfPageFormat.mm, marginAll:4*PdfPageFormat.mm) : PdfPageFormat.a4;
-    final fs = is57mm ? 8.0 : 11.0;
+    final theme = await _preparePdfTheme(biz, is57mm ? 8.0 : 11.0, is57mm);
+    final pw.TextStyle Function({double d, bool bold, bool italic, PdfColor color}) ts = theme['ts'];
+    final pw.Widget Function(String, String, {bool bold}) finRow = theme['finRow'];
+    final tax = theme['tax'];
 
-    final fonts = await _loadPdfFonts();
-    final fontRegular = fonts['regular']!;
-    final fontBold    = fonts['bold']!;
-    final fontItalic  = fonts['italic']!;
-    final showSigs    = appSettingsNotifier.showInvoiceSignatures;
-
-    String s(String k) => (biz[k] as String?) ?? '';
-    final bizName = s('name');
-    final bizPhone = s('phone');
-    final bizPhone2 = s('phone2');
-    final bizEmail = s('email');
-    final bizAddress = s('address');
-    final bizUpi = s('upiId');
-    final bizUpiName = s('upiName');
-
-    final tax = _taxSettingsFromBiz(biz);
-    final taxEnabled = tax['enabled'] == true;
-    final taxLabel = (tax['label'] as String?) ?? 'Tax';
-    final taxRegLabel = (tax['regLabel'] as String?) ?? 'Tax Reg. No.';
-    final taxRegNo = (tax['regNo'] as String?) ?? '';
-    final taxRate = (tax['rate'] as num?)?.toDouble() ?? 0.0;
-
-    final currencyCode = _getCurrencyCode(appSettingsNotifier.currencySymbol);
-    final upiString = 'upi://pay?pa=$bizUpi&pn=${Uri.encodeComponent(bizUpiName)}&cu=$currencyCode';
-
-    // Financial accumulation used by both table rows and totals section.
-    double lineSubtotal = 0.0;
-    double totalPenalty = 0.0;
+    double lineSubtotal = 0.0, totalPenalty = 0.0; DateTime? finalRet;
     final lineData = <List<String>>[];
-    final penaltyData = <Map<String, dynamic>>[];
-    DateTime? finalReturnDate;
+    final List<pw.Widget> customLineItems57mm = [];
 
     for (final r in rentals) {
-      final qty = r['qty'] as int? ?? 0;
-      final rate = (r['rentalRate'] as num?)?.toDouble() ?? 0.0;
-      final penalty = (r['penaltyFee'] as num?)?.toDouble() ?? 0.0;
       final days = _rentalChargeDays(r);
-      final lineTotal = rate * qty * days;
-      final returnText = formatDateString(r['returnDate'] as String?);
-
+      final lineTotal = ((r['rentalRate'] as num?)?.toDouble() ?? 0.0) * (r['qty'] as int? ?? 0) * days;
       lineSubtotal += lineTotal;
-      if (penalty > 0) {
-        totalPenalty += penalty;
-        penaltyData.add({'name': r['itemName'], 'qty': qty, 'amount': penalty});
+      totalPenalty += (r['penaltyFee'] as num?)?.toDouble() ?? 0.0;
+
+      final itemNameFormatted = '${r['itemName']} | Return date: ${formatDateString(r['returnDate'] as String?)}';
+      final qtyStr = (r['qty'] ?? 0).toString();
+      final rateStr = formatMoney(((r['rentalRate'] as num?)?.toDouble() ?? 0.0));
+      final daysStr = days.toString();
+      final totalStr = formatMoney(lineTotal);
+
+      lineData.add([itemNameFormatted, qtyStr, rateStr, daysStr, totalStr]);
+
+      if (is57mm) {
+        customLineItems57mm.add(
+            pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Text(itemNameFormatted, style: ts(bold: true)),
+                  pw.SizedBox(height: 2),
+                  pw.TableHelper.fromTextArray(
+                    context: null,
+                    border: pw.TableBorder.all(width: 0.3),
+                    cellPadding: const pw.EdgeInsets.symmetric(vertical: 1.5, horizontal: 2),
+                    headerStyle: ts(bold: true),
+                    cellStyle: ts(),
+                    headers: ['Qty', 'Rate/Day', 'Days', 'Amount'],
+                    data: [[qtyStr, rateStr, daysStr, totalStr]],
+                    cellAlignment: pw.Alignment.center,
+                  ),
+                  pw.SizedBox(height: 6),
+                ]
+            )
+        );
       }
 
-      final itemName = '${r['itemName'] ?? ''}';
-
-      lineData.add([
-        '$itemName | Return: ${returnText.isEmpty ? 'Pending' : returnText}',
-        qty.toString(),
-        formatMoney(rate),
-        days.toString(),
-        formatMoney(lineTotal),
-      ]);
-      final rd = _safeParseDate(r['returnDate']);
-      if (rd != null && (finalReturnDate == null || rd.isAfter(finalReturnDate))) {
-        finalReturnDate = rd;
-      }
+      final rd = _safeParseDate(r['returnDate']); if (rd != null && (finalRet == null || rd.isAfter(finalRet))) finalRet = rd;
     }
 
-    final discount = rentals.fold(0.0, (sum, r) => sum + ((r['discount'] as num?)?.toDouble() ?? 0.0));
-    final subtotalAfterDiscount = (lineSubtotal + totalPenalty) - discount;
-    final totals = _taxBreakdown(subtotalAfterDiscount, tax);
-    final taxableBase = totals['taxableBase'] ?? subtotalAfterDiscount;
-    final taxAmount = totals['taxAmount'] ?? 0.0;
-    final grandTotal = totals['grandTotal'] ?? subtotalAfterDiscount;
+    final discount = rentals.fold(0.0, (s, r) => s + ((r['discount'] as num?)?.toDouble() ?? 0.0));
+    final totals = _taxBreakdown((lineSubtotal + totalPenalty) - discount, tax);
+    final totalPaid = logs.isEmpty ? rentals.fold(0.0, (s, r) => s + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0)) : logs.fold(0.0, (s, l) => s + (l['amount'] as num).toDouble());
+    final badDebt = rentals.fold(0.0, (s, r) => s + ((r['badDebt'] as num?)?.toDouble() ?? 0.0));
+    final balance = (totals['grandTotal'] ?? 0.0) - totalPaid - badDebt;
 
-    // Prefer explicit payment logs for paid total; fallback to stored advance for legacy data.
-    double totalPaid = 0.0;
-    if (logs.isNotEmpty) {
-      for (final l in logs) {
-        totalPaid += (l['amount'] as num).toDouble();
-      }
-    } else {
-      totalPaid = rentals.fold(0.0, (sum, r) => sum + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0));
-    }
-
-    final badDebt = rentals.fold(0.0, (sum, r) => sum + ((r['badDebt'] as num?)?.toDouble() ?? 0.0));
-    final balance = grandTotal - totalPaid - badDebt;
-    final isSettled = rentals.every((r) => (r['isSettled'] as int? ?? 0) == 1);
-    final finalReturnText = finalReturnDate == null ? 'Pending' : formatDateFromDt(finalReturnDate);
-
-    double lineTotalOf(Map<String, dynamic> r) {
-      final qty = r['qty'] as int? ?? 0;
-      final rate = (r['rentalRate'] as num?)?.toDouble() ?? 0.0;
-      final days = _rentalChargeDays(r);
-      return rate * qty * days;
-    }
-
-    pw.TextStyle ts({double d = 0, bool bold = false, bool italic = false, PdfColor color = PdfColors.black}) => pw.TextStyle(
-      fontSize: fs + d,
-      font: bold ? fontBold : italic ? fontItalic : fontRegular,
-      color: color,
-    );
-
-    pw.Widget watermark() => pw.Center(
-      child: pw.Transform.rotate(
-        angle: 0.5,
-        child: pw.Text('CANCELLED', style: ts(d: is57mm ? 30 : 60, bold: true, color: PdfColors.red100)),
-      ),
-    );
-
-    pw.Widget sigLine(String label) => pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.center,
-      children: [
-        pw.Container(width: is57mm ? 75 : 120, height: 1, color: PdfColors.black),
-        pw.SizedBox(height: 4),
-        pw.Text(label, style: ts(d: -1)),
-      ],
-    );
-
-    pw.Widget thermalItemRow(Map<String, dynamic> r) {
-      final ret = formatDateString(r['returnDate'] as String?);
-      final qty = r['qty'] ?? 0;
-      final rate = (r['rentalRate'] as num?)?.toDouble() ?? 0.0;
-      final days = _rentalChargeDays(r);
-      final amount = lineTotalOf(r);
-
-      final itemNameText = (r['itemName'] ?? '').toString();
-
-      pw.Widget cell(String text, {bool bold = false, pw.TextAlign align = pw.TextAlign.left}) => pw.Padding(
-        padding: const pw.EdgeInsets.symmetric(horizontal: 2, vertical: 2),
-        child: pw.Text(text, style: ts(d: -1, bold: bold), textAlign: align),
-      );
-
-      return pw.Container(
-        padding: const pw.EdgeInsets.symmetric(vertical: 2),
-        child: pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
-          children: [
-            pw.Text(
-              '$itemNameText | Return date: ${ret.isEmpty ? 'Pending' : ret}',
-              style: ts(d: -0.5, bold: true),
-            ),
-            pw.SizedBox(height: 1),
-            pw.Table(
-              border: const pw.TableBorder(
-                top: pw.BorderSide(width: 0.5, color: PdfColors.grey600),
-                bottom: pw.BorderSide(width: 0.5, color: PdfColors.grey600),
-                left: pw.BorderSide(width: 0.5, color: PdfColors.grey600),
-                right: pw.BorderSide(width: 0.5, color: PdfColors.grey600),
-                horizontalInside: pw.BorderSide(width: 0.4, color: PdfColors.grey600),
-                verticalInside: pw.BorderSide(width: 0.4, color: PdfColors.grey600),
-              ),
-              columnWidths: {
-                0: const pw.FlexColumnWidth(1.1),
-                1: const pw.FlexColumnWidth(2.0),
-                2: const pw.FlexColumnWidth(1.1),
-                3: const pw.FlexColumnWidth(2.0),
-              },
-              children: [
-                pw.TableRow(children: [
-                  cell('Qty', bold: true, align: pw.TextAlign.center),
-                  cell('Rate/Day', bold: true, align: pw.TextAlign.center),
-                  cell('Days', bold: true, align: pw.TextAlign.center),
-                  cell('Amount', bold: true, align: pw.TextAlign.right),
-                ]),
-                pw.TableRow(children: [
-                  cell('$qty', align: pw.TextAlign.center),
-                  cell(formatMoney(rate), align: pw.TextAlign.center),
-                  cell('$days', align: pw.TextAlign.center),
-                  cell(formatMoney(amount), bold: true, align: pw.TextAlign.right),
-                ]),
-              ],
-            ),
-          ],
-        ),
-      );
-    }
-
-    // Render one canonical invoice document from already-computed financial values.
     final doc = pw.Document();
     doc.addPage(pw.MultiPage(
-      pageTheme: pw.PageTheme(
-        pageFormat: format,
-        theme: pw.ThemeData.withFont(base: fontRegular, bold: fontBold, italic: fontItalic),
-        buildBackground: (ctx) => isCancelled ? pw.FullPage(ignoreMargins: true, child: watermark()) : pw.SizedBox(),
-      ),
-      build: (ctx) => [
-        if (bizName.isNotEmpty) pw.Text(bizName, style: ts(d: 4, bold: true)),
-        if (bizPhone.isNotEmpty || bizPhone2.isNotEmpty) pw.Text('Ph: $bizPhone${bizPhone2.isNotEmpty ? ' / $bizPhone2' : ''}', style: ts()),
-        if (bizEmail.isNotEmpty) pw.Text(bizEmail, style: ts()),
-        if (bizAddress.isNotEmpty) pw.Text(bizAddress, style: ts()),
-        if (taxEnabled && taxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $taxRegNo', style: ts()),
-        if (bizUpi.isNotEmpty) pw.Text('UPI: $bizUpi', style: ts()),
-        pw.Divider(),
-        pw.Text('FINAL INVOICE', style: ts(d: 2, bold: true)),
-        pw.SizedBox(height: 4),
-        pw.Text('Invoice #: ${order['invoiceNumber']?.toString().isNotEmpty == true ? order['invoiceNumber'] : 'INV-$orderId'}', style: ts()),
-        if (order['proformaNumber']?.toString().isNotEmpty == true) pw.Text('Ref Proforma: ${order['proformaNumber']}', style: ts(d: -1, italic: true)),
-        pw.Text('Order Date: ${formatDateString(order['createdDate'] as String? ?? '')}', style: ts()),
-        pw.Text('Invoice Date: $finalReturnText', style: ts()),
-        pw.Divider(),
-        pw.Row(children: [pw.Text('BILL TO: ', style: ts(bold: true)), pw.Text('${order['customerName'] ?? 'N/A'}', style: ts())]),
-        if (custTaxRegNo.isNotEmpty) pw.Text('$taxRegLabel: $custTaxRegNo', style: ts()),
-        if (rentals.isNotEmpty) ...[
-          if (((rentals.first['phone'] as String?) ?? '').isNotEmpty) pw.Text('Ph: ${rentals.first['phone']}', style: ts()),
-          if (((rentals.first['address'] as String?) ?? '').isNotEmpty) pw.Text('Site: ${rentals.first['address']}', style: ts()),
-        ],
-        pw.Divider(),
-        if (is57mm) ...[
-          for (final r in rentals) ...[
-            thermalItemRow(r),
-            pw.SizedBox(height: 2),
-          ],
-        ] else ...[
-          pw.TableHelper.fromTextArray(
-            headerStyle: ts(bold: true),
-            cellStyle: ts(d: -1),
-            headers: ['Item', 'Qty', 'Rate/Day', 'Days', 'Line Total'],
-            headerAlignments: {
-              0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight, 3: pw.Alignment.center, 4: pw.Alignment.centerRight
-            },
-            cellAlignments: {
-              0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.centerRight, 3: pw.Alignment.center, 4: pw.Alignment.centerRight
-            },
-            data: lineData,
-          ),
-        ],
-        pw.SizedBox(height: 4),
-        // --- FINANCIAL BREAKDOWN START ---
-        pw.Divider(borderStyle: pw.BorderStyle.dashed, thickness: 0.5),
+        pageTheme: pw.PageTheme(pageFormat: is57mm ? const PdfPageFormat(57*PdfPageFormat.mm, 220*PdfPageFormat.mm, marginAll:4*PdfPageFormat.mm) : PdfPageFormat.a4, theme: pw.ThemeData.withFont(base: theme['fonts']['regular']!, bold: theme['fonts']['bold']!, italic: theme['fonts']['italic']!), buildBackground: (_) => rentals.any((r) => (r['isCancelled'] as int? ?? 0) == 1) ? pw.FullPage(ignoreMargins: true, child: theme['watermark']()) : pw.SizedBox()),
+        build: (_) => [
+          ...theme['header'],
+          pw.Text('FINAL INVOICE', style: ts(d: 2, bold: true)), pw.SizedBox(height: 4),
+          pw.Text('Invoice #: ${order['invoiceNumber']?.toString().isNotEmpty == true ? order['invoiceNumber'] : 'INV-$orderId'}', style: ts()),
+          if (order['proformaNumber']?.toString().isNotEmpty == true) pw.Text('Ref Proforma: ${order['proformaNumber']}', style: ts(d: -1, italic: true)),
+          pw.Text('Order Date: ${formatDateString(order['createdDate'] as String? ?? '')}', style: ts()), pw.Text('Invoice Date: ${finalRet == null ? 'Pending' : formatDateFromDt(finalRet)}', style: ts()), pw.Divider(),
+          pw.Row(children: [pw.Text('BILL TO: ', style: ts(bold: true)), pw.Text(order['customerName'] as String? ?? '', style: ts())]),
+          if (custTaxRegNo.isNotEmpty && tax['enabled'] == true) pw.Text('${tax['regLabel']}: $custTaxRegNo', style: ts()),
+          if (rentals.isNotEmpty && ((rentals.first['phone'] as String?) ?? '').isNotEmpty) pw.Text('Ph: ${rentals.first['phone']}', style: ts()),
+          if (custEmail.isNotEmpty) pw.Text('Email: $custEmail', style: ts()),
+          if (rentals.isNotEmpty && ((rentals.first['address'] as String?) ?? '').isNotEmpty) pw.Text('Site: ${rentals.first['address']}', style: ts()),
+          pw.Divider(),
 
-        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text('Rentals Subtotal:', style: ts()),
-          pw.Text(formatMoney(lineSubtotal, decimals: is57mm ? 0 : 2), style: ts()),
-        ]),
+          if (is57mm)
+            ...customLineItems57mm
+          else
+            pw.TableHelper.fromTextArray(
+                border: pw.TableBorder.all(width: 0.3),
+                cellPadding: const pw.EdgeInsets.symmetric(vertical: 2, horizontal: 4),
+                headerStyle: ts(bold: true),
+                cellStyle: ts(),
+                headers: ['Item', 'Qty', 'Rate/Day', 'Days', 'Line Total'],
+                data: lineData
+            ),
 
-        for (final p in penaltyData)
-          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-            pw.Text('Damage Penalty (${p['name']}):', style: ts()),
-            pw.Text('+ ${formatMoney(p['amount'], decimals: is57mm ? 0 : 2)}', style: ts()),
-          ]),
-
-        if (discount > 0) pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text('Discount:', style: ts()),
-          pw.Text('- ${formatMoney(discount, decimals: is57mm ? 0 : 2)}', style: ts()),
-        ]),
-
-        // CONDITIONAL TAX RENDERING
-        if (taxEnabled) ...[
-          pw.Divider(borderStyle: pw.BorderStyle.dashed, thickness: 0.5),
-          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-            pw.Text('Net Subtotal:', style: ts(bold: true)),
-            pw.Text(formatMoney(taxableBase, decimals: is57mm ? 0 : 2), style: ts(bold: true)),
-          ]),
-          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-            pw.Text('$taxLabel ${taxRate.toStringAsFixed(2)}%:', style: ts()),
-            pw.Text('+ ${formatMoney(taxAmount, decimals: is57mm ? 0 : 2)}', style: ts()),
-          ]),
-        ],
-
-        // GRAND TOTAL
-        pw.Divider(borderStyle: pw.BorderStyle.dashed, thickness: 0.5),
-        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text('TOTAL BILLED:', style: ts(bold: true)),
-          pw.Text(formatMoney(grandTotal, decimals: is57mm ? 0 : 2), style: ts(bold: true)),
-        ]),
-
-        // PAYMENTS & DEDUCTIONS
-        if (badDebt > 0) pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text('Written Off (Bad Debt):', style: ts()),
-          pw.Text('- ${formatMoney(badDebt, decimals: is57mm ? 0 : 2)}', style: ts()),
-        ]),
-
-        if (logs.isNotEmpty) ...[
-          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-            pw.Text('Advance/Security:', style: ts()),
-            pw.Text('- ${formatMoney(logs.first['amount'] as double, decimals: is57mm ? 0 : 2)}', style: ts()),
-          ]),
-          for (int i = 1; i < logs.length; i++)
-            pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-              pw.Text((logs[i]['amount'] as num) < 0
-                  ? 'Refunded ${((logs[i]['method'] as String?) ?? '').isEmpty ? '' : logs[i]['method']}:'
-                  : 'Paid ${((logs[i]['method'] as String?) ?? '').isEmpty ? 'Payment' : logs[i]['method']}:', style: ts()),
-              pw.Text(((logs[i]['amount'] as num) < 0 ? '+ ' : '- ') + formatMoney((logs[i]['amount'] as num).abs(), decimals: is57mm ? 0 : 2), style: ts()),
-            ]),
-        ] else if (totalPaid > 0) ...[
-          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-            pw.Text('Advance/Security Paid:', style: ts()),
-            pw.Text('- ${formatMoney(totalPaid, decimals: is57mm ? 0 : 2)}', style: ts()),
-          ]),
-        ],
-
-        // FINAL BALANCE
-        pw.Divider(thickness: is57mm ? 1.0 : 1.0),
-        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text(balance > 0 ? 'BALANCE DUE:' : balance < 0 ? 'REFUND DUE:' : 'BALANCE:', style: ts(bold: true, d: 1)),
-          pw.Text(formatMoney(balance.abs(), decimals: is57mm ? 0 : 2), style: ts(bold: true, d: 1)),
-        ]),
-
-        pw.SizedBox(height: 8),
-        pw.Center(child: pw.Text(
-            isSettled ? '*** SETTLED ***' : '*** PENDING ***',
-            style: ts(bold: true, d: 1)
-        )),
-        pw.SizedBox(height: 8),
-        // --- FINANCIAL BREAKDOWN END ---
-
-        if (showSigs) ...[
-          pw.SizedBox(height: is57mm ? 18 : 30),
-          pw.Align(alignment: pw.Alignment.center, child: sigLine('Customer Signature')),
-          pw.SizedBox(height: 5),
-          pw.SizedBox(height: is57mm ? 18 : 30),
-          pw.Align(alignment: pw.Alignment.center, child: sigLine('Vendor Signature')),
-        ],
-
-        pw.SizedBox(height: 8),
-        pw.Text('This is the final invoice based on actual return dates.', style: ts(d: -1, italic: true)),
-        if (bizUpi.isNotEmpty) ...[
-          pw.SizedBox(height: 20),
-          pw.Center(
-              child: pw.Column(
-                  crossAxisAlignment: pw.CrossAxisAlignment.center,
-                  children: [
-                    pw.BarcodeWidget(barcode: pw.Barcode.qrCode(), data: upiString, width: 70, height: 70),
-                    pw.SizedBox(height: 6),
-                    if (bizUpiName.isNotEmpty) pw.Text(bizUpiName, style: ts(bold: true)),
-                    pw.Text('UPI: $bizUpi', style: ts(d: -2)),
-                  ]
-              )
-          ),
-        ],
-      ],
+          pw.Divider(borderStyle: pw.BorderStyle.dashed),
+          finRow('Rentals Subtotal:', formatMoney(lineSubtotal)),
+          if (totalPenalty > 0) finRow('Damage Penalties:', '+ ${formatMoney(totalPenalty)}'),
+          if (discount > 0) finRow('Discount:', '- ${formatMoney(discount)}'),
+          if (tax['enabled'] == true) ...[finRow('Taxable Base:', formatMoney(totals['taxableBase'] ?? 0.0)), finRow('${tax['label']} (${tax['rate']}%):', '+ ${formatMoney(totals['taxAmount'] ?? 0.0)}')],
+          pw.Divider(),
+          finRow('TOTAL BILLED:', formatMoney(totals['grandTotal'] ?? 0.0, absolute: true), bold: true),
+          finRow('Total Paid:', '- ${formatMoney(totalPaid)}'),
+          if (badDebt > 0) finRow('Written Off:', '- ${formatMoney(badDebt)}'),
+          pw.Divider(),
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text(balance > 0 ? 'BALANCE DUE:' : 'REFUND DUE:', style: ts(bold: true, d: 1)), pw.Text(formatMoney(balance.abs()), style: ts(bold: true, d: 1))]),
+          pw.SizedBox(height: 10), pw.Center(child: pw.Text(rentals.every((r) => (r['isSettled'] as int? ?? 0) == 1) ? '*** SETTLED ***' : '*** PENDING ***', style: ts(bold: true))),
+          if (appSettingsNotifier.showInvoiceSignatures) ...[pw.SizedBox(height: 30), theme['sigLine']('Authorized Signature')],
+          if ((biz['upiId'] as String? ?? '').isNotEmpty) ...[pw.SizedBox(height: 20), pw.Center(child: pw.Column(children: [pw.BarcodeWidget(barcode: pw.Barcode.qrCode(), data: theme['upiString'], width: 60, height: 60), pw.Text('Scan to Pay', style: ts(d: -2))]))],
+        ]
     ));
     return doc.save();
   }
 
   static Future<String> exportBackup() async {
     try {
+      final biz = await getBusinessInfo();
+      final bizName = (biz['name'] as String? ?? '').trim().isEmpty ? 'Rental_Manager' : (biz['name'] as String).trim().replaceAll(RegExp(r'[^\w\s]+'), '').replaceAll(' ', '_');
+      final timeStamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+      final dynamicFileName = '${bizName}_Backup_$timeStamp.db';
+
+      final prefs = await SharedPreferences.getInstance();
+      final currentDbName = prefs.getString('active_db_file') ?? _activeDbFile;
+
       final dir = await getApplicationDocumentsDirectory();
-      final bytes = await File('${dir.path}/siteyard_v3.db').readAsBytes();
+      final dbFile = File('${dir.path}/$currentDbName');
+
+      if (!await dbFile.exists()) return 'Source database not found.';
+
+      final bytes = await dbFile.readAsBytes();
       final path = await FilePicker.platform.saveFile(
           dialogTitle: 'Save Database Backup',
-          fileName: 'siteyard_backup.db',
+          fileName: dynamicFileName,
           type: FileType.any,
           bytes: bytes
       );
@@ -2240,13 +2000,13 @@ class DatabaseHelper {
     try {
       final result = await FilePicker.platform.pickFiles();
       if (result == null) return 'No file selected';
+      final prefs = await SharedPreferences.getInstance();
+      final target = prefs.getString('active_db_file') ?? _activeDbFile;
       await closeDatabase();
       final dir = await getApplicationDocumentsDirectory();
-      await File(result.files.single.path!).copy('${dir.path}/siteyard_v3.db');
+      await File(result.files.single.path!).copy('${dir.path}/$target');
       return 'Restored successfully. Please restart the app.';
-    } catch (e) {
-      return 'Restore failed: $e';
-    }
+    } catch (e) { return 'Restore failed: $e'; }
   }
 
   // ------------------------------------------
@@ -2300,7 +2060,7 @@ class DatabaseHelper {
 
         } else {
           // Straight-Line Method (SLM)
-          if (monthsElapsed > lifeMonths) monthsElapsed = lifeMonths; // Cap at fully depreciated
+          if (monthsElapsed > lifeMonths) monthsElapsed = lifeMonths;
           final monthlyDepreciation = initialCost / lifeMonths;
           accumulatedDepreciation = monthlyDepreciation * monthsElapsed;
           currentBookValue = initialCost - accumulatedDepreciation;
@@ -2391,6 +2151,44 @@ class DatabaseHelper {
     final db = await getDatabase();
     await _ensureMaintenanceTableExists(db);
     return await db.query('maintenance_logs', where: 'itemId = ?', whereArgs: [itemId], orderBy: 'logDate DESC');
+  }
+
+  // --- Analytical Reporting Endpoints ---
+  static Future<Map<String, dynamic>> getProfitAndLoss(String period) async {
+    final db = await getDatabase();
+    final revResult = await db.rawQuery("SELECT SUM((qty * rentalRate * MAX(1, CAST(julianday(IFNULL(NULLIF(returnDate, ''), date('now', 'localtime'))) - julianday(checkoutDate) AS INTEGER))) + penaltyFee - discount) as rev, SUM(penaltyFee) as pen, SUM(discount) as disc, SUM(badDebt) as bd FROM rentals WHERE isCancelled = 0");
+    final expResult = await db.rawQuery("SELECT SUM(amount) as exp FROM expenses WHERE category != 'Asset Procurement (PO)'");
+    double rev = (revResult.first['rev'] as num?)?.toDouble() ?? 0.0;
+    double pen = (revResult.first['pen'] as num?)?.toDouble() ?? 0.0;
+    double disc = (revResult.first['disc'] as num?)?.toDouble() ?? 0.0;
+    double bd = (revResult.first['bd'] as num?)?.toDouble() ?? 0.0;
+    double exp = (expResult.first['exp'] as num?)?.toDouble() ?? 0.0;
+    return {'revenue': rev, 'penalties': pen, 'discounts': disc, 'badDebt': bd, 'expenses': exp, 'net': rev - exp - bd};
+  }
+
+  static Future<List<Map<String, dynamic>>> getARAging() async {
+    final db = await getDatabase();
+    return await db.rawQuery('''
+      SELECT contractor as name,
+             SUM(CASE WHEN days <= 30 THEN bal ELSE 0 END) as '0_30',
+             SUM(CASE WHEN days > 30 AND days <= 60 THEN bal ELSE 0 END) as '31_60',
+             SUM(CASE WHEN days > 60 AND days <= 90 THEN bal ELSE 0 END) as '61_90',
+             SUM(CASE WHEN days > 90 THEN bal ELSE 0 END) as '90_plus',
+             SUM(bal) as total, MAX(days) as oldest_inv
+      FROM (SELECT contractor, CAST(julianday('now', 'localtime') - julianday(checkoutDate) AS INTEGER) as days,
+               ((qty * rentalRate * MAX(1, CAST(julianday(IFNULL(NULLIF(returnDate, ''), date('now', 'localtime'))) - julianday(checkoutDate) AS INTEGER))) + penaltyFee - advanceDeposit - discount - badDebt) as bal
+        FROM rentals WHERE (returned=1) AND isSettled=0 AND isCancelled=0
+      ) WHERE bal > 0 GROUP BY contractor ORDER BY total DESC
+    ''');
+  }
+
+  static Future<Map<String, dynamic>> getTaxLiability(String period) async {
+    final db = await getDatabase();
+    final biz = await getBusinessInfo();
+    final tax = _taxSettingsFromBiz(biz);
+    final revResult = await db.rawQuery("SELECT SUM((qty * rentalRate * MAX(1, CAST(julianday(IFNULL(NULLIF(returnDate, ''), date('now', 'localtime'))) - julianday(checkoutDate) AS INTEGER))) + penaltyFee - discount - badDebt) as rev FROM rentals WHERE isCancelled = 0");
+    final totals = _taxBreakdown((revResult.first['rev'] as num?)?.toDouble() ?? 0.0, tax);
+    return {'base': totals['taxableBase'], 'collected': totals['taxAmount']};
   }
 }
 
@@ -2486,21 +2284,6 @@ class RentalUtils {
 // III. ROOT UI APP STRUCTURE
 // =============================
 
-// ========Rental Manager App========
-void main() {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(const RentalManagerApp());
-  unawaited(_initializeServicesInBackground());
-}
-
-Future<void> _initializeServicesInBackground() async {
-  try {
-    await NotificationService.initialize();
-  } catch (_) {
-    // Keep app startup resilient even if a platform service init fails.
-  }
-}
-
 // ========App Root========
 class RentalManagerApp extends StatefulWidget {
   const RentalManagerApp({super.key});
@@ -2594,8 +2377,17 @@ class _MainShellState extends State<MainShell> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Future.delayed(const Duration(milliseconds: 500), () {
-        if (mounted) NotificationService.checkAndNotify();
+      Future.delayed(const Duration(milliseconds: 500), () async {
+        if (mounted) {
+          NotificationService.checkAndNotify();
+          // Sync current business name to the switcher cache for accurate display
+          final biz = await DatabaseHelper.getBusinessInfo();
+          if (biz['name'].toString().trim().isNotEmpty) {
+            final prefs = await SharedPreferences.getInstance();
+            final currentDb = prefs.getString('active_db_file') ?? 'rental_manager_v1.db';
+            await prefs.setString('display_name_$currentDb', biz['name']);
+          }
+        }
       });
     });
   }
@@ -2643,11 +2435,11 @@ class _MainShellState extends State<MainShell> {
                 const Divider(height: 1),
                 _drawerSectionLabel('MANAGEMENT'),
                 _drawerNavItem(icon: Icons.store, title: 'Business Info', onTap: () => _nav(const BusinessInfoScreen())),
-                _drawerNavItem(icon: Icons.group, title: 'Parties (Debtors & Creditors)', onTap: () => _nav(const PartiesManagementScreen())),
+                _drawerNavItem(icon: Icons.group, title: 'Parties', onTap: () => _nav(const PartiesManagementScreen())),
                 _drawerSectionLabel('TRANSACTIONS'),
-                _drawerNavItem(icon: Icons.account_balance_wallet, title: 'Revenue Ledger', onTap: () => _nav(const PaymentLedgerScreen())),
+                _drawerNavItem(icon: Icons.shopping_cart_checkout, title: 'POs & Bills', onTap: () => _nav(const PurchaseOrdersScreen())),
+                _drawerNavItem(icon: Icons.account_balance_wallet, title: 'Ledgers', onTap: () => _nav(const PaymentLedgerScreen())),
                 _drawerNavItem(icon: Icons.receipt_long, title: 'Proformas & Invoices', onTap: () => _nav(const InvoiceManagerScreen())),
-                _drawerNavItem(icon: Icons.shopping_cart_checkout, title: 'Procurement (POs)', onTap: () => _nav(const PurchaseOrdersScreen())),
                 _drawerSectionLabel('ACCOUNTING'),
                 _drawerNavItem(icon: Icons.bar_chart, title: 'Financial Reports', onTap: () => _nav(const FinancialReportsScreen())),
                 _drawerNavItem(icon: Icons.outbox, title: 'Business Expenses', onTap: () => _nav(const ExpenseTrackingScreen())),
@@ -2658,10 +2450,10 @@ class _MainShellState extends State<MainShell> {
                   leading: const Icon(Icons.save_alt),
                   title: const Text('Export Backup'),
                   onTap: () async {
-                    final m = ScaffoldMessenger.of(context);
                     Navigator.pop(context);
                     final result = await DatabaseHelper.exportBackup();
-                    m.showSnackBar(SnackBar(content: Text(result)));
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result)));
                   },
                 ),
                 ListTile(
@@ -2773,43 +2565,48 @@ class _MainShellState extends State<MainShell> {
   // Fiscal Note: Method bound to state to securely rebuild the navigation stack upon ledger change.
   Future<void> _showAccountSwitchDialog() async {
     final prefs = await SharedPreferences.getInstance();
-    final List<String> accountFiles = prefs.getStringList('registered_accounts') ?? ['siteyard_v3.db'];
-    final String currentActive = prefs.getString('active_db_file') ?? 'siteyard_v3.db';
+    // Rebranded default file identity to Rental Manager
+    final List<String> accountFiles = prefs.getStringList('registered_accounts') ?? ['rental_manager_v1.db'];
+    final String currentActive = prefs.getString('active_db_file') ?? 'rental_manager_v1.db';
 
     if (!mounted) return;
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Switch Business Account'),
+        title: const Text('Switch Business A/C'),
         content: SizedBox(
           width: double.maxFinite,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text('Select an account to load its inventory and ledgers.', style: TextStyle(fontSize: 12)),
-              const SizedBox(height: 10),
-              ...accountFiles.map((fileName) => ListTile(
-                leading: Icon(Icons.account_balance, color: fileName == currentActive ? Colors.amber : Colors.grey),
-                title: Text(fileName.replaceAll('.db', '').replaceAll('_', ' ').toUpperCase()),
-                subtitle: fileName == currentActive ? const Text('Active', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)) : null,
-                onTap: fileName == currentActive ? null : () async {
-                  await DatabaseHelper.closeDatabase();
-                  await prefs.setString('active_db_file', fileName);
+            const SizedBox(height: 10),
+              ...accountFiles.map((fileName) {
+                final String cachedName = prefs.getString('display_name_$fileName') ?? '';
+                final String displayName = cachedName.isNotEmpty
+                    ? cachedName
+                    : fileName.replaceAll('.db', '').replaceAll('_', ' ').replaceAll('v1', '').replaceAll('v3', '').trim().toUpperCase();
 
-                  if (!ctx.mounted) return;
-                  Navigator.of(ctx).pop();
+                return ListTile(
+                  leading: Icon(Icons.account_balance, color: fileName == currentActive ? Colors.amber : Colors.grey),
+                  title: Text(displayName),
+                  subtitle: fileName == currentActive ? const Text('Active', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)) : null,
+                  onTap: fileName == currentActive ? null : () async {
+                    await DatabaseHelper.closeDatabase();
+                    await prefs.setString('active_db_file', fileName);
 
-                  // FIX: Explicitly verify the underlying State context is still mounted after the async gaps.
-                  if (!mounted) return;
+                    if (!ctx.mounted) return;
+                    Navigator.of(ctx).pop();
 
-                  // Force app rebuild to reload with new database connection
-                  Navigator.of(context).pushAndRemoveUntil(
-                    MaterialPageRoute(builder: (context) => const MainShell()),
-                        (route) => false,
-                  );
-                },
-              )),
+                    if (!mounted) return;
+                    Navigator.of(context).pushAndRemoveUntil(
+                      MaterialPageRoute(builder: (context) => const MainShell()),
+                          (route) => false,
+                    );
+                  },
+                );
+              }),
               const Divider(),
               ListTile(
                 leading: const Icon(Icons.add_business, color: Colors.blue),
@@ -2827,20 +2624,21 @@ class _MainShellState extends State<MainShell> {
                       ],
                     ),
                   );
+                  if (!mounted) return;
                   if (newName != null && newName.isNotEmpty) {
                     final newFile = '${newName.replaceAll(' ', '_').toLowerCase()}.db';
                     if (!accountFiles.contains(newFile)) {
                       accountFiles.add(newFile);
                       await prefs.setStringList('registered_accounts', accountFiles);
+                      await prefs.setString('display_name_$newFile', newName);
                       await DatabaseHelper.closeDatabase();
                       await prefs.setString('active_db_file', newFile);
 
                       if (!ctx.mounted) return;
                       Navigator.of(ctx).pop();
 
-                      // FIX: Explicitly verify the underlying State context is still mounted.
+                      // CPA Note: Explicitly check the parent context before stack reset
                       if (!mounted) return;
-
                       Navigator.of(context).pushAndRemoveUntil(
                         MaterialPageRoute(builder: (context) => const MainShell()),
                             (route) => false,
@@ -2868,57 +2666,44 @@ class UniversalRentalCard extends StatelessWidget {
   final RentalGroup group;
   final List<Map<String, dynamic>>? paymentLogs;
   final bool showCustomerName;
-  final VoidCallback? onEdit;
-  final VoidCallback? onReturn;
-  final VoidCallback? onSettle;
-  final VoidCallback? onPdf;
-  final VoidCallback? onProforma;
-  final VoidCallback? onCancel;
-  final VoidCallback? onDelete;
-  final VoidCallback? onViewPayments;
+  final VoidCallback? onEdit, onReturn, onSettle, onPdf, onProforma, onCancel, onDelete, onViewPayments;
 
   const UniversalRentalCard({
-    super.key,
-    required this.group,
-    this.paymentLogs,
-    this.showCustomerName = true,
-    this.onEdit,
-    this.onReturn,
-    this.onSettle,
-    this.onPdf,
-    this.onProforma,
-    this.onCancel,
-    this.onDelete,
-    this.onViewPayments,
+    super.key, required this.group, this.paymentLogs, this.showCustomerName = true,
+    this.onEdit, this.onReturn, this.onSettle, this.onPdf, this.onProforma, this.onCancel, this.onDelete, this.onViewPayments,
   });
+
+  Widget _tag(String text, Color color) => Container(
+    margin: const EdgeInsets.only(left: 6),
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+    decoration: BoxDecoration(color: color.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
+    child: Text(text, style: TextStyle(color: color, fontSize: 10.5, fontWeight: FontWeight.bold)),
+  );
+
+  Widget _finRow(String lbl, String val, {Color? color, bool strike = false, bool bold = false}) => Padding(
+    padding: const EdgeInsets.only(bottom: 2),
+    child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+      Text(lbl, style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal)),
+      Text(val, style: TextStyle(color: color, fontWeight: bold ? FontWeight.bold : FontWeight.normal, decoration: strike ? TextDecoration.lineThrough : null))
+    ]),
+  );
 
   @override
   Widget build(BuildContext context) {
     final settings = AppProvider.of(context);
     final compact = settings.cardDensity == 'compact';
-    final dividerHeight = compact ? 10.0 : 16.0;
+    final divider = Divider(height: compact ? 10.0 : 16.0);
 
-    DateTime checkoutDt;
-    try {
-      checkoutDt = DateTime.parse(group.checkoutDate);
-    } catch (_) {
-      checkoutDt = DateTime.now();
-    }
-
+    DateTime checkoutDt = DateTime.tryParse(group.checkoutDate) ?? DateTime.now();
     final dayCount = DateTime.now().difference(checkoutDt).inDays;
     final isOverdue = !group.isFullyReturned && dayCount > settings.overdueDays;
-    final totalCost = group.calculateTotalCost();
-    final balance = group.balance;
 
-    double initialAdvance = 0.0;
-    double laterPaid = 0.0;
+    double initialAdvance = 0.0, laterPaid = 0.0;
     if (group.isFullyReturned) {
-      final payments = paymentLogs ?? const <Map<String, dynamic>>[];
+      final payments = paymentLogs ?? const [];
       if (payments.isNotEmpty) {
         initialAdvance = (payments.first['amount'] as num?)?.toDouble() ?? 0.0;
-        for (int j = 1; j < payments.length; j++) {
-          laterPaid += (payments[j]['amount'] as num?)?.toDouble() ?? 0.0;
-        }
+        laterPaid = payments.skip(1).fold(0.0, (s, p) => s + ((p['amount'] as num?)?.toDouble() ?? 0.0));
       } else {
         initialAdvance = group.advance;
       }
@@ -2928,276 +2713,138 @@ class UniversalRentalCard extends StatelessWidget {
       margin: EdgeInsets.only(bottom: compact ? 8 : 10),
       clipBehavior: Clip.antiAlias,
       child: Container(
-        decoration: isOverdue
-            ? const BoxDecoration(border: Border(left: BorderSide(color: Colors.orange, width: 4)))
-            : null,
-        child: Padding(
-          padding: settings.cardPadding,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  if (isOverdue)
-                    Padding(
-                      padding: EdgeInsets.only(right: compact ? 4 : 6),
-                      child: Icon(Icons.warning_amber_rounded, color: Colors.orange, size: compact ? 16 : 18),
-                    ),
-                  Expanded(
-                    child: showCustomerName
-                        ? Text.rich(
-                      TextSpan(children: [
-                        TextSpan(text: group.contractor, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                        if (group.phone.isNotEmpty)
-                          TextSpan(
-                            text: '  | Ph# ${group.phone}${group.phone2.isNotEmpty ? ' / ${group.phone2}' : ''}',
-                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.normal, color: Theme.of(context).textTheme.bodySmall?.color),
-                          ),
-                      ]),
-                      overflow: TextOverflow.ellipsis,
-                    )
-                        : Text(
-                      group.orderId != null
-                          ? (group.invoiceNumber.isNotEmpty
-                          ? '${group.invoiceNumber}${group.proformaNumber.isNotEmpty ? " ref ${group.proformaNumber}" : ""}'
-                          : (group.proformaNumber.isNotEmpty ? group.proformaNumber : 'ORD-${group.orderId}'))
-                          : (group.isFullyReturned ? 'Settled Rental' : 'Active Rental'),
-                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                  if (group.isCancelled)
-                    Container(
-                      margin: const EdgeInsets.only(left: 6),
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-                      child: const Text('CANCELLED', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
-                    )
-                  else if (group.badDebt > 0)
-                    Container(
-                      margin: const EdgeInsets.only(left: 6),
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-                      child: const Text('BAD DEBT', style: TextStyle(color: Colors.redAccent, fontSize: 10.5, fontWeight: FontWeight.bold)),
-                    )
-                  else if (group.isFullyReturned && group.isSettled)
-                      Container(
-                        margin: const EdgeInsets.only(left: 6),
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-                        child: const Text('PAID', style: TextStyle(color: Colors.greenAccent, fontSize: 10.5, fontWeight: FontWeight.bold)),
-                      ),
-                  SizedBox(
-                    width: 32,
-                    child: PopupMenuButton<String>(
-                      tooltip: 'Options',
-                      onSelected: (val) {
-                        if (val == 'edit') onEdit?.call();
-                        if (val == 'cancel') onCancel?.call();
-                        if (val == 'delete') onDelete?.call();
-                        if (val == 'pdf' && group.orderId != null) onPdf?.call();
-                        if (val == 'proforma' && group.orderId != null) onProforma?.call();
-                      },
-                      itemBuilder: (_) => [
-                        if (onEdit != null)
-                          const PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit_outlined, size: 18), SizedBox(width: 8), Text('Edit')])),
-                        if (onProforma != null && group.orderId != null)
-                          const PopupMenuItem(value: 'proforma', child: Row(children: [Icon(Icons.description_outlined, size: 18, color: Colors.blueAccent), SizedBox(width: 8), Text('View Proforma', style: TextStyle(color: Colors.blueAccent))])),
-                        if (onPdf != null && group.orderId != null)
-                          const PopupMenuItem(value: 'pdf', child: Row(children: [Icon(Icons.picture_as_pdf_outlined, size: 18, color: Colors.amber), SizedBox(width: 8), Text('Final Invoice', style: TextStyle(color: Colors.amber))])),
-                        if (onCancel != null && !group.isCancelled)
-                          const PopupMenuItem(value: 'cancel', child: Row(children: [Icon(Icons.cancel_outlined, size: 18, color: Colors.orange), SizedBox(width: 8), Text('Cancel Invoice', style: TextStyle(color: Colors.orange))])),
-                        if (onDelete != null)
-                          const PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 8), Text('Delete Record', style: TextStyle(color: Colors.red))])),
-                      ],
-                      child: const Align(alignment: Alignment.centerRight, child: Icon(Icons.more_vert, size: 20)),
-                    ),
-                  ),
-                ],
-              ),
-              if (showCustomerName || group.address.isNotEmpty)
-                Padding(
-                  padding: EdgeInsets.only(top: compact ? 1 : 2),
-                  child: Text.rich(
-                    TextSpan(
-                        style: TextStyle(fontSize: 13, color: Theme.of(context).textTheme.bodySmall?.color),
-                        children: [
-                          if (showCustomerName && group.orderId != null) ...[
-                            TextSpan(
-                                text: group.invoiceNumber.isNotEmpty ? group.invoiceNumber : (group.proformaNumber.isNotEmpty ? group.proformaNumber : 'ORD-${group.orderId}'),
-                                style: const TextStyle(fontWeight: FontWeight.bold)
-                            ),
-                            if (group.invoiceNumber.isNotEmpty && group.proformaNumber.isNotEmpty)
-                              TextSpan(
-                                text: ' ref ${group.proformaNumber}',
-                                style: const TextStyle(fontWeight: FontWeight.normal, fontStyle: FontStyle.italic, fontSize: 12),
-                              ),
-                            if (group.address.isNotEmpty) const TextSpan(text: '  |  '),
-                          ],
-                          if (group.address.isNotEmpty)
-                            TextSpan(text: 'Site: ${group.address}'),
-                        ]
-                    ),
-                  ),
-                ),
-              Padding(
-                padding: EdgeInsets.only(top: compact ? 1 : 2),
-                child: Row(
+        decoration: isOverdue ? const BoxDecoration(border: Border(left: BorderSide(color: Colors.orange, width: 4))) : null,
+        padding: settings.cardPadding,
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            if (isOverdue) Padding(padding: EdgeInsets.only(right: compact ? 4 : 6), child: Icon(Icons.warning_amber_rounded, color: Colors.orange, size: compact ? 16 : 18)),
+            Expanded(child: showCustomerName
+                ? Text.rich(TextSpan(children: [
+              TextSpan(text: group.contractor, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              if (group.phone.isNotEmpty) TextSpan(text: '  | Ph# ${group.phone}${group.phone2.isNotEmpty ? ' / ${group.phone2}' : ''}', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+            ]), overflow: TextOverflow.ellipsis)
+                : Text(group.orderId != null ? (group.invoiceNumber.isNotEmpty ? '${group.invoiceNumber}${group.proformaNumber.isNotEmpty ? " ref ${group.proformaNumber}" : ""}' : (group.proformaNumber.isNotEmpty ? group.proformaNumber : 'ORD-${group.orderId}')) : (group.isFullyReturned ? 'Settled Rental' : 'Active Rental'), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold))),
+            if (group.isCancelled) _tag('CANCELLED', Colors.redAccent)
+            else if (group.badDebt > 0) _tag('BAD DEBT', Colors.redAccent)
+            else if (group.isFullyReturned && group.isSettled) _tag('PAID', Colors.greenAccent),
+            SizedBox(width: 32, child: PopupMenuButton<String>(
+              tooltip: 'Options',
+              onSelected: (val) {
+                if (val == 'edit') onEdit?.call(); if (val == 'cancel') onCancel?.call(); if (val == 'delete') onDelete?.call();
+                if (val == 'pdf' && group.orderId != null) onPdf?.call(); if (val == 'proforma' && group.orderId != null) onProforma?.call();
+              },
+              itemBuilder: (_) => [
+                if (onEdit != null) const PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit_outlined, size: 18), SizedBox(width: 8), Text('Edit')])),
+                if (onProforma != null && group.orderId != null) const PopupMenuItem(value: 'proforma', child: Row(children: [Icon(Icons.description_outlined, size: 18, color: Colors.blueAccent), SizedBox(width: 8), Text('View Proforma', style: TextStyle(color: Colors.blueAccent))])),
+                if (onPdf != null && group.orderId != null) const PopupMenuItem(value: 'pdf', child: Row(children: [Icon(Icons.picture_as_pdf_outlined, size: 18, color: Colors.amber), SizedBox(width: 8), Text('Final Invoice', style: TextStyle(color: Colors.amber))])),
+                if (onCancel != null && !group.isCancelled) const PopupMenuItem(value: 'cancel', child: Row(children: [Icon(Icons.cancel_outlined, size: 18, color: Colors.orange), SizedBox(width: 8), Text('Cancel Invoice', style: TextStyle(color: Colors.orange))])),
+                if (onDelete != null) const PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 8), Text('Delete Record', style: TextStyle(color: Colors.red))])),
+              ],
+              child: const Align(alignment: Alignment.centerRight, child: Icon(Icons.more_vert, size: 20)),
+            )),
+          ]),
+          if (showCustomerName || group.address.isNotEmpty) Padding(padding: EdgeInsets.only(top: compact ? 1 : 2), child: Text.rich(TextSpan(style: TextStyle(fontSize: 13, color: Theme.of(context).textTheme.bodySmall?.color), children: [
+            if (showCustomerName && group.orderId != null) ...[
+              TextSpan(text: group.invoiceNumber.isNotEmpty ? group.invoiceNumber : (group.proformaNumber.isNotEmpty ? group.proformaNumber : 'ORD-${group.orderId}'), style: const TextStyle(fontWeight: FontWeight.bold)),
+              if (group.invoiceNumber.isNotEmpty && group.proformaNumber.isNotEmpty) TextSpan(text: ' ref ${group.proformaNumber}', style: const TextStyle(fontStyle: FontStyle.italic, fontSize: 12)),
+              if (group.address.isNotEmpty) const TextSpan(text: '  |  '),
+            ],
+            if (group.address.isNotEmpty) TextSpan(text: 'Site: ${group.address}'),
+          ]))),
+          Padding(padding: EdgeInsets.only(top: compact ? 1 : 2), child: Text.rich(TextSpan(style: const TextStyle(fontSize: 14), children: [
+            TextSpan(text: 'Checkout: ${DatabaseHelper.formatDateString(group.checkoutDate)}'),
+            if (!group.isFullyReturned) ...[const TextSpan(text: '  |  '), TextSpan(text: '$dayCount days', style: TextStyle(fontWeight: FontWeight.w600, color: isOverdue ? Colors.orange : Colors.blue))],
+          ]), overflow: TextOverflow.ellipsis)),
+          divider,
+          ...group.items.map((r) {
+            final isRet = r['returned'] == 1;
+            return Padding(padding: EdgeInsets.symmetric(vertical: compact ? 2 : 4), child: Row(children: [
+              Icon(isRet ? Icons.check_circle : Icons.radio_button_checked, size: compact ? 14 : 16, color: isRet ? Colors.green : Colors.redAccent),
+              const SizedBox(width: 8),
+              Expanded(child: Text('${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble() ?? 0.0))}/day', style: TextStyle(fontSize: 13, color: isRet ? Colors.grey : null))),
+              if (isRet) Text(DatabaseHelper.formatDateString(r['returnDate'] as String?), style: const TextStyle(color: Colors.green, fontSize: 11)),
+            ]));
+          }),
+          if (group.notes.isNotEmpty) Padding(padding: EdgeInsets.only(top: compact ? 2 : 4), child: Text('Note: ${group.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12))),
+          divider,
+          // Detailed Ledger Rows (Left Aligned)
+          FutureBuilder<Map<String, dynamic>>(
+              future: DatabaseHelper.getBusinessInfo(),
+              builder: (context, snapshot) {
+                final biz = snapshot.data ?? {};
+                final taxRate = (biz['taxRate'] as num?)?.toDouble() ?? 0.0;
+                final subtotal = group.calculateTotalCost();
+                final penalty = group.items.fold(0.0, (s, r) => s + ((r['penaltyFee'] as num?)?.toDouble() ?? 0.0));
+                final taxAmount = (subtotal + penalty - group.discount) * (taxRate / 100);
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: Text.rich(
-                        TextSpan(
-                          style: const TextStyle(fontSize: 14),
-                          children: [
-                            TextSpan(text: 'Checkout: ${DatabaseHelper.formatDateString(group.checkoutDate)}'),
-                            if (!group.isFullyReturned) ...[
-                              const TextSpan(text: '  |  '),
-                              TextSpan(
-                                text: '$dayCount days',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                  color: isOverdue ? Colors.orange : Colors.blue,
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Divider(height: dividerHeight),
-              ...group.items.map((r) {
-                final isRet = r['returned'] == 1;
-                return Padding(
-                  padding: EdgeInsets.symmetric(vertical: compact ? 2 : 4),
-                  child: Row(
-                    children: [
-                      Icon(
-                        isRet ? Icons.check_circle : Icons.radio_button_checked,
-                        size: compact ? 14 : 16,
-                        color: isRet ? Colors.green : Colors.redAccent,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          '${r['itemName']} x ${r['qty']} @ ${formatMoney(((r['rentalRate'] as num?)?.toDouble() ?? 0.0))}/day',
-                          style: TextStyle(fontSize: 13, color: isRet ? Colors.grey : null),
-                        ),
-                      ),
-                      if (isRet)
-                        Text(
-                          DatabaseHelper.formatDateString(r['returnDate'] as String?),
-                          style: const TextStyle(color: Colors.green, fontSize: 11),
-                        ),
+                    if (!group.isFullyReturned) ...[
+                      Text('Estimated Total: ${formatMoney(group.calculateTotalCost())}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                      Row(mainAxisAlignment: MainAxisAlignment.start, children: [Text('Adv/Security: ${formatMoney(group.advance)}'), _PaymentLabel(group.paymentMethod)]),
+                    ] else ...[
+                      _finRow('Total Billed:', formatMoney(subtotal), strike: group.isCancelled),
+                      if (penalty > 0) _finRow('Penalty:', '+ ${formatMoney(penalty)}', color: Colors.redAccent),
+                      if (taxAmount > 0) _finRow('Tax:', '+ ${formatMoney(taxAmount)}'),
+                      if (group.discount != 0) _finRow('Discount:', '- ${formatMoney(group.discount)}'),
+                      if (group.badDebt != 0) _finRow('Written Off:', '- ${formatMoney(group.badDebt)}', color: Colors.redAccent),
+                      _finRow('Advance/Security:', '- ${formatMoney(initialAdvance)}'),
+                      if (laterPaid != 0) _finRow('Payment(s):', '- ${formatMoney(laterPaid)}'),
                     ],
-                  ),
+                  ],
                 );
-              }),
-              if (group.notes.isNotEmpty)
-                Padding(
-                  padding: EdgeInsets.only(top: compact ? 2 : 4),
-                  child: Text('Note: ${group.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12)),
+              }
+          ),
+          const SizedBox(height: 4),
+          // Final Balance, Tight Payment Icon & Actions Inline
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                child: Text(
+                  !group.isFullyReturned
+                      ? 'Current Balance: ${formatMoney(group.balance)}'
+                      : (group.isSettled ? 'Settled: Balance Cleared' : 'Final Balance: ${formatMoney(group.balance)}'),
+                  style: TextStyle(
+                      color: group.isCancelled ? Colors.grey : (group.isSettled ? Colors.grey : (group.balance > 0 ? Colors.orange : Colors.green)),
+                      fontWeight: FontWeight.bold
+                  ),
                 ),
-              Divider(height: dividerHeight),
-              if (!group.isFullyReturned) ...[
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Live Cost: ${formatMoney(totalCost)}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                          Row(children: [Text('Adv/Security: ${formatMoney(group.advance)}'), _PaymentLabel(group.paymentMethod)]),
-                          Text('Balance: ${formatMoney(balance)}', style: TextStyle(color: balance > 0 ? Colors.orangeAccent : Colors.greenAccent, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                    ),
-                    if (onReturn != null)
-                      ElevatedButton.icon(
-                        icon: Icon(Icons.check_circle_outline, size: compact ? 16 : 18),
-                        label: const Text('Return Items'),
-                        style: ElevatedButton.styleFrom(
-                          padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 14, vertical: compact ? 8 : 10),
-                          minimumSize: Size(0, compact ? 32 : 38),
-                        ),
-                        onPressed: onReturn,
-                      ),
-                  ],
+              ),
+              if (onViewPayments != null)
+                InkWell(
+                  onTap: onViewPayments,
+                  borderRadius: BorderRadius.circular(4),
+                  child: const Padding(
+                    padding: EdgeInsets.all(2),
+                    child: Icon(Icons.receipt_long, color: Colors.amber, size: 22),
+                  ),
                 ),
-              ] else ...[
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Total Billed: ${formatMoney(totalCost)}', style: TextStyle(decoration: group.isCancelled ? TextDecoration.lineThrough : null)),
-                          if (group.items.any((r) => ((r['penaltyFee'] as num?)?.toDouble() ?? 0.0) > 0)) ...group.items.where((r) => ((r['penaltyFee'] as num?)?.toDouble() ?? 0.0) > 0).map((r) => Text('Damage Penalty (${r['itemName']}): + ${formatMoney(((r['penaltyFee'] as num?)?.toDouble() ?? 0.0))}', style: const TextStyle(color: Colors.redAccent))),
-                          if (group.discount != 0) Text('Discount: - ${formatMoney(group.discount)}'),
-                          if (group.badDebt != 0) Text('Written Off: - ${formatMoney(group.badDebt)}', style: const TextStyle(color: Colors.redAccent)),
-                          Text('Advance/Security: - ${formatMoney(initialAdvance)}'),
-                          if (laterPaid != 0) Text('Payment(s): - ${formatMoney(laterPaid)}'),
-                          const SizedBox(height: 4),
-                          Text(
-                            group.isSettled ? 'Settled: Balance Cleared' : 'Final Balance: ${formatMoney(balance)}',
-                            style: TextStyle(color: group.isSettled ? Colors.grey : (balance > 0 ? Colors.orange : Colors.green), fontWeight: FontWeight.bold),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        if (onViewPayments != null)
-                          SizedBox(
-                            width: 32,
-                            child: Tooltip(
-                              message: 'View Payments',
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(6),
-                                onTap: onViewPayments,
-                                child: const Align(
-                                  alignment: Alignment.centerRight,
-                                  child: Icon(Icons.receipt_long, color: Colors.amber, size: 20),
-                                ),
-                              ),
-                            ),
-                          ),
-                        if (!group.isSettled && onSettle != null) ...[
-                          const SizedBox(height: 8),
-                          ElevatedButton.icon(
-                            icon: Icon(balance < 0 ? Icons.undo : Icons.payment, size: 16),
-                            label: Text(compact ? 'Settle' : (balance < 0 ? 'Record Refund' : 'Record Payment')),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: balance < 0 ? Colors.green.withValues(alpha: 0.2) : Colors.orange.withValues(alpha: 0.2),
-                              foregroundColor: balance < 0 ? Colors.greenAccent : Colors.orangeAccent,
-                              padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 14, vertical: compact ? 8 : 10),
-                              minimumSize: Size(0, compact ? 32 : 38),
-                              visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
-                            ),
-                            onPressed: onSettle,
-                          ),
-                        ],
-                      ],
-                    )
-                  ],
+              if (!group.isFullyReturned && onReturn != null) ...[
+                const SizedBox(width: 12),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.check_circle_outline, size: 18),
+                  label: const Text('Return'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue.withValues(alpha: 0.1),
+                    foregroundColor: Colors.blue,
+                    minimumSize: const Size(0, 32),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  onPressed: onReturn,
                 ),
-              ]
+              ],
             ],
           ),
-        ),
+        ]),
       ),
     );
   }
 }
 
 // ========Universal Search Bar========
-
 class _SearchBar extends StatelessWidget {
   final TextEditingController controller;
   final String hint;
@@ -3221,6 +2868,260 @@ class _SearchBar extends StatelessWidget {
   );
 }
 
+// ======== Universal UI Helpers (Optimization Layer) ========
+class SearchablePickerSheet<T> extends StatefulWidget {
+  final String title;
+  final List<T> items;
+  final bool Function(T, String) filter;
+  final Widget Function(T) itemBuilder;
+
+  const SearchablePickerSheet({super.key, required this.title, required this.items, required this.filter, required this.itemBuilder});
+
+  @override
+  State<SearchablePickerSheet<T>> createState() => _SearchablePickerSheetState<T>();
+}
+
+class _SearchablePickerSheetState<T> extends State<SearchablePickerSheet<T>> {
+  final TextEditingController _searchCtrl = TextEditingController();
+  late List<T> _filtered;
+
+  @override
+  void initState() {
+    super.initState();
+    _filtered = widget.items;
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  void _filter(String query) {
+    setState(() {
+      _filtered = widget.items.where((i) => widget.filter(i, query)).toList();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 16, right: 16, top: 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(widget.title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _searchCtrl,
+            autofocus: true,
+            decoration: InputDecoration(
+              hintText: 'Search...',
+              prefixIcon: const Icon(Icons.search),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              isDense: true,
+              suffixIcon: _searchCtrl.text.isNotEmpty ? IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); _filter(''); }) : null,
+            ),
+            onChanged: _filter,
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: _filtered.isEmpty
+                ? const Center(child: Text('No results found.'))
+                : ListView.builder(
+              itemCount: _filtered.length,
+              itemBuilder: (context, index) {
+                final item = _filtered[index];
+                return InkWell(
+                  onTap: () => Navigator.pop(context, item),
+                  child: widget.itemBuilder(item),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class TransactionLineItem {
+  int? itemId;
+  final TextEditingController qtyC = TextEditingController(text: '1');
+  final TextEditingController priceC = TextEditingController(text: '0.00'); // Universal for Rate or Cost
+
+  void dispose() {
+    qtyC.dispose();
+    priceC.dispose();
+  }
+}
+
+class AppUI {
+  static Widget buildPartyDateRow({
+    required BuildContext context, required String partyLabel, required IconData partyIcon, required int? selectedPartyId,
+    required List<Map<String, dynamic>> partyList, required bool Function(Map<String, dynamic>, String) filter,
+    required Widget Function(Map<String, dynamic>) itemBuilder, required ValueChanged<int?> onPartySelected,
+    required DateTime selectedDate, required TextEditingController dateCtrl, required String dateLabel, required ValueChanged<DateTime> onDateSelected,
+  }) {
+    return Row(children: [
+      Expanded(flex: 2, child: InkWell(
+        onTap: () async {
+          final selected = await showSearchablePicker<Map<String, dynamic>>(context: context, title: 'Select $partyLabel', items: partyList, filter: filter, itemBuilder: itemBuilder);
+          if (selected != null) onPartySelected(selected['id']);
+        },
+        child: IgnorePointer(child: TextFormField(
+          key: ValueKey(selectedPartyId),
+          initialValue: selectedPartyId != null ? partyList.firstWhere((p) => p['id'] == selectedPartyId, orElse: () => {'name': ''})['name'] : 'Select $partyLabel',
+          decoration: inputDecoration(partyLabel, i: partyIcon).copyWith(suffixIcon: const Icon(Icons.search)),
+        )),
+      )),
+      const SizedBox(width: 8),
+      Expanded(child: TextFormField(readOnly: true, controller: dateCtrl, decoration: inputDecoration(dateLabel, i: Icons.calendar_today), onTap: () async {
+        final p = await showDatePicker(context: context, initialDate: selectedDate, firstDate: DateTime(2000), lastDate: DateTime(2100));
+        if (p != null) { onDateSelected(p); dateCtrl.text = DatabaseHelper.formatDateFromDt(p); }
+      }))
+    ]);
+  }
+
+  static Widget buildLineItemsList({
+    required BuildContext context,
+    required List<TransactionLineItem> lines,
+    required List<Map<String, dynamic>> inventoryItems,
+    required String priceLabel,
+    required VoidCallback onAddLine,
+    required ValueChanged<int> onRemoveLine,
+    required VoidCallback onStateChanged,
+  }) {
+    Widget buildLineCard(int i, TransactionLineItem line) {
+      return Card(
+        margin: const EdgeInsets.only(bottom: 8),
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Row(
+            children: [
+              Expanded(
+                flex: 3,
+                child: InkWell(
+                  onTap: () async {
+                    final selected = await showSearchablePicker<Map<String, dynamic>>(
+                      context: context,
+                      title: 'Select Item',
+                      items: inventoryItems,
+                      filter: (item, q) => (item['name']?.toString().toLowerCase() ?? '').contains(q.toLowerCase()),
+                      itemBuilder: (item) {
+                        final avail = (item['total'] as int? ?? 0) - (item['rented'] as int? ?? 0);
+                        return ListTile(
+                          leading: const Icon(Icons.inventory_2_outlined),
+                          title: Text(item['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          subtitle: Text('Stock: ${item['total']} | Avail: $avail'),
+                          trailing: const Icon(Icons.chevron_right, size: 16),
+                        );
+                      },
+                    );
+                    if (selected != null) {
+                      line.itemId = selected['id'];
+                      if (priceLabel.contains('Cost')) {
+                        line.priceC.text = (selected['purchasePrice'] as num?)?.toStringAsFixed(2) ?? '0.00';
+                      }
+                      onStateChanged();
+                    }
+                  },
+                  child: IgnorePointer(
+                    child: TextFormField(
+                      key: ValueKey(line.itemId),
+                      initialValue: line.itemId != null
+                          ? inventoryItems.firstWhere((it) => it['id'] == line.itemId, orElse: () => {'name': ''})['name']
+                          : 'Select Item',
+                      decoration: inputDecoration('Item').copyWith(suffixIcon: const Icon(Icons.search)),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 2,
+                child: TextFormField(
+                  controller: line.qtyC,
+                  decoration: inputDecoration('Qty'),
+                  keyboardType: TextInputType.number,
+                  onChanged: (_) => onStateChanged(),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 2,
+                child: TextFormField(
+                  controller: line.priceC,
+                  decoration: inputDecoration(priceLabel),
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (_) => onStateChanged(),
+                ),
+              ),
+              if (lines.length > 1)
+                IconButton(
+                  icon: const Icon(Icons.remove_circle, color: Colors.redAccent),
+                  onPressed: () => onRemoveLine(i),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      children: [
+        for (final entry in lines.asMap().entries) buildLineCard(entry.key, entry.value),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(onPressed: onAddLine, icon: const Icon(Icons.add), label: const Text('Add Another Item')),
+        ),
+      ],
+    );
+  }
+
+  static Future<T?> showSearchablePicker<T>({
+    required BuildContext context,
+    required String title,
+    required List<T> items,
+    required bool Function(T, String) filter,
+    required Widget Function(T) itemBuilder,
+  }) {
+    return showModalBottomSheet<T>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => FractionallySizedBox(
+        heightFactor: 0.75,
+        child: SearchablePickerSheet<T>(title: title, items: items, filter: filter, itemBuilder: itemBuilder),
+      ),
+    );
+  }
+
+  static InputDecoration inputDecoration(String l, {IconData? i, String? p}) => InputDecoration(
+    labelText: l, prefixIcon: i != null ? Icon(i) : null, prefixText: p, border: const OutlineInputBorder(),
+    isDense: true, contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+  );
+
+  static Widget buildTextField({required TextEditingController controller, required String label, IconData? icon, TextInputType? type, String? prefix, int maxLines = 1, String? Function(String?)? validator}) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: TextFormField(controller: controller, decoration: inputDecoration(label, i: icon, p: prefix), keyboardType: type, maxLines: maxLines, validator: validator),
+  );
+
+  static Future<void> showFormDialog(BuildContext ctx, {required String title, required List<Widget> children, required Future<void> Function() onSave, VoidCallback? onDelete}) {
+    final fKey = GlobalKey<FormState>();
+    return showDialog(context: ctx, builder: (dCtx) => AlertDialog(
+      title: Text(title), content: SingleChildScrollView(child: Form(key: fKey, child: Column(mainAxisSize: MainAxisSize.min, children: children))),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dCtx), child: const Text('Cancel')),
+        if (onDelete != null) TextButton(onPressed: onDelete, style: TextButton.styleFrom(foregroundColor: Colors.red), child: const Text('Delete')),
+        ElevatedButton(onPressed: () async { if (fKey.currentState!.validate()) { await onSave(); if (dCtx.mounted) Navigator.pop(dCtx); } }, child: const Text('Save')),
+      ],
+    ));
+  }
+}
+
 // ========Universal Payment Label========
 
 class _PaymentLabel extends StatelessWidget {
@@ -3242,175 +3143,61 @@ class _PaymentLabel extends StatelessWidget {
 
 
 // ========Dashboard Screen========
-
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
-  @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  @override State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
   Map<String, int> _stats = {};
-  List<Map<String, dynamic>> _overdueRentals = [];
-  List<Map<String, dynamic>> _topCustomers = [];
+  List<Map<String, dynamic>> _overdueRentals = [], _topCustomers = [];
   double _pendingCollections = 0.0;
-  bool _loading = true;
-  String? _error;
+  bool _loading = true; String? _error;
 
-  @override
-  void initState() { super.initState(); _load(); }
+  @override void initState() { super.initState(); _load(); }
 
   Future<void> _load() async {
     if (!mounted) return;
     setState(() { _loading = true; _error = null; });
-
     try {
-      final overdueDays = appSettingsNotifier.overdueDays;
-
-      // Offload all heavy calculation directly to the optimized SQLite Engine
+      final od = appSettingsNotifier.overdueDays;
       final data = await DatabaseHelper.getDashboardData();
-      final overdue = await DatabaseHelper.getOverdueRentals(overdueDays);
-      final stats = await DatabaseHelper.getDashboardStats(overdueDays: overdueDays);
-
+      final overdue = await DatabaseHelper.getOverdueRentals(od);
+      final stats = await DatabaseHelper.getDashboardStats(overdueDays: od);
       if (!mounted) return;
-      setState(() {
-        _stats = stats;
-        _pendingCollections = data['pendingCollections'];
-        _topCustomers = data['topCustomers'];
-        _overdueRentals = overdue;
-        _loading = false;
-      });
-    } catch (e, st) {
-      debugPrint('Dashboard load error: $e\n$st');
-      if (!mounted) return;
-      setState(() {
-        _error = 'Failed to load dashboard data.\nPlease try again.';
-        _loading = false;
-      });
+      setState(() { _stats = stats; _pendingCollections = data['pendingCollections']; _topCustomers = data['topCustomers']; _overdueRentals = overdue; _loading = false; });
+    } catch (e) {
+      if (mounted) setState(() { _error = 'Failed to load dashboard data.\nPlease try again.'; _loading = false; });
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
+  void _nav(Widget w) => Navigator.push(context, MaterialPageRoute(builder: (_) => w));
+
+  @override Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator());
-
-    // Safety Net: Handle Uncaught Load Errors Cleanly
-    if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
-              const SizedBox(height: 16),
-              Text(_error!, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16)),
-              const SizedBox(height: 24),
-              ElevatedButton.icon(
-                onPressed: _load,
-                icon: const Icon(Icons.refresh),
-                label: const Text('Retry'),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-// Now safely consuming settings from the InheritedNotifier context
-    final settings = AppProvider.of(context);
-    final showTopCustomers = settings.showTopCustomersByRevenue;
+    if (_error != null) return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [const Icon(Icons.error_outline, color: Colors.redAccent, size: 48), const SizedBox(height: 16), Text(_error!), const SizedBox(height: 24), ElevatedButton.icon(onPressed: _load, icon: const Icon(Icons.refresh), label: const Text('Retry'))]));
 
     return RefreshIndicator(onRefresh: _load, child: ListView(padding: const EdgeInsets.all(16), children: [
-      Row(
-        children: [
-          Expanded(child: _StatCard(label:'Total Items',    value:'${_stats['items']}',         icon:Icons.inventory_2,  color:Colors.blue)),
-          const SizedBox(width: 8),
-          Expanded(child: _StatCard(label:'Active Lines',   value:'${_stats['activeRentals']}', icon:Icons.handshake,    color:Colors.orange)),
-        ],
-      ),
+      Row(children: [Expanded(child: _StatCard(label:'Total Items', value:'${_stats['items']}', icon:Icons.inventory_2, color:Colors.blue)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Active Lines', value:'${_stats['activeRentals']}', icon:Icons.handshake, color:Colors.orange))]),
       const SizedBox(height: 8),
-      Row(
-        children: [
-          Expanded(child: _StatCard(label:'Customers',      value:'${_stats['customers']}',     icon:Icons.people,       color:Colors.purple)),
-          const SizedBox(width: 8),
-          Expanded(child: _StatCard(label:'Returned Lines', value:'${_stats['returned']}',      icon:Icons.check_circle, color:Colors.green)),
-        ],
-      ),
+      Row(children: [Expanded(child: _StatCard(label:'Customers', value:'${_stats['customers']}', icon:Icons.people, color:Colors.purple)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Returned Lines', value:'${_stats['returned']}', icon:Icons.check_circle, color:Colors.green))]),
       const SizedBox(height: 14),
 
-      Card(
-        child: ListTile(
-          leading: const Icon(Icons.account_balance_wallet, color: Colors.orange),
-          title: const Text('Pending Collections', style: TextStyle(fontWeight: FontWeight.w700)),
-          subtitle: const Text('Outstanding amount from returned invoices'),
-          trailing: Text(formatMoney(_pendingCollections, decimals: 0),
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.orange)),
-          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PaymentLedgerScreen())),
-        ),
-      ),
-      const SizedBox(height: 20),
+      Card(child: ListTile(leading: const Icon(Icons.account_balance_wallet, color: Colors.orange), title: const Text('Pending Collections', style: TextStyle(fontWeight: FontWeight.w700)), subtitle: const Text('Outstanding amount from returned invoices'), trailing: Text(formatMoney(_pendingCollections, decimals: 0), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.orange)), onTap: () => _nav(const PaymentLedgerScreen()))),
+      const SizedBox(height: 20), const Text('Quick Actions', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)), const SizedBox(height: 12),
 
-      const Text('Quick Actions', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-      const SizedBox(height: 12),
-
-      GridView.count(
-        crossAxisCount: 3,
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        crossAxisSpacing: 8,
-        mainAxisSpacing: 8,
-        childAspectRatio: 1.4, // Keeps the flatter, compact button layout
-        children: [
-          _QuickAction(icon:Icons.playlist_add,           label:'New Order', onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const NewOrderScreen()))),
-          _QuickAction(icon:Icons.account_balance_wallet, label:'Ledger',    onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const PaymentLedgerScreen()))),
-          _QuickAction(icon:Icons.store,                  label:'Biz Info',  onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const BusinessInfoScreen()))),
-          _QuickAction(icon:Icons.receipt_long,           label:'Proforma',  onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const InvoiceManagerScreen(initialIndex: 0)))),
-          _QuickAction(icon:Icons.request_quote,          label:'Invoice',   onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const InvoiceManagerScreen(initialIndex: 1)))),
-          _QuickAction(icon:Icons.people,                 label:'Parties',   onTap:() => Navigator.push(context, MaterialPageRoute(builder:(_) => const PartiesManagementScreen()))),
-        ],
-      ),
+      GridView.count(crossAxisCount: 3, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), crossAxisSpacing: 8, mainAxisSpacing: 8, childAspectRatio: 1.4, children: [
+        _QuickAction(icon:Icons.playlist_add, label:'New Order', onTap:() => _nav(const NewOrderScreen())), _QuickAction(icon:Icons.account_balance_wallet, label:'Ledgers', onTap:() => _nav(const PaymentLedgerScreen())), _QuickAction(icon:Icons.store, label:'Biz Info', onTap:() => _nav(const BusinessInfoScreen())),
+        _QuickAction(icon:Icons.receipt_long, label:'Proforma', onTap:() => _nav(const InvoiceManagerScreen(initialIndex: 0))), _QuickAction(icon:Icons.request_quote, label:'Invoice', onTap:() => _nav(const InvoiceManagerScreen(initialIndex: 1))), _QuickAction(icon:Icons.people, label:'Parties', onTap:() => _nav(const PartiesManagementScreen())),
+      ]),
 
       if ((_stats['overdue'] ?? 0) > 0) ...[
-        const SizedBox(height: 20),
-        Row(children: [
-          const Icon(Icons.warning_amber_rounded, color: Colors.orange), const SizedBox(width: 8),
-          Text('Overdue Rentals', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.orange[300])),
-        ]),
-        const SizedBox(height: 8),
-        ..._overdueRentals.map((r) {
-          final days = DateTime.now().difference(DateTime.tryParse(r['checkoutDate'] as String? ?? '') ?? DateTime.now()).inDays;
-          return Card(color: Colors.orange.withValues(alpha:0.15), child: ListTile(
-            leading: const Icon(Icons.warning_amber_rounded, color: Colors.orange),
-            title: Text('${r['contractor']} - ${r['itemName']}'),
-            subtitle: Text('Out since: ${DatabaseHelper.formatDateString(r['checkoutDate'] as String?)} ($days days)'),
-          ));
-        }),
+        const SizedBox(height: 20), Row(children: [const Icon(Icons.warning_amber_rounded, color: Colors.orange), const SizedBox(width: 8), Text('Overdue Rentals', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.orange[300]))]), const SizedBox(height: 8),
+        ..._overdueRentals.map((r) => Card(color: Colors.orange.withValues(alpha:0.15), child: ListTile(leading: const Icon(Icons.warning_amber_rounded, color: Colors.orange), title: Text('${r['contractor']} - ${r['itemName']}'), subtitle: Text('Out since: ${DatabaseHelper.formatDateString(r['checkoutDate'])} (${DateTime.now().difference(DateTime.tryParse(r['checkoutDate']??'')??DateTime.now()).inDays} days)')))),
       ],
-      if (showTopCustomers) ...[
-        const SizedBox(height: 20),
-        const Text('Top Customers By Revenue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        if (_topCustomers.isEmpty)
-          const Card(child: ListTile(title: Text('No customer revenue data yet.')))
-        else
-          ..._topCustomers.asMap().entries.map((e) {
-            final rank = e.key + 1;
-            final c = e.value;
-            return Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              child: ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: Colors.amber.withValues(alpha: 0.2),
-                  child: Text('$rank', style: const TextStyle(fontWeight: FontWeight.bold)),
-                ),
-                title: Text((c['name'] as String?) ?? '', style: const TextStyle(fontWeight: FontWeight.w600)),
-                subtitle: Text('Invoices: ${c['invoices']}'),
-                trailing: Text(formatMoney((c['revenue'] as double?) ?? 0.0, decimals: 0),
-                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
-              ),
-            );
-          }),
+      if (AppProvider.of(context).showTopCustomersByRevenue) ...[
+        const SizedBox(height: 20), const Text('Top Customers By Revenue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)), const SizedBox(height: 8),
+        if (_topCustomers.isEmpty) const Card(child: ListTile(title: Text('No customer revenue data yet.'))) else ..._topCustomers.asMap().entries.map((e) => Card(margin: const EdgeInsets.only(bottom: 8), child: ListTile(leading: CircleAvatar(backgroundColor: Colors.amber.withValues(alpha: 0.2), child: Text('${e.key + 1}', style: const TextStyle(fontWeight: FontWeight.bold))), title: Text((e.value['name'] as String?) ?? '', style: const TextStyle(fontWeight: FontWeight.w600)), subtitle: Text('Invoices: ${e.value['invoices']}'), trailing: Text(formatMoney((e.value['revenue'] as double?) ?? 0.0, decimals: 0), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green))))),
       ],
     ]));
   }
@@ -3523,7 +3310,6 @@ class _InventoryTabState extends State<InventoryTab> {
   Future<void> _showItemDialog({Map<String, dynamic>? item}) async {
     final isEdit    = item != null;
     final editData  = item ?? {};
-    final formKey   = GlobalKey<FormState>();
     final nameC     = TextEditingController(text: (editData['name']     ?? '') as String);
     final totalC    = TextEditingController(text: isEdit ? (editData['total'] ?? '').toString() : '');
     final categoryC = TextEditingController(text: (editData['category'] ?? 'General') as String);
@@ -3534,80 +3320,42 @@ class _InventoryTabState extends State<InventoryTab> {
     final lifeC     = TextEditingController(text: (editData['expectedLifeMonths'] ?? 0).toString());
     DateTime pDate  = DateTime.tryParse(editData['purchaseDate'] as String? ?? '') ?? DateTime.now();
 
-    await showDialog<void>(context: context, builder: (ctx) => StatefulBuilder(
-      builder: (context, setSt) => AlertDialog(
-        title: Text(isEdit ? 'Edit Material' : 'Add Material / Equipment'),
-        content: SingleChildScrollView(child: Form(key: formKey, child: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextFormField(controller: nameC,  decoration: const InputDecoration(labelText: 'Name *'),
-              validator: (v) => v==null||v.trim().isEmpty ? 'Name is required' : null),
-          TextFormField(controller: totalC, decoration: const InputDecoration(labelText: 'Total Stock *'),
-              keyboardType: TextInputType.number,
-              validator: (v) { final n = int.tryParse(v??''); return (n==null||n<=0) ? 'Must be a valid positive number' : null; }),
-          TextFormField(controller: categoryC, decoration: const InputDecoration(labelText: 'Category')),
-          TextFormField(controller: notesC,    decoration: const InputDecoration(labelText: 'Notes'), maxLines: 2),
-
-          // --- ASSET ACCOUNTING UI ---
-          const SizedBox(height: 16),
-          const Divider(),
-          Text('Accounting Details (Capital Asset)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Theme.of(context).colorScheme.primary)),
-          const SizedBox(height: 8),
-
-          TextFormField(controller: priceC, decoration: InputDecoration(labelText: 'Purchase Price per Unit ($curr)'),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true)),
-          TextFormField(controller: lifeC, decoration: const InputDecoration(labelText: 'Expected Life (Months)'),
-              keyboardType: TextInputType.number),
-
-          const SizedBox(height: 12),
-          Row(children: [
-            Expanded(child: Text('Purchase Date: ${DatabaseHelper.formatDateFromDt(pDate)}', style: const TextStyle(fontSize: 13))),
-            TextButton(
-              onPressed: () async {
-                final d = await showDatePicker(context: context, initialDate: pDate, firstDate: DateTime(2000), lastDate: DateTime.now());
-                if (d != null) setSt(() => pDate = d);
-              },
-              child: const Text('Pick Date'),
-            )
-          ]),
-          // ---------------------------
-        ]))),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          if (isEdit) TextButton(
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            onPressed: () async {
-              final nav = Navigator.of(ctx); final messenger = ScaffoldMessenger.of(ctx);
-              final ok = await _confirmDialog(ctx, title:'Delete Item', message:'Delete this item? Only possible if no active rentals exist.');
-              if (!ok) return;
-              try { await DatabaseHelper.deleteItem(editData['id'] as int); nav.pop(); }
-              catch (e) { messenger.showSnackBar(SnackBar(content: Text('Delete failed: $e'))); }
-            },
-            child: const Text('Delete'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              if (!formKey.currentState!.validate()) return;
-              final nav = Navigator.of(ctx);
-              final cat = categoryC.text.trim().isEmpty ? 'General' : categoryC.text.trim();
-
-              final priceVal = double.tryParse(priceC.text) ?? 0.0;
-              final lifeVal  = int.tryParse(lifeC.text) ?? 0;
-              final dateVal  = DatabaseHelper.isoDate(pDate);
-
-              if (isEdit) {
-                await DatabaseHelper.updateItem(editData['id'] as int, nameC.text.trim(), int.parse(totalC.text), cat, notesC.text.trim(),
-                    purchasePrice: priceVal, purchaseDate: dateVal, expectedLifeMonths: lifeVal);
-              }
-              else {
-                await DatabaseHelper.insertItem(nameC.text.trim(), int.parse(totalC.text), cat, notesC.text.trim(),
-                    purchasePrice: priceVal, purchaseDate: dateVal, expectedLifeMonths: lifeVal);
-              }
-              nav.pop();
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    ));
+    await AppUI.showFormDialog(context,
+      title: isEdit ? 'Edit Material' : 'Add Material',
+      onDelete: !isEdit ? null : () async {
+        final ok = await _confirmDialog(context, title:'Delete Item', message:'Delete this item? Only possible if no active rentals exist.');
+        if (ok) {
+          await DatabaseHelper.deleteItem(editData['id'] as int);
+          if (!mounted) return;
+          Navigator.pop(context);
+          _load();
+        }
+      },
+      onSave: () async {
+        final cat = categoryC.text.trim().isEmpty ? 'General' : categoryC.text.trim();
+        final args = [nameC.text.trim(), int.parse(totalC.text), cat, notesC.text.trim()];
+        final kArgs = {'purchasePrice': double.tryParse(priceC.text) ?? 0.0, 'purchaseDate': DatabaseHelper.isoDate(pDate), 'expectedLifeMonths': int.tryParse(lifeC.text) ?? 0};
+        isEdit ? await DatabaseHelper.updateItem(editData['id'], args[0] as String, args[1] as int, args[2] as String, args[3] as String, purchasePrice: kArgs['purchasePrice'] as double, purchaseDate: kArgs['purchaseDate'] as String, expectedLifeMonths: kArgs['expectedLifeMonths'] as int)
+            : await DatabaseHelper.insertItem(args[0] as String, args[1] as int, args[2] as String, args[3] as String, purchasePrice: kArgs['purchasePrice'] as double, purchaseDate: kArgs['purchaseDate'] as String, expectedLifeMonths: kArgs['expectedLifeMonths'] as int);
+        _load();
+      },
+      children: [
+        AppUI.buildTextField(controller: nameC, label: 'Name *', validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null),
+        AppUI.buildTextField(controller: totalC, label: 'Total Stock *', type: TextInputType.number),
+        AppUI.buildTextField(controller: categoryC, label: 'Category'),
+        AppUI.buildTextField(controller: notesC, label: 'Notes', maxLines: 2),
+        const Divider(),
+        const Text('Capital Asset Accounting', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
+        const SizedBox(height: 8),
+        AppUI.buildTextField(controller: priceC, label: 'Purchase Price ($curr)', type: const TextInputType.numberWithOptions(decimal: true)),
+        AppUI.buildTextField(controller: lifeC, label: 'Expected Life (Months)', type: TextInputType.number),
+        StatefulBuilder(builder: (ctx, setSt) => ListTile(
+          title: Text('Purchase Date: ${DatabaseHelper.formatDateFromDt(pDate)}', style: const TextStyle(fontSize: 13)),
+          trailing: const Icon(Icons.calendar_month),
+          onTap: () async { final d = await showDatePicker(context: ctx, initialDate: pDate, firstDate: DateTime(2000), lastDate: DateTime.now()); if (d != null) setSt(() => pDate = d); },
+        )),
+      ],
+    );
     nameC.dispose(); totalC.dispose(); categoryC.dispose(); notesC.dispose();
     priceC.dispose(); lifeC.dispose();
     if (mounted) _load();
@@ -3717,20 +3465,25 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
   Future<void> _delete(RentalGroup group) async {
     final ok = await _confirmDialog(context, title: 'Delete Active Rental', message: 'Permanently delete this record? This will return items to inventory.');
     if (!ok) return;
+    if (!mounted) return;
     await DatabaseHelper.deleteRentalGroup(group.items);
     if (mounted) _load();
   }
 
   Future<void> _openProformaPdf(int orderId) async {
+    final nav = Navigator.of(context);
+
     final size = await pickPdfSize(context);
     if (size == null || !mounted) return;
+
     final bytes = await DatabaseHelper.generatePdfProformaForOrder(orderId, pageSize: size);
     if (!mounted) return;
-    await Navigator.push(context, MaterialPageRoute(builder: (_) => Scaffold(appBar: AppBar(title: const Text('Proforma Preview')), body: PdfPreview(build: (_) async => bytes))));
+    await nav.push(MaterialPageRoute(builder: (_) => Scaffold(appBar: AppBar(title: const Text('Proforma Preview')), body: PdfPreview(build: (_) async => bytes))));
   }
 
   Future<void> _editGroup(RentalGroup group) async {
     await showDialog<void>(context: context, builder: (_) => _EditGroupDialog(group: group));
+    if (!mounted) return;
     if (mounted) _load();
   }
 
@@ -3746,6 +3499,7 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
         ElevatedButton(onPressed: () => Navigator.pop(d,'full'), child: const Text('Full Return')),
       ],
     ));
+    if (!mounted) return;
     if (action == null || action == 'cancel') return;
 
     if (action == 'partial') {
@@ -3753,6 +3507,7 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
       if (activeItems.isEmpty) return;
       if (!mounted) return;
       final result = await showDialog<Map<String, dynamic>>(context: context, builder: (ctx) => _PartialReturnDialog(activeItems: activeItems, checkoutDate: checkoutDt));
+      if (!mounted) return;
       if (result == null) return;
       try { await DatabaseHelper.returnMultiplePartial(result['returns'] as List<Map<String,dynamic>>, result['date'] as String); if (mounted) _load(); }
       catch (e) { if (mounted) messenger.showSnackBar(SnackBar(content: Text('Return failed: $e'))); }
@@ -3766,6 +3521,7 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
           ElevatedButton(onPressed: () => Navigator.pop(d,'today'), child: const Text('Today')),
         ],
       ));
+      if (!mounted) return;
       if (choice == null) return;
       String returnDate = DatabaseHelper.isoNow();
       if (choice == 'pick') {
@@ -3778,8 +3534,10 @@ class _ActiveRentalsTabState extends State<ActiveRentalsTab> {
         await DatabaseHelper.returnOrderGroup(group.items.where((r) => r['returned'] == 0).toList(), returnDate);
         if (!mounted) return;
         _load();
-        messenger.showSnackBar(SnackBar(content: Text(group.balance > 0 ? 'Items returned. Remaining balance sent to Payment Ledger.' : 'Remaining items returned successfully.')));
-      } catch (e) { if (mounted) messenger.showSnackBar(SnackBar(content: Text('Return failed: $e'))); }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(group.balance > 0 ? 'Items returned. Remaining balance sent to Payment Ledger.' : 'Remaining items returned successfully.')));
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Return failed: $e')));
+      }
     }
   }
 
@@ -3908,9 +3666,6 @@ class _HistoryTabState extends State<HistoryTab> {
   }
 
   void _openPaymentHistoryForGroup(RentalGroup g) {
-    // Both actions open the unified Transactions screen; selected tab changes by intent.
-    // Fiscal Note: We intelligently extract the final invoice number, falling back to proforma,
-    // to guarantee the UI ledger perfectly mirrors the generated PDF documents.
     final displayDocNumber = g.invoiceNumber.isNotEmpty
         ? g.invoiceNumber
         : (g.proformaNumber.isNotEmpty ? g.proformaNumber : null);
@@ -3949,14 +3704,17 @@ class _HistoryTabState extends State<HistoryTab> {
   }
 
   Future<void> _openInvoicePdf(int orderId) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final nav = Navigator.of(context);
+
     final size = await pickPdfSize(context);
     if (size == null || !mounted) return;
-    final messenger = ScaffoldMessenger.of(context);
+
     messenger.showSnackBar(const SnackBar(content: Text('Generating PDF...')));
     try {
       final bytes = await DatabaseHelper.generatePdfFinalInvoiceForOrder(orderId, pageSize: size);
       if (!mounted) return;
-      await Navigator.push(context, MaterialPageRoute(
+      await nav.push(MaterialPageRoute(
         builder: (_) => Scaffold(
           appBar: AppBar(title: const Text('Final Invoice Preview')),
           body: PdfPreview(build: (_) async => bytes),
@@ -3967,6 +3725,7 @@ class _HistoryTabState extends State<HistoryTab> {
 
   Future<void> _editGroup(RentalGroup group) async {
     await showDialog<void>(context: context, builder: (_) => _EditGroupDialog(group: group));
+    if (!mounted) return;
     if (mounted) _load();
   }
 
@@ -4040,7 +3799,6 @@ class _HistoryTabState extends State<HistoryTab> {
 // =============================
 
 // ========Business Info Screen========
-
 class BusinessInfoScreen extends StatefulWidget {
   const BusinessInfoScreen({super.key});
   @override
@@ -4286,797 +4044,229 @@ class _BusinessInfoScreenState extends State<BusinessInfoScreen> {
 }
 
 // ========Parties Management Screen (Customers & Suppliers)========
-
 class PartiesManagementScreen extends StatelessWidget {
   const PartiesManagementScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) => DefaultTabController(
+  @override Widget build(BuildContext context) => DefaultTabController(
     length: 2,
     child: Scaffold(
-      appBar: AppBar(
-        titleSpacing: 0,
-        title: TabBar(
-          tabs: const [
-            Tab(text: 'CUSTOMERS'),
-            Tab(text: 'SUPPLIERS'),
-          ],
-          indicator: BoxDecoration(borderRadius: BorderRadius.circular(24), color: Colors.black12),
-          indicatorSize: TabBarIndicatorSize.tab,
-          dividerColor: Colors.transparent,
-          labelColor: Colors.black,
-          unselectedLabelColor: Colors.black54,
-          labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-        ),
-      ),
-      body: const TabBarView(
-        children: [
-          _PartiesListTab(partyType: 'Customer'),
-          _PartiesListTab(partyType: 'Supplier'),
-        ],
-      ),
+      appBar: AppBar(titleSpacing: 0, title: TabBar(tabs: const [Tab(text: 'CUSTOMERS'), Tab(text: 'SUPPLIERS')], indicator: BoxDecoration(borderRadius: BorderRadius.circular(24), color: Colors.black12), indicatorSize: TabBarIndicatorSize.tab, dividerColor: Colors.transparent, labelColor: Colors.black, unselectedLabelColor: Colors.black54, labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
+      body: const TabBarView(children: [_PartiesListTab(partyType: 'Customer'), _PartiesListTab(partyType: 'Supplier')]),
     ),
   );
 }
 
 class _PartiesListTab extends StatefulWidget {
-  final String partyType;
-  const _PartiesListTab({required this.partyType});
-  @override
-  State<_PartiesListTab> createState() => _PartiesListTabState();
+  final String partyType; const _PartiesListTab({required this.partyType});
+  @override State<_PartiesListTab> createState() => _PartiesListTabState();
 }
 
 class _PartiesListTabState extends State<_PartiesListTab> {
-  List<Map<String, dynamic>> _parties = [];
-  Map<int, double> _owedBalances = {};
-  final _searchCtrl = TextEditingController();
-  Timer? _debounce;
+  List<Map<String, dynamic>> _parties = []; Map<int, double> _owedBalances = {};
+  final _searchCtrl = TextEditingController(); Timer? _debounce;
 
-  @override
-  void initState() { super.initState(); _load(); }
-  @override
-  void dispose() { _searchCtrl.dispose(); _debounce?.cancel(); super.dispose(); }
+  @override void initState() { super.initState(); _load(); }
+  @override void dispose() { _searchCtrl.dispose(); _debounce?.cancel(); super.dispose(); }
 
   Future<void> _load() async {
     final data = await DatabaseHelper.getCustomers(search: _searchCtrl.text, partyType: widget.partyType);
     if (!mounted) return;
     setState(() => _parties = data);
-
-    // Only load balances for customers. Suppliers will be implemented in the Purchase module.
     if (widget.partyType == 'Customer') {
-      _loadBalances(data);
+      final bals = <int, double>{};
+      for (final c in data) { bals[c['id'] as int] = await DatabaseHelper.getCustomerOwedBalance(c['id'] as int, c['name'] as String? ?? ''); }
+      if (mounted) setState(() => _owedBalances = bals);
     }
   }
 
-  Future<void> _loadBalances(List<Map<String, dynamic>> parties) async {
-    final balances = <int, double>{};
-    for (final c in parties) {
-      final id = c['id'] as int;
-      final name = c['name'] as String? ?? '';
-      balances[id] = await DatabaseHelper.getCustomerOwedBalance(id, name);
-    }
-    if (!mounted) return;
-    setState(() => _owedBalances = balances);
-  }
+  void _onSearch(String _) { _debounce?.cancel(); _debounce = Timer(const Duration(milliseconds: 300), _load); }
 
   Future<void> _makePhoneCall(String p1, String p2) async {
     if (p1.isEmpty && p2.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No phone numbers saved.')));
       return;
     }
-
-    Future<void> dial(String number) async {
-      final cleanNum = number.replaceAll(RegExp(r'[^0-9+]'), '');
-      final Uri url = Uri.parse('tel:$cleanNum');
-      if (await canLaunchUrl(url)) {
-        await launchUrl(url);
-      } else {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not launch dialer.')));
-      }
-    }
-
+    Future<void> dial(String num) async { final u = Uri.parse('tel:${num.replaceAll(RegExp(r'[^0-9+]'), '')}'); if (await canLaunchUrl(u)) await launchUrl(u); }
     if (p1.isNotEmpty && p2.isNotEmpty) {
-      showDialog(
-        context: context,
-        builder: (ctx) => SimpleDialog(
-          title: const Text('Choose number to call'),
-          children: [
-            ListTile(leading: const Icon(Icons.phone, color: Colors.green), title: Text('Primary: $p1'), onTap: () { Navigator.pop(ctx); dial(p1); }),
-            ListTile(leading: const Icon(Icons.phone, color: Colors.green), title: Text('Alternate: $p2'), onTap: () { Navigator.pop(ctx); dial(p2); }),
-          ],
-        ),
-      );
+      if (!mounted) return;
+      showDialog(context: context, builder: (ctx) => SimpleDialog(title: const Text('Call'), children: [ListTile(leading: const Icon(Icons.phone, color: Colors.green), title: Text(p1), onTap: () { Navigator.pop(ctx); dial(p1); }), ListTile(leading: const Icon(Icons.phone, color: Colors.green), title: Text(p2), onTap: () { Navigator.pop(ctx); dial(p2); })]));
     } else {
       dial(p1.isNotEmpty ? p1 : p2);
     }
   }
 
-  void _onSearch(String _) { _debounce?.cancel(); _debounce = Timer(const Duration(milliseconds: 300), _load); }
-
   Future<void> _showPartyDialog({Map<String, dynamic>? existing}) async {
-    // 1. Fetch Global Tax Info to determine if we should show the Tax Registration field
-    final bizInfo = await DatabaseHelper.getBusinessInfo();
-    final globalTaxType = bizInfo['taxType'] as String? ?? 'none';
-    final isTaxEnabled = globalTaxType != 'none';
-
-    String taxRegLabel = 'Tax Registration No.';
-    if (globalTaxType == 'gst') taxRegLabel = 'GSTIN';
-    if (globalTaxType == 'vat') taxRegLabel = 'VAT Number';
-    if (globalTaxType == 'sales') taxRegLabel = 'Sales Tax ID';
-
-    final isEdit   = existing != null;
-    final editData = existing ?? {};
-    final formKey  = GlobalKey<FormState>();
-    final nameC    = TextEditingController(text: (editData['name']    ?? '') as String);
-    final phoneC   = TextEditingController(text: (editData['phone']   ?? '') as String);
-    final phone2C  = TextEditingController(text: (editData['phone2']  ?? '') as String);
-    final emailC   = TextEditingController(text: (editData['email']   ?? '') as String);
-    final addressC = TextEditingController(text: (editData['address'] ?? '') as String);
-    final notesC   = TextEditingController(text: (editData['notes']   ?? '') as String);
-    final taxRegNoC = TextEditingController(text: (editData['taxRegNo'] ?? '') as String);
-
-    final joinedDate = (editData['joinedDate'] as String? ?? '').isNotEmpty
-        ? (editData['joinedDate'] as String)
-        : DatabaseHelper.isoNow();
-    bool isBlacklisted = (editData['isBlacklisted'] as int? ?? 0) == 1;
-
+    final biz = await DatabaseHelper.getBusinessInfo();
     if (!mounted) return;
-    final saved = await showDialog<bool>(context: context, builder: (d) => StatefulBuilder(
-      builder: (ctx, setSt) => AlertDialog(
-        title: Text(isEdit ? 'Edit ${widget.partyType}' : 'Add ${widget.partyType}'),
-        content: SingleChildScrollView(child: Form(key: formKey, child: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextFormField(controller: nameC,    decoration: const InputDecoration(labelText: 'Name *'),          validator: (v) => v==null||v.trim().isEmpty?'Name is required':null),
-          const SizedBox(height: 8),
+    final isTax = (biz['taxType'] ?? 'none') != 'none', isEdit = existing != null;
+    final nC = TextEditingController(text: existing?['name'] ?? ''), p1C = TextEditingController(text: existing?['phone'] ?? ''), p2C = TextEditingController(text: existing?['phone2'] ?? ''), eC = TextEditingController(text: existing?['email'] ?? ''), aC = TextEditingController(text: existing?['address'] ?? ''), ntC = TextEditingController(text: existing?['notes'] ?? ''), tC = TextEditingController(text: existing?['taxRegNo'] ?? '');
+    bool isBl = (existing?['isBlacklisted'] as int? ?? 0) == 1;
 
-          if (isTaxEnabled) ...[
-            TextFormField(
-                controller: taxRegNoC,
-                decoration: InputDecoration(
-                    labelText: '$taxRegLabel (Optional)',
-                    prefixIcon: const Icon(Icons.badge_outlined, size: 20),
-                    filled: true,
-                    fillColor: Colors.amber.withValues(alpha: 0.1)
-                )
-            ),
-            const SizedBox(height: 8),
-          ],
-
-          TextFormField(controller: phoneC,   decoration: const InputDecoration(labelText: 'Primary Phone'),   keyboardType: TextInputType.phone),
-          const SizedBox(height: 8),
-          TextFormField(controller: phone2C,  decoration: const InputDecoration(labelText: 'Alternate Phone'), keyboardType: TextInputType.phone),
-          const SizedBox(height: 8),
-          TextFormField(controller: emailC,   decoration: const InputDecoration(labelText: 'Email Address'),   keyboardType: TextInputType.emailAddress),
-          const SizedBox(height: 8),
-          TextFormField(controller: addressC, decoration: const InputDecoration(labelText: 'Address')),
-          const SizedBox(height: 8),
-          TextFormField(controller: notesC,   decoration: const InputDecoration(labelText: 'Notes'), maxLines: 2),
-          if (isEdit) ...[
-            const SizedBox(height: 8),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              secondary: Icon(Icons.block, color: isBlacklisted ? Colors.red : Colors.grey),
-              title: Text('Blacklist ${widget.partyType}'),
-              value: isBlacklisted,
-              activeThumbColor: Colors.red,
-              onChanged: (v) => setSt(() => isBlacklisted = v),
-            ),
-          ],
-        ]))),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Cancel')),
-          ElevatedButton(onPressed: () { if (formKey.currentState!.validate()) Navigator.pop(d, true); }, child: const Text('Save')),
-        ],
-      ),
-    ));
-
-    final nameVal    = nameC.text.trim();
-    final phoneVal   = phoneC.text.trim();
-    final phone2Val  = phone2C.text.trim();
-    final emailVal   = emailC.text.trim();
-    final addressVal = addressC.text.trim();
-    final notesVal   = notesC.text.trim();
-    final taxRegNoVal = taxRegNoC.text.trim();
-    nameC.dispose(); phoneC.dispose(); phone2C.dispose(); emailC.dispose(); addressC.dispose(); notesC.dispose(); taxRegNoC.dispose();
-
-    if (saved == true) {
-      if (isEdit) {
-        await DatabaseHelper.updateCustomer(
-            editData['id'] as int, nameVal, phoneVal, phone2Val, emailVal, addressVal,
-            notes: notesVal, joinedDate: joinedDate, isBlacklisted: isBlacklisted ? 1 : 0, partyType: widget.partyType, taxRegNo: taxRegNoVal
-        );
-      } else if (nameVal.isNotEmpty) {
-        await DatabaseHelper.insertCustomer(nameVal, phoneVal, phone2Val, emailVal, addressVal, notes: notesVal, partyType: widget.partyType, taxRegNo: taxRegNoVal);
-      }
-      if (mounted) _load();
-    }
+    await AppUI.showFormDialog(context, title: isEdit ? 'Edit ${widget.partyType}' : 'Add ${widget.partyType}', onSave: () async {
+      isEdit ? await DatabaseHelper.updateCustomer(existing['id'], nC.text.trim(), p1C.text.trim(), p2C.text.trim(), eC.text.trim(), aC.text.trim(), notes: ntC.text.trim(), joinedDate: existing['joinedDate'], isBlacklisted: isBl ? 1 : 0, partyType: widget.partyType, taxRegNo: tC.text.trim()) : await DatabaseHelper.insertCustomer(nC.text.trim(), p1C.text.trim(), p2C.text.trim(), eC.text.trim(), aC.text.trim(), notes: ntC.text.trim(), partyType: widget.partyType, taxRegNo: tC.text.trim());
+      _load();
+    }, children: [
+      AppUI.buildTextField(controller: nC, label: 'Name *', validator: (v) => v?.trim().isEmpty == true ? 'Required' : null),
+      if (isTax) AppUI.buildTextField(controller: tC, label: '${DatabaseHelper._taxRegLabel(biz['taxType'])} (Optional)', icon: Icons.badge_outlined),
+      AppUI.buildTextField(controller: p1C, label: 'Primary Phone', type: TextInputType.phone), AppUI.buildTextField(controller: p2C, label: 'Alternate Phone', type: TextInputType.phone),
+      AppUI.buildTextField(controller: eC, label: 'Email', type: TextInputType.emailAddress), AppUI.buildTextField(controller: aC, label: 'Address'), AppUI.buildTextField(controller: ntC, label: 'Notes', maxLines: 2),
+      if (isEdit) StatefulBuilder(builder: (ctx, setSt) => SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Blacklist Party'), value: isBl, activeThumbColor: Colors.red, onChanged: (v) => setSt(() => isBl = v))),
+    ]);
   }
 
   Future<void> _delete(int id) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final ok = await _confirmDialog(context, title:'Delete ${widget.partyType}', message:'Permanently delete this ${widget.partyType.toLowerCase()}?');
-    if (!ok) return;
-    try {
-      await DatabaseHelper.deleteCustomer(id);
-      if (mounted) _load();
-    } catch (e) {
-      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Cannot delete: $e')));
-    }
+    if (!await _confirmDialog(context, title:'Delete', message:'Permanently delete?')) return;
+    if (!mounted) return;
+    try { await DatabaseHelper.deleteCustomer(id); if (mounted) _load(); } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Cannot delete: $e'))); }
   }
 
-  @override
-  Widget build(BuildContext context) => Scaffold(
+  @override Widget build(BuildContext context) => Scaffold(
     body: Column(children: [
       _SearchBar(controller: _searchCtrl, hint: 'Search ${widget.partyType.toLowerCase()}s...', onClear: () { _searchCtrl.clear(); _load(); }, onChanged: _onSearch),
-      Expanded(child: _parties.isEmpty
-          ? Center(child: Text('No ${widget.partyType.toLowerCase()}s yet.'))
-          : ListView.builder(itemCount: _parties.length, itemBuilder: (_, i) {
-        final c             = _parties[i];
-        final id            = c['id'] as int;
-        final name          = c['name'] as String? ?? '';
-        final owed          = _owedBalances[id] ?? 0.0;
-        final isBlacklisted = (c['isBlacklisted'] as int? ?? 0) == 1;
-        final joinedDate    = c['joinedDate'] as String? ?? '';
-        final phone         = c['phone'] as String? ?? '';
-        final phone2        = c['phone2'] as String? ?? '';
-        final phoneLine     = phone.isNotEmpty ? '$phone${phone2.isNotEmpty ? ' / $phone2' : ''}' : '';
-
-        return Card(
-          margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-            side: BorderSide(
-              color: isBlacklisted
-                  ? Colors.red.withValues(alpha: 0.45)
-                  : Colors.amber.withValues(alpha: 0.25),
-              width: 0.8,
-            ),
-          ),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(12),
-            onTap: () async {
-              if (widget.partyType == 'Customer') {
-                await Navigator.push(context, MaterialPageRoute(builder: (_) => CustomerProfileScreen(customer: c)));
-                _load();
-              } else {
-                // Future Implementation: Supplier Profile Screen
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Supplier profile features coming soon in the Purchase module.')));
-              }
-            },
-            child: Padding(
-              padding: appSettingsNotifier.cardPadding,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  CircleAvatar(
-                    backgroundColor: isBlacklisted ? Colors.red.withValues(alpha: 0.15) : Colors.amber.withValues(alpha: 0.2),
-                    child: Text(
-                      name.isNotEmpty ? name[0].toUpperCase() : '?',
-                      style: TextStyle(color: isBlacklisted ? Colors.red : Colors.amber[900], fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Row(children: [
-                        if (isBlacklisted) const Padding(
-                          padding: EdgeInsets.only(right: 5),
-                          child: Icon(Icons.block, size: 14, color: Colors.red),
-                        ),
-                        Expanded(child: Text(name, style: TextStyle(fontWeight: FontWeight.w700, color: isBlacklisted ? Colors.red : null))),
-                      ]),
-                      if (phoneLine.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 2),
-                          child: Text(phoneLine, style: const TextStyle(fontSize: 13)),
-                        ),
-                      if (joinedDate.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 2),
-                          child: Text(
-                            'Since ${DatabaseHelper.formatDateString(joinedDate)}',
-                            style: TextStyle(fontSize: 11, color: Theme.of(context).textTheme.bodySmall?.color),
-                          ),
-                        ),
-                    ]),
-                  ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      SizedBox(
-                        height: 28,
-                        child: PopupMenuButton<String>(
-                          icon: const Icon(Icons.more_vert, size: 20),
-                          padding: EdgeInsets.zero,
-                          tooltip: 'Options',
-                          onSelected: (val) {
-                            if (val == 'call') _makePhoneCall(phone, phone2);
-                            if (val == 'edit') _showPartyDialog(existing: c);
-                            if (val == 'delete') _delete(c['id'] as int);
-                          },
-                          itemBuilder: (_) => const [
-                            PopupMenuItem(value: 'call', child: Row(children: [Icon(Icons.call, size: 18, color: Colors.green), SizedBox(width: 8), Text('Call')])),
-                            PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit_outlined, size: 18), SizedBox(width: 8), Text('Edit')])),
-                            PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 8), Text('Delete', style: TextStyle(color: Colors.red))])),
-                          ],
-                        ),
-                      ),
-                      if (owed > 0) ...[
-                        const SizedBox(height: 12),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.orange.withValues(alpha: 0.2),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.orange, width: 0.8),
-                          ),
-                          child: Text(
-                            'Owes ${formatMoney(owed, decimals: 0)}',
-                            style: const TextStyle(fontSize: 11, color: Colors.orange, fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
+      Expanded(child: _parties.isEmpty ? Center(child: Text('No ${widget.partyType.toLowerCase()}s yet.')) : ListView.builder(itemCount: _parties.length, itemBuilder: (_, i) {
+        final c = _parties[i], name = c['name'] as String? ?? '', owed = _owedBalances[c['id']] ?? 0.0, isBl = (c['isBlacklisted'] as int? ?? 0) == 1;
+        return Card(margin: const EdgeInsets.fromLTRB(12, 0, 12, 10), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: isBl ? Colors.red.withValues(alpha: 0.45) : Colors.amber.withValues(alpha: 0.25), width: 0.8)),
+          child: InkWell(borderRadius: BorderRadius.circular(12), onTap: () async {
+            if (widget.partyType == 'Customer') { await Navigator.push(context, MaterialPageRoute(builder: (_) => CustomerProfileScreen(customer: c))); if (!mounted) return; _load(); }
+            else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Supplier profile features coming soon.'))); }
+          }, child: Padding(padding: appSettingsNotifier.cardPadding, child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            CircleAvatar(backgroundColor: isBl ? Colors.red.withValues(alpha: 0.15) : Colors.amber.withValues(alpha: 0.2), child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?', style: TextStyle(color: isBl ? Colors.red : Colors.amber[900], fontWeight: FontWeight.bold))),
+            const SizedBox(width: 10),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [if (isBl) const Padding(padding: EdgeInsets.only(right: 5), child: Icon(Icons.block, size: 14, color: Colors.red)), Expanded(child: Text(name, style: TextStyle(fontWeight: FontWeight.w700, color: isBl ? Colors.red : null)))]),
+              if ((c['phone'] ?? '').isNotEmpty) Padding(padding: const EdgeInsets.only(top: 2), child: Text('${c['phone']}${c['phone2'].isNotEmpty ? ' / ${c['phone2']}' : ''}', style: const TextStyle(fontSize: 13))),
+              if ((c['joinedDate'] ?? '').isNotEmpty) Padding(padding: const EdgeInsets.only(top: 2), child: Text('Since ${DatabaseHelper.formatDateString(c['joinedDate'])}', style: TextStyle(fontSize: 11, color: Theme.of(context).textTheme.bodySmall?.color))),
+            ])),
+            Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              SizedBox(height: 28, child: PopupMenuButton<String>(icon: const Icon(Icons.more_vert, size: 20), padding: EdgeInsets.zero, onSelected: (v) { if (v=='call') { _makePhoneCall(c['phone']??'', c['phone2']??''); } if (v=='edit') { _showPartyDialog(existing: c); } if (v=='delete') { _delete(c['id']); } }, itemBuilder: (_) => const [PopupMenuItem(value: 'call', child: Row(children: [Icon(Icons.call, size: 18, color: Colors.green), SizedBox(width: 8), Text('Call')])), PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit_outlined, size: 18), SizedBox(width: 8), Text('Edit')])), PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 8), Text('Delete', style: TextStyle(color: Colors.red))]))])),
+              if (owed > 0) Container(margin: const EdgeInsets.only(top: 12), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: Colors.orange.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.orange, width: 0.8)), child: Text('Owes ${formatMoney(owed, decimals: 0)}', style: const TextStyle(fontSize: 11, color: Colors.orange, fontWeight: FontWeight.bold))),
+            ])
+          ]))),
         );
       })),
     ]),
-    floatingActionButton: FloatingActionButton(
-      onPressed: () => _showPartyDialog(),
-      tooltip: 'Add ${widget.partyType}',
-      child: Icon(widget.partyType == 'Customer' ? Icons.person_add : Icons.domain_add),
-    ),
+    floatingActionButton: FloatingActionButton(onPressed: () => _showPartyDialog(), tooltip: 'Add ${widget.partyType}', child: Icon(widget.partyType == 'Customer' ? Icons.person_add : Icons.domain_add)),
   );
 }
 
 // ========Customer Profile Screen========
-
 class CustomerProfileScreen extends StatefulWidget {
-  final Map<String, dynamic> customer;
-  const CustomerProfileScreen({super.key, required this.customer});
-  @override
-  State<CustomerProfileScreen> createState() => _CustomerProfileScreenState();
+  final Map<String, dynamic> customer; const CustomerProfileScreen({super.key, required this.customer});
+  @override State<CustomerProfileScreen> createState() => _CustomerProfileScreenState();
 }
 
 class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
-  late Map<String, dynamic> _customer;
-  List<RentalGroup> _allHistory = [];
-  List<RentalGroup> _history = [];
-  Map<String, List<Map<String, dynamic>>> _paymentLogsByGroup = {};
-  Map<String, dynamic> _stats = {};
-  bool _loading = true;
+  late Map<String, dynamic> _customer; List<RentalGroup> _allHistory = [], _history = []; Map<String, List<Map<String, dynamic>>> _paymentLogsByGroup = {}; Map<String, dynamic> _stats = {};
+  bool _loading = true; final _searchCtrl = TextEditingController(); Timer? _debounce; String _sortMode = kSortOptions.first;
 
-  final _searchCtrl = TextEditingController();
-  Timer? _debounce;
-  String _sortMode = kSortOptions.first;
-
-  @override
-  void initState() { super.initState(); _customer = widget.customer; _load(); }
-  @override
-  void dispose() { _searchCtrl.dispose(); _debounce?.cancel(); super.dispose(); }
+  @override void initState() { super.initState(); _customer = widget.customer; _load(); }
+  @override void dispose() { _searchCtrl.dispose(); _debounce?.cancel(); super.dispose(); }
 
   Future<void> _load() async {
-    final id      = _customer['id'] as int;
-    final name    = _customer['name'] as String? ?? '';
+    final id = _customer['id'] as int, name = _customer['name'] as String? ?? '';
     final history = await DatabaseHelper.getCustomerRentalHistory(id, name);
-    final paymentMap = await DatabaseHelper.getPaymentLogsForGroups(history);
-    final stats   = await DatabaseHelper.getCustomerLifetimeStats(id, name);
-    final fresh   = await DatabaseHelper.getCustomers();
-    final updated = fresh.where((c) => c['id'] == _customer['id']).firstOrNull;
+    final paymentMap = await DatabaseHelper.getPaymentLogsForGroups(history), stats = await DatabaseHelper.getCustomerLifetimeStats(id, name);
+    final updated = (await DatabaseHelper.getCustomers()).where((c) => c['id'] == id).firstOrNull;
     if (!mounted) return;
-    setState(() {
-      if (updated != null) _customer = updated;
-      _allHistory = history;
-      _paymentLogsByGroup = paymentMap;
-      _stats   = stats;
-      _applyFilter();
-      _loading = false;
-    });
+    setState(() { if (updated != null) _customer = updated; _allHistory = history; _paymentLogsByGroup = paymentMap; _stats = stats; _applyFilter(); _loading = false; });
   }
 
-  void _onSearch(String _) {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 300), () => setState(_applyFilter));
-  }
+  void _onSearch(String _) { _debounce?.cancel(); _debounce = Timer(const Duration(milliseconds: 300), () => setState(_applyFilter)); }
 
   void _applyFilter() {
-    List<RentalGroup> filtered = List.from(_allHistory);
-    final q = _searchCtrl.text.trim().toLowerCase();
-    if (q.isNotEmpty) {
-      filtered = filtered.where((g) {
-        return (g.orderId?.toString() ?? '').contains(q) ||
-            g.items.any((i) => (i['itemName'] as String? ?? '').toLowerCase().contains(q));
-      }).toList();
-    }
-    _applySort(filtered, _sortMode);
-    _history = filtered;
+    var f = List<RentalGroup>.from(_allHistory); final q = _searchCtrl.text.trim().toLowerCase();
+    if (q.isNotEmpty) f = f.where((g) => (g.orderId?.toString() ?? '').contains(q) || g.items.any((i) => (i['itemName'] as String? ?? '').toLowerCase().contains(q))).toList();
+    _applySort(f, _sortMode); _history = f;
   }
 
   Future<void> _toggleBlacklist() async {
-    final current = (_customer['isBlacklisted'] as int? ?? 0) == 1;
-    final confirm = await _confirmDialog(
-      context,
-      title: current ? 'Remove Blacklist Flag' : 'Blacklist Customer',
-      message: current
-          ? 'Remove the blacklist flag from this customer?'
-          : 'Flag this customer as blacklisted? They will be visually marked in the customer list.',
-      confirmLabel: current ? 'Remove Flag' : 'Blacklist',
-    );
-    if (!confirm) return;
-    await DatabaseHelper.toggleBlacklist(_customer['id'] as int, !current);
-    if (mounted) _load();
+    final cur = (_customer['isBlacklisted'] as int? ?? 0) == 1;
+    if (await _confirmDialog(context, title: cur ? 'Remove Flag' : 'Blacklist', message: cur ? 'Remove blacklist?' : 'Flag as blacklisted?', confirmLabel: cur ? 'Remove' : 'Blacklist')) {
+      if (!mounted) return;
+      await DatabaseHelper.toggleBlacklist(_customer['id'] as int, !cur); _load();
+    }
   }
 
   Future<void> _openInvoicePdf(int orderId, {required bool finalInvoice}) async {
-    final size = await pickPdfSize(context);
-    if (size == null || !mounted) return;
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(const SnackBar(content: Text('Generating PDF...')));
+    final size = await pickPdfSize(context); if (size == null || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Generating PDF...')));
     try {
-      final bytes = finalInvoice
-          ? await DatabaseHelper.generatePdfFinalInvoiceForOrder(orderId, pageSize: size)
-          : await DatabaseHelper.generatePdfProformaForOrder(orderId, pageSize: size);
+      final bytes = finalInvoice ? await DatabaseHelper.generatePdfFinalInvoiceForOrder(orderId, pageSize: size) : await DatabaseHelper.generatePdfProformaForOrder(orderId, pageSize: size);
       if (!mounted) return;
-      await Navigator.push(context, MaterialPageRoute(
-        builder: (_) => Scaffold(
-          appBar: AppBar(title: Text(finalInvoice ? 'Final Invoice Preview' : 'Proforma Preview')),
-          body: PdfPreview(build: (_) async => bytes),
-        ),
-      ));
-    } catch (e) { if (mounted) messenger.showSnackBar(SnackBar(content: Text('Failed: $e'))); }
+      Navigator.push(context, MaterialPageRoute(builder: (_) => Scaffold(appBar: AppBar(title: Text(finalInvoice ? 'Final Invoice' : 'Proforma')), body: PdfPreview(build: (_) async => bytes))));
+    } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e'))); }
   }
 
-  Future<void> _handleReturn(RentalGroup group) async {
-    final messenger = ScaffoldMessenger.of(context);
-    DateTime checkoutDt; try { checkoutDt = DateTime.parse(group.checkoutDate); } catch (_) { checkoutDt = DateTime(2000); }
-    final action = await showDialog<String>(context: context, builder: (d) => AlertDialog(
-      title: const Text('Return Action'),
-      content: const Text('Are you returning ALL remaining items, or only a partial return?'),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(d,'cancel'),  child: const Text('Cancel')),
-        TextButton(onPressed: () => Navigator.pop(d,'partial'), child: const Text('Partial Return')),
-        ElevatedButton(onPressed: () => Navigator.pop(d,'full'), child: const Text('Full Return')),
-      ],
-    ));
-    if (action == null || action == 'cancel') return;
-
-    if (action == 'partial') {
-      final activeItems = group.items.where((r) => r['returned'] == 0).toList();
-      if (activeItems.isEmpty) return;
+  Future<void> _handleReturn(RentalGroup g) async {
+    final act = await showDialog<String>(context: context, builder: (d) => AlertDialog(title: const Text('Return Action'), actions: [TextButton(onPressed: () => Navigator.pop(d,'cancel'), child: const Text('Cancel')), TextButton(onPressed: () => Navigator.pop(d,'partial'), child: const Text('Partial')), ElevatedButton(onPressed: () => Navigator.pop(d,'full'), child: const Text('Full'))]));
+    if (!mounted) return;
+    if (act == null || act == 'cancel') return;
+    DateTime cDt = DateTime.tryParse(g.checkoutDate) ?? DateTime(2000);
+    if (act == 'partial') {
+      final aItems = g.items.where((r) => r['returned'] == 0).toList(); if (aItems.isEmpty) return;
       if (!mounted) return;
-      final result = await showDialog<Map<String, dynamic>>(context: context, builder: (ctx) => _PartialReturnDialog(activeItems: activeItems, checkoutDate: checkoutDt));
-      if (result == null) return;
-      try { await DatabaseHelper.returnMultiplePartial(result['returns'] as List<Map<String,dynamic>>, result['date'] as String); if (mounted) _load(); }
-      catch (e) { if (mounted) messenger.showSnackBar(SnackBar(content: Text('Return failed: $e'))); }
+      final res = await showDialog<Map<String, dynamic>>(context: context, builder: (_) => _PartialReturnDialog(activeItems: aItems, checkoutDate: cDt));
+      if (!mounted) return;
+      if (res != null) { await DatabaseHelper.returnMultiplePartial(res['returns'], res['date']); if (mounted) _load(); }
     } else {
       if (!mounted) return;
-      final choice = await showDialog<String?>(context: context, builder: (d) => AlertDialog(
-        title: const Text('Full Return Date'), content: const Text('When were the remaining items returned?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(d),           child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(d,'pick'),    child: const Text('Pick Date')),
-          ElevatedButton(onPressed: () => Navigator.pop(d,'today'), child: const Text('Today')),
-        ],
-      ));
-      if (choice == null) return;
-      String returnDate = DatabaseHelper.isoNow();
-      if (choice == 'pick') {
+      final dtOpt = await showDialog<String>(context: context, builder: (d) => AlertDialog(title: const Text('Return Date'), actions: [TextButton(onPressed: () => Navigator.pop(d,'pick'), child: const Text('Pick')), ElevatedButton(onPressed: () => Navigator.pop(d,'today'), child: const Text('Today'))]));
+      if (!mounted) return;
+      if (dtOpt == null) return; String rDt = DatabaseHelper.isoNow();
+      if (dtOpt == 'pick') {
         if (!mounted) return;
-        final picked = await showDatePicker(context: context, initialDate: DateTime.now(), firstDate: checkoutDt, lastDate: DateTime(2100));
-        if (picked == null) return;
-        returnDate = DatabaseHelper.isoDate(picked);
+        final p = await showDatePicker(context: context, initialDate: DateTime.now(), firstDate: cDt, lastDate: DateTime(2100));
+        if (!mounted) return;
+        if (p != null) {
+          rDt = DatabaseHelper.isoDate(p);
+        } else {
+          return;
+        }
       }
-      try {
-        await DatabaseHelper.returnOrderGroup(group.items.where((r) => r['returned'] == 0).toList(), returnDate);
-        if (!mounted) return;
-        _load();
-        messenger.showSnackBar(SnackBar(content: Text(group.balance > 0 ? 'Items returned. Remaining balance sent to Payment Ledger.' : 'Remaining items returned successfully.')));
-      } catch (e) { if (mounted) messenger.showSnackBar(SnackBar(content: Text('Return failed: $e'))); }
+      if (!mounted) return;
+      await DatabaseHelper.returnOrderGroup(g.items.where((r) => r['returned'] == 0).toList(), rDt);
+      if (!mounted) return;
+      _load();
     }
   }
 
-  Future<void> _settleGroup(RentalGroup group) async {
-    final isRefund   = group.balance < 0;
-    final absBalance = group.balance.abs();
-    final messenger  = ScaffoldMessenger.of(context);
-    final result = await showDialog<Map<String, String>>(
-      context: context,
-      builder: (_) => _SettleGroupDialog(group: group),
-    );
-    if (result == null || !mounted) return;
-
-    final amount = double.parse(result['amount']!);
-    final method = result['method']!;
-    final discount = double.parse(result['discount']!);
-    final isBadDebt = result['isBadDebt'] == 'true';
-    final isFull = (amount + discount) >= absBalance - 0.01;
-    final adjustedAmount = isRefund ? -amount : amount;
-
-    if (isBadDebt) {
-      await DatabaseHelper.writeOffBadDebt(
-        group.items.first['id'] as int,
-        amount,
-        isFull ? group.items.map((i) => i['id'] as int).toList() : [],
-      );
+  Future<void> _settleGroup(RentalGroup g) async {
+    final res = await showDialog<Map<String, String>>(context: context, builder: (_) => _SettleGroupDialog(group: g)); if (res == null || !mounted) return;
+    final amt = double.parse(res['amount']!), disc = double.parse(res['discount']!), isFull = (amt + disc) >= g.balance.abs() - 0.01;
+    if (res['isBadDebt'] == 'true') {
+      await DatabaseHelper.writeOffBadDebt(g.items.first['id'] as int, amt, isFull ? g.items.map((i) => i['id'] as int).toList() : []);
       if (!mounted) return;
-      _load();
-      messenger.showSnackBar(SnackBar(content: Text(isFull ? 'Balance written off as bad debt. Invoice closed.' : 'Partial bad debt written off.')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isFull ? 'Debt written off.' : 'Partial bad debt recorded.')));
     } else {
-      await DatabaseHelper.addPaymentToRentalGroup(
-          group.items.first['id'] as int,
-          adjustedAmount,
-          isFull,
-          group.items.map((i) => i['id'] as int).toList(),
-          paymentMethod: method,
-          discountAmount: discount
-      );
+      await DatabaseHelper.addPaymentToRentalGroup(g.items.first['id'] as int, g.balance < 0 ? -amt : amt, isFull, g.items.map((i) => i['id'] as int).toList(), paymentMethod: res['method']!, discountAmount: disc);
       if (!mounted) return;
-      _load();
-      messenger.showSnackBar(SnackBar(content: Text(isFull
-          ? (isRefund ? 'Refund recorded. Invoice settled.' : 'Invoice marked as fully paid & settled.')
-          : (isRefund ? 'Partial refund recorded.' : 'Partial payment recorded.'))));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isFull ? 'Settled fully.' : 'Partial recorded.')));
     }
-  }
-
-  Future<void> _editGroup(RentalGroup group) async {
-    await showDialog<void>(context: context, builder: (_) => _EditGroupDialog(group: group));
-    if (mounted) _load();
-  }
-
-  Future<void> _delete(RentalGroup group) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final ok = await _confirmDialog(context, title:'Delete Invoice Record', message:'Permanently delete this entire invoice history?');
-    if (!ok) return;
-    await DatabaseHelper.deleteRentalGroup(group.items);
     if (!mounted) return;
     _load();
-    messenger.showSnackBar(const SnackBar(content: Text('Invoice history deleted.')));
   }
 
-  Future<void> _cancel(RentalGroup group) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final ok = await _confirmDialog(context, title:'Cancel Invoice', message:'Are you sure you want to cancel this invoice? It will be permanently marked as CANCELLED.');
-    if (!ok) return;
-    await DatabaseHelper.cancelRentalGroup(group.items.map((i) => i['id'] as int).toList());
-    if (!mounted) return;
-    _load();
-    messenger.showSnackBar(const SnackBar(content: Text('Invoice successfully cancelled.')));
-  }
+  Widget _buildCard(RentalGroup g) => UniversalRentalCard(group: g, paymentLogs: _paymentLogsByGroup[g.paymentGroupKey], showCustomerName: false, onEdit: () async { await showDialog(context: context, builder: (_) => _EditGroupDialog(group: g)); if (!mounted) return; _load(); }, onReturn: !g.isFullyReturned ? () => _handleReturn(g) : null, onSettle: g.isFullyReturned && !g.isSettled ? () => _settleGroup(g) : null, onPdf: g.isFullyReturned && g.orderId != null ? () => _openInvoicePdf(g.orderId!, finalInvoice: true) : null, onCancel: g.isFullyReturned && !g.isCancelled ? () async { final confirmed = await _confirmDialog(context, title: 'Cancel', message: 'Cancel Invoice?'); if (!mounted) return; if (confirmed) { await DatabaseHelper.cancelRentalGroup(g.items.map((i) => i['id'] as int).toList()); _load(); } } : null, onDelete: g.isFullyReturned ? () async { final confirmed = await _confirmDialog(context, title: 'Delete', message: 'Delete history?'); if (!mounted) return; if (confirmed) { await DatabaseHelper.deleteRentalGroup(g.items); _load(); } } : null, onViewPayments: () => showDialog(context: context, builder: (ctx) => SimpleDialog(title: const Text('Select View'), children: [SimpleDialogOption(onPressed: () { Navigator.pop(ctx); Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentLedgerScreen(initialTabIndex: 1, initialOrderId: g.orderId, initialFallbackRentalId: g.orderId == null ? (g.fallbackId ?? g.items.firstOrNull?['id']) : null))); }, child: const Row(children: [Icon(Icons.history, color: Colors.blue), SizedBox(width: 12), Text('Payment History')])), SimpleDialogOption(onPressed: () { Navigator.pop(ctx); Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentLedgerScreen(initialOrderId: g.orderId, initialFallbackRentalId: g.orderId == null ? (g.fallbackId ?? g.items.firstOrNull?['id']) : null))); }, child: const Row(children: [Icon(Icons.account_balance_wallet, color: Colors.orange), SizedBox(width: 12), Text('Outstanding Ledger')]))])));
 
-  void _openPaymentHistoryForGroup(RentalGroup g) {
-    // Reuse the same unified Transactions screen from customer profile as well.
-    showDialog(
-      context: context,
-      builder: (ctx) => SimpleDialog(
-        title: const Text('Select View'),
-        children: [
-          SimpleDialogOption(
-            onPressed: () {
-              Navigator.pop(ctx);
-              Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentLedgerScreen(
-                initialTabIndex: 1,
-                initialOrderId: g.orderId,
-                initialFallbackRentalId: g.orderId == null ? (g.fallbackId ?? (g.items.firstOrNull?['id'] as int?)) : null,
-              )));
-            },
-            child: const Row(children: [Icon(Icons.history, color: Colors.blue), SizedBox(width: 12), Text('Payment History')]),
-          ),
-          SimpleDialogOption(
-            onPressed: () {
-              Navigator.pop(ctx);
-              Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentLedgerScreen(
-                initialOrderId: g.orderId,
-                initialFallbackRentalId: g.orderId == null ? (g.fallbackId ?? (g.items.firstOrNull?['id'] as int?)) : null,
-              )));
-            },
-            child: const Row(children: [Icon(Icons.account_balance_wallet, color: Colors.orange), SizedBox(width: 12), Text('Outstanding Ledger')]),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCard(RentalGroup g) {
-    final payments = _paymentLogsByGroup[g.paymentGroupKey];
-    return UniversalRentalCard(
-      group: g,
-      paymentLogs: payments,
-      showCustomerName: false,
-      onEdit: () => _editGroup(g),
-      onReturn: !g.isFullyReturned ? () => _handleReturn(g) : null,
-      onSettle: g.isFullyReturned && !g.isSettled ? () => _settleGroup(g) : null,
-      onPdf: g.isFullyReturned && g.orderId != null ? () => _openInvoicePdf(g.orderId!, finalInvoice: true) : null,
-      onCancel: g.isFullyReturned && !g.isCancelled ? () => _cancel(g) : null,
-      onDelete: g.isFullyReturned ? () => _delete(g) : null,
-      onViewPayments: () => _openPaymentHistoryForGroup(g),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final name          = _customer['name']          as String? ?? '';
-    final phone         = _customer['phone']         as String? ?? '';
-    final phone2        = _customer['phone2']        as String? ?? '';
-    final email         = _customer['email']         as String? ?? '';
-    final address       = _customer['address']       as String? ?? '';
-    final notes         = _customer['notes']         as String? ?? '';
-    final joinedDate    = _customer['joinedDate']    as String? ?? '';
-    final isBlacklisted = (_customer['isBlacklisted'] as int? ?? 0) == 1;
-
-    final totalSpent    = (_stats['totalSpent']    as double?) ?? 0.0;
-    final totalInvoices = (_stats['totalInvoices'] as int?)    ?? 0;
-    final activeRentals = (_stats['activeRentals'] as int?)    ?? 0;
-    final owedBalance   = (_stats['owedBalance']   as double?) ?? 0.0;
-    final refundBalance = (_stats['refundBalance'] as double?) ?? 0.0;
-    final badDebtTotal  = (_stats['badDebt']       as double?) ?? 0.0;
-
+  @override Widget build(BuildContext context) {
+    final name = _customer['name'] as String? ?? '', isBl = (_customer['isBlacklisted'] as int? ?? 0) == 1, owed = (_stats['owedBalance'] as double?) ?? 0.0, ref = (_stats['refundBalance'] as double?) ?? 0.0;
     return Scaffold(
-      appBar: AppBar(
-        title: Text(name),
-        actions: [
-          IconButton(
-            icon: Icon(isBlacklisted ? Icons.block : Icons.person_off_outlined,
-                color: isBlacklisted ? Colors.red : null),
-            tooltip: isBlacklisted ? 'Remove Blacklist' : 'Blacklist Customer',
-            onPressed: _toggleBlacklist,
-          ),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : Column(children: [
-        Expanded(
-          child: RefreshIndicator(
-            onRefresh: _load,
-            child: ListView(padding: const EdgeInsets.all(16), children: [
-              // Header card
-              Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Row(children: [
-                  CircleAvatar(
-                    radius: 28,
-                    backgroundColor: isBlacklisted
-                        ? Colors.red.withValues(alpha: 0.15)
-                        : Colors.amber.withValues(alpha: 0.2),
-                    child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
-                        style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold,
-                            color: isBlacklisted ? Colors.red : Colors.amber)),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Row(children: [
-                      Expanded(child: Text(name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
-                      if (isBlacklisted) Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.red, width: 0.8)),
-                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                          Icon(Icons.block, size: 11, color: Colors.red),
-                          SizedBox(width: 4),
-                          Text('BLACKLISTED', style: TextStyle(fontSize: 10, color: Colors.red, fontWeight: FontWeight.bold)),
-                        ]),
-                      ),
-                    ]),
-                    if (joinedDate.isNotEmpty) Padding(
-                      padding: const EdgeInsets.only(top: 3),
-                      child: Text('Customer since ${DatabaseHelper.formatDateString(joinedDate)}',
-                          style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
-                    ),
-                  ])),
-                ]),
-                if (phone.isNotEmpty || email.isNotEmpty || address.isNotEmpty || notes.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  const Divider(height: 1),
-                  const SizedBox(height: 10),
-                  if (phone.isNotEmpty)   _InfoRow(icon: Icons.phone,       text: phone + (phone2.isNotEmpty ? '  /  $phone2' : '')),
-                  if (email.isNotEmpty)   _InfoRow(icon: Icons.email,       text: email),
-                  if (address.isNotEmpty) _InfoRow(icon: Icons.location_on, text: address),
-                  if (notes.isNotEmpty)   _InfoRow(icon: Icons.notes,       text: notes),
-                ],
-              ]))),
-
-              const SizedBox(height: 12),
-
-              // Stats grid
-              GridView.count(
-                crossAxisCount: 2, shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 1.75,
-                children: [
-                  _MiniStatCard(label: 'Lifetime Billed', value: formatMoney(totalSpent, decimals: 0), icon: Icons.receipt_long, color: Colors.blue),
-                  _MiniStatCard(label: 'Total Invoices',  value: '$totalInvoices', icon: Icons.folder_copy, color: Colors.purple),
-                  _MiniStatCard(label: 'Active Items',    value: '$activeRentals', icon: Icons.handshake,   color: Colors.orange),
-                  if (badDebtTotal > 0)  _MiniStatCard(label: 'Bad Debt',    value: formatMoney(badDebtTotal, decimals: 0),  icon: Icons.money_off, color: Colors.redAccent),
-                  if (owedBalance > 0)   _MiniStatCard(label: 'Amount Due',  value: formatMoney(owedBalance, decimals: 0),   icon: Icons.payments, color: Colors.red),
-                  if (refundBalance > 0) _MiniStatCard(label: 'Refund Due',  value: formatMoney(refundBalance, decimals: 0), icon: Icons.undo,     color: Colors.green),
-                ],
-              ),
-
-              // Balance alert banner
-              if (owedBalance > 0 || refundBalance > 0) ...[
-                const SizedBox(height: 12),
-                Card(
-                  color: owedBalance > 0
-                      ? Colors.orange.withValues(alpha: 0.08)
-                      : Colors.green.withValues(alpha: 0.08),
-                  shape: RoundedRectangleBorder(
-                    side: BorderSide(color: owedBalance > 0 ? Colors.orange : Colors.green, width: 0.8),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Padding(padding: const EdgeInsets.all(14), child: Row(children: [
-                    Icon(owedBalance > 0 ? Icons.warning_amber_rounded : Icons.check_circle_outline,
-                        color: owedBalance > 0 ? Colors.orange : Colors.green, size: 22),
-                    const SizedBox(width: 12),
-                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(owedBalance > 0 ? 'Outstanding Balance' : 'Refund Pending',
-                          style: TextStyle(fontWeight: FontWeight.bold, color: owedBalance > 0 ? Colors.orange : Colors.green)),
-                      Text(owedBalance > 0
-                          ? 'This customer owes ${formatMoney(owedBalance)}'
-                          : 'You owe this customer ${formatMoney(refundBalance)}',
-                          style: const TextStyle(fontSize: 13)),
-                    ])),
-                  ])),
-                ),
-              ],
-
-              const SizedBox(height: 16),
-              Row(children: [
-                const Icon(Icons.history, size: 18),
-                const SizedBox(width: 6),
-                Text('Rental History (${_history.length})', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-              ]),
-              const SizedBox(height: 8),
-
-              // Inline Search and Sort for History
-              TextField(
-                controller: _searchCtrl,
-                decoration: InputDecoration(
-                  hintText: 'Search invoices...',
-                  prefixIcon: const Icon(Icons.search),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  contentPadding: const EdgeInsets.symmetric(vertical: 0),
-                  suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
-                    if (_searchCtrl.text.isNotEmpty)
-                      IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); setState(_applyFilter); }),
-                    PopupMenuButton<String>(
-                      icon: Stack(clipBehavior: Clip.none, children: [
-                        Icon(Icons.filter_list, color: _sortMode != kSortOptions.first ? Colors.amber : null),
-                        if (_sortMode != kSortOptions.first) Positioned(
-                          right: -2, top: -2,
-                          child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)),
-                        ),
-                      ]),
-                      tooltip: 'Sort by',
-                      initialValue: _sortMode,
-                      onSelected: (v) { setState(() { _sortMode = v; _applyFilter(); }); },
-                      itemBuilder: (_) => kSortOptions.map((o) => PopupMenuItem(
-                        value: o,
-                        child: Row(children: [
-                          Icon(_sortMode == o ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber),
-                          const SizedBox(width: 8),
-                          Text(o),
-                        ]),
-                      )).toList(),
-                    ),
-                  ]),
-                ),
-                onChanged: _onSearch,
-              ),
-              const SizedBox(height: 12),
-
-              if (_history.isEmpty)
-                const Center(child: Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Text('No rental history matches.', style: TextStyle(color: Colors.grey)),
-                ))
-              else
-                ..._history.map((g) => _buildCard(g)),
-
-              const SizedBox(height: 80),
-            ]),
-          ),
-        ),
+      appBar: AppBar(title: Text(name), actions: [IconButton(icon: Icon(isBl ? Icons.block : Icons.person_off_outlined, color: isBl ? Colors.red : null), onPressed: _toggleBlacklist)]),
+      body: _loading ? const Center(child: CircularProgressIndicator()) : Column(children: [
+        Expanded(child: RefreshIndicator(onRefresh: _load, child: ListView(padding: const EdgeInsets.all(16), children: [
+          Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(children: [
+            Row(children: [CircleAvatar(radius: 28, backgroundColor: isBl ? Colors.red.withValues(alpha: 0.15) : Colors.amber.withValues(alpha: 0.2), child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: isBl ? Colors.red : Colors.amber))), const SizedBox(width: 16), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(children: [Expanded(child: Text(name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))), if (isBl) Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3), decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.red)), child: const Text('BLACKLISTED', style: TextStyle(fontSize: 10, color: Colors.red, fontWeight: FontWeight.bold)))]), if ((_customer['joinedDate'] ?? '').isNotEmpty) Text('Since ${DatabaseHelper.formatDateString(_customer['joinedDate'])}', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color))]))]),
+            if ((_customer['phone']??'').isNotEmpty || (_customer['email']??'').isNotEmpty || (_customer['address']??'').isNotEmpty || (_customer['notes']??'').isNotEmpty) const Padding(padding: EdgeInsets.symmetric(vertical: 10), child: Divider(height: 1)),
+            if ((_customer['phone']??'').isNotEmpty) _InfoRow(icon: Icons.phone, text: '${_customer['phone']}${(_customer['phone2']??'').isNotEmpty ? ' / ${_customer['phone2']}' : ''}'), if ((_customer['email']??'').isNotEmpty) _InfoRow(icon: Icons.email, text: _customer['email']), if ((_customer['address']??'').isNotEmpty) _InfoRow(icon: Icons.location_on, text: _customer['address']), if ((_customer['notes']??'').isNotEmpty) _InfoRow(icon: Icons.notes, text: _customer['notes']),
+          ]))),
+          const SizedBox(height: 12),
+          GridView.count(crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 1.75, children: [_MiniStatCard(label: 'Lifetime Billed', value: formatMoney(_stats['totalSpent'] ?? 0), icon: Icons.receipt_long, color: Colors.blue), _MiniStatCard(label: 'Total Invoices', value: '${_stats['totalInvoices'] ?? 0}', icon: Icons.folder_copy, color: Colors.purple), _MiniStatCard(label: 'Active Items', value: '${_stats['activeRentals'] ?? 0}', icon: Icons.handshake, color: Colors.orange), if ((_stats['badDebt'] ?? 0) > 0) _MiniStatCard(label: 'Bad Debt', value: formatMoney(_stats['badDebt']), icon: Icons.money_off, color: Colors.redAccent), if (owed > 0) _MiniStatCard(label: 'Amount Due', value: formatMoney(owed), icon: Icons.payments, color: Colors.red), if (ref > 0) _MiniStatCard(label: 'Refund Due', value: formatMoney(ref), icon: Icons.undo, color: Colors.green)]),
+          if (owed > 0 || ref > 0) Card(margin: const EdgeInsets.only(top: 12), color: owed > 0 ? Colors.orange.withValues(alpha: 0.08) : Colors.green.withValues(alpha: 0.08), shape: RoundedRectangleBorder(side: BorderSide(color: owed > 0 ? Colors.orange : Colors.green), borderRadius: BorderRadius.circular(12)), child: Padding(padding: const EdgeInsets.all(14), child: Row(children: [Icon(owed > 0 ? Icons.warning_amber_rounded : Icons.check_circle_outline, color: owed > 0 ? Colors.orange : Colors.green), const SizedBox(width: 12), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(owed > 0 ? 'Outstanding Balance' : 'Refund Pending', style: TextStyle(fontWeight: FontWeight.bold, color: owed > 0 ? Colors.orange : Colors.green)), Text(owed > 0 ? 'Owes ${formatMoney(owed)}' : 'You owe ${formatMoney(ref)}', style: const TextStyle(fontSize: 13))]))]))),
+          const SizedBox(height: 16), Row(children: [const Icon(Icons.history, size: 18), const SizedBox(width: 6), Text('Rental History (${_history.length})', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))]), const SizedBox(height: 8),
+          TextField(controller: _searchCtrl, decoration: InputDecoration(hintText: 'Search invoices...', prefixIcon: const Icon(Icons.search), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)), contentPadding: EdgeInsets.zero, suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [if (_searchCtrl.text.isNotEmpty) IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); setState(_applyFilter); }), PopupMenuButton<String>(icon: Stack(clipBehavior: Clip.none, children: [Icon(Icons.filter_list, color: _sortMode != kSortOptions.first ? Colors.amber : null), if (_sortMode != kSortOptions.first) Positioned(right: -2, top: -2, child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)))]), initialValue: _sortMode, onSelected: (v) => setState(() { _sortMode = v; _applyFilter(); }), itemBuilder: (_) => kSortOptions.map((o) => PopupMenuItem(value: o, child: Row(children: [Icon(_sortMode == o ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber), const SizedBox(width: 8), Text(o)]))).toList())])), onChanged: _onSearch),
+          const SizedBox(height: 12),
+          if (_history.isEmpty) const Center(child: Padding(padding: EdgeInsets.all(24), child: Text('No rental history matches.', style: TextStyle(color: Colors.grey)))) else ..._history.map(_buildCard),
+          const SizedBox(height: 80),
+        ]))),
       ]),
     );
   }
@@ -5115,335 +4305,78 @@ class _MiniStatCard extends StatelessWidget {
   );
 }
 
-// ========Supplier Screen========
-
-class SuppliersScreen extends StatefulWidget {
-  const SuppliersScreen({super.key});
-
-  @override
-  State<SuppliersScreen> createState() => _SuppliersScreenState();
-}
-
-class _SuppliersScreenState extends State<SuppliersScreen> {
-  List<Map<String, dynamic>> _suppliers = [];
-  List<Map<String, dynamic>> _filtered = [];
-  bool _isLoading = true;
-  final TextEditingController _searchC = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    _loadData();
-    _searchC.addListener(_filter);
-  }
-
-  @override
-  void dispose() {
-    _searchC.dispose();
-    super.dispose();
-  }
-
-  Future<void> _loadData() async {
-    setState(() => _isLoading = true);
-    final data = await DatabaseHelper.getSuppliers();
-    if (!mounted) return;
-    setState(() {
-      _suppliers = data;
-      _filtered = data;
-      _isLoading = false;
-    });
-  }
-
-  void _filter() {
-    final q = _searchC.text.toLowerCase();
-    setState(() {
-      _filtered = _suppliers.where((s) {
-        final n = (s['name'] as String? ?? '').toLowerCase();
-        final p = (s['phone'] as String? ?? '').toLowerCase();
-        return n.contains(q) || p.contains(q);
-      }).toList();
-    });
-  }
-
-  void _showSupplierDialog([Map<String, dynamic>? s]) {
-    final nameC = TextEditingController(text: s?['name'] as String? ?? '');
-    final phoneC = TextEditingController(text: s?['phone'] as String? ?? '');
-    final emailC = TextEditingController(text: s?['email'] as String? ?? '');
-    final addressC = TextEditingController(text: s?['address'] as String? ?? '');
-    final taxRegC = TextEditingController(text: s?['taxRegNo'] as String? ?? '');
-    final notesC = TextEditingController(text: s?['notes'] as String? ?? '');
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(s == null ? 'Add Supplier' : 'Edit Supplier'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(controller: nameC, decoration: const InputDecoration(labelText: 'Supplier Name *')),
-              TextField(controller: phoneC, decoration: const InputDecoration(labelText: 'Phone Number')),
-              TextField(controller: emailC, decoration: const InputDecoration(labelText: 'Email Address')),
-              TextField(controller: taxRegC, decoration: const InputDecoration(labelText: 'Tax Registration No. (GST/VAT)')),
-              TextField(controller: addressC, decoration: const InputDecoration(labelText: 'Physical Address'), maxLines: 2),
-              TextField(controller: notesC, decoration: const InputDecoration(labelText: 'Internal Notes (Terms, etc.)'), maxLines: 2),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () async {
-              if (nameC.text.trim().isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Name is required.')));
-                return;
-              }
-              final data = {
-                'name': nameC.text.trim(),
-                'phone': phoneC.text.trim(),
-                'email': emailC.text.trim(),
-                'address': addressC.text.trim(),
-                'taxRegNo': taxRegC.text.trim(),
-                'notes': notesC.text.trim(),
-                'joinedDate': s == null ? DateTime.now().toIso8601String() : s['joinedDate'],
-              };
-              if (s == null) {
-                await DatabaseHelper.insertSupplier(data);
-              } else {
-                await DatabaseHelper.updateSupplier(s['id'] as int, data);
-              }
-              if (!ctx.mounted) return;
-              Navigator.pop(ctx);
-              _loadData();
-            },
-            child: const Text('Save Supplier'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Supplier Directory')),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: TextField(
-              controller: _searchC,
-              decoration: InputDecoration(
-                labelText: 'Search suppliers...',
-                prefixIcon: const Icon(Icons.search),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                filled: true,
-                fillColor: Colors.grey.withValues(alpha: 0.1),
-              ),
-            ),
-          ),
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _filtered.isEmpty
-                ? const Center(child: Text('No suppliers found.'))
-                : ListView.builder(
-              itemCount: _filtered.length,
-              itemBuilder: (ctx, i) {
-                final s = _filtered[i];
-                return Card(
-                  margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: Colors.blue.shade100,
-                      child: const Icon(Icons.local_shipping, color: Colors.blue),
-                    ),
-                    title: Text(s['name'] as String, style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text(s['phone'] as String? ?? 'No phone'),
-                    trailing: const Icon(Icons.edit, size: 20),
-                    onTap: () => _showSupplierDialog(s),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showSupplierDialog(),
-        icon: const Icon(Icons.add),
-        label: const Text('New Supplier'),
-      ),
-    );
-  }
-}
-
 // =============================
 // VII. TRANSACTION MODULE
 // =============================
+
+
 
 // ========New Order Screen========
 
 class NewOrderScreen extends StatefulWidget {
   const NewOrderScreen({super.key});
-  @override
-  State<NewOrderScreen> createState() => _NewOrderScreenState();
+  @override State<NewOrderScreen> createState() => _NewOrderScreenState();
 }
 
 class _NewOrderScreenState extends State<NewOrderScreen> {
   List<Map<String, dynamic>> _items = [], _customers = [];
-  final Map<int, TextEditingController> _qtyC = {}, _rateC = {};
-  int? _selectedCustomerId;
-  DateTime _selectedDate = DateTime.now();
-  String _selectedPaymentMethod = 'Cash';
-  final _advC = TextEditingController(), _notesC = TextEditingController();
-
-  // State boolean to track if the top details form is visible or collapsed
+  final List<TransactionLineItem> _lines = [];
+  int? _selectedCustomerId; DateTime _selectedDate = DateTime.now(); String _selectedPaymentMethod = 'Cash';
+  final _advC = TextEditingController(), _notesC = TextEditingController(), _dateCtrl = TextEditingController();
   bool _isFormExpanded = true;
-  final _dateCtrl = TextEditingController();
 
-  @override
-  void initState() {
-    super.initState();
-    _dateCtrl.text = DatabaseHelper.formatDateFromDt(_selectedDate);
-    _load();
-  }
+  @override void initState() { super.initState(); _dateCtrl.text = DatabaseHelper.formatDateFromDt(_selectedDate); _addLine(); _load(); }
+  @override void dispose() { for (final l in _lines) { l.dispose(); } _advC.dispose(); _notesC.dispose(); _dateCtrl.dispose(); super.dispose(); }
 
-  @override
-  void dispose() {
-    for (final c in [..._qtyC.values,..._rateC.values]) { c.dispose(); }
-    _advC.dispose(); _notesC.dispose(); _dateCtrl.dispose();
-    super.dispose();
-  }
+  void _addLine() => setState(() => _lines.add(TransactionLineItem()));
+  void _removeLine(int index) { if (_lines.length > 1) { setState(() { _lines[index].dispose(); _lines.removeAt(index); }); } }
 
   Future<void> _load() async {
-    final items = await DatabaseHelper.getItems(); final customers = await DatabaseHelper.getCustomers();
+    final items = await DatabaseHelper.getItems(), customers = await DatabaseHelper.getCustomers();
     if (!mounted) return;
-    setState(() {
-      _items=items; _customers=customers;
-      for (final it in items) { final id = it['id'] as int; _qtyC[id]??=TextEditingController(); _rateC[id]??=TextEditingController(); }
-    });
+    setState(() { _items=items; _customers=customers; });
   }
 
   Future<void> _saveOrder() async {
-    final customer     = _customers.firstWhere((c) => c['id']==_selectedCustomerId, orElse: () => <String,dynamic>{});
-    final customerName = (customer['name'] as String?)?.isNotEmpty==true ? customer['name'] as String : 'Walk-in';
-    final customerId   = customer.containsKey('id') ? customer['id'] as int? : null;
-    final checkoutDateStr = DatabaseHelper.isoDate(_selectedDate);
-    final advance = double.tryParse(_advC.text) ?? 0.0;
-    final messenger = ScaffoldMessenger.of(context); final nav = Navigator.of(context);
+    if (_selectedCustomerId == null) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a customer.'))); return; }
+    final cust = _customers.firstWhere((c) => c['id']==_selectedCustomerId, orElse: () => <String,dynamic>{});
     final sel = <Map<String,dynamic>>[]; bool isFirst = true;
-
-    for (final it in _items) {
-      final id = it['id'] as int; final qty = int.tryParse(_qtyC[id]?.text??'')??0;
-      if (qty <= 0) continue;
-      final rate = double.tryParse(_rateC[id]?.text??'')??0.0;
-      sel.add({
-        'itemId': id,
-        'customerId': customerId, // Fixed Name Collision
-        'qty': qty,
-        'rate': rate,
-        'contractor': customerName,
-        'phone': customer['phone'] ?? '',
-        'phone2': customer['phone2'] ?? '',
-        'address': customer['address'] ?? '',
-        'checkoutDate': checkoutDateStr,
-        'advanceDeposit': isFirst ? advance : 0.0,
-        'notes': _notesC.text.trim(),
-        'paymentMethod': isFirst ? _selectedPaymentMethod : ''
-      });
+    for (final l in _lines) {
+      if (l.itemId == null) continue;
+      final qty = int.tryParse(l.qtyC.text) ?? 0; if (qty <= 0) continue;
+      sel.add({'itemId': l.itemId, 'customerId': cust['id'], 'qty': qty, 'rate': double.tryParse(l.priceC.text) ?? 0.0, 'contractor': cust['name']?.toString().isNotEmpty==true ? cust['name'] : 'Walk-in', 'phone': cust['phone'] ?? '', 'phone2': cust['phone2'] ?? '', 'address': cust['address'] ?? '', 'checkoutDate': DatabaseHelper.isoDate(_selectedDate), 'advanceDeposit': isFirst ? (double.tryParse(_advC.text) ?? 0.0) : 0.0, 'notes': _notesC.text.trim(), 'paymentMethod': isFirst ? _selectedPaymentMethod : ''});
       isFirst = false;
     }
-
-    if (sel.isEmpty) { messenger.showSnackBar(const SnackBar(content: Text('Add at least one item with a quantity.'))); return; }
+    if (sel.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Add at least one item.'))); return; }
     try {
-      final orderId = await DatabaseHelper.createOrder(customerId, customerName, checkoutDateStr);
-      await DatabaseHelper.createOrderRentals(orderId, sel);
-      if (!mounted) return;
-      messenger.showSnackBar(const SnackBar(content: Text('Order saved successfully!')));
-      nav.pop();
-    } catch (e) { if (mounted) messenger.showSnackBar(SnackBar(content: Text('Failed to save: $e'))); }
+      final oid = await DatabaseHelper.createOrder(cust['id'], sel.first['contractor'], DatabaseHelper.isoDate(_selectedDate));
+      await DatabaseHelper.createOrderRentals(oid, sel);
+      if (mounted) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Order saved!'))); Navigator.pop(context); }
+    } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e'))); }
   }
 
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('New Rental Order')),
+  @override Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Create Rental Order')),
     body: Column(children: [
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
-        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          const Text('Customer Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-          TextButton.icon(
-            onPressed: () => setState(() => _isFormExpanded = !_isFormExpanded),
-            icon: Icon(_isFormExpanded ? Icons.expand_less : Icons.expand_more),
-            label: Text(_isFormExpanded ? 'Hide Details' : 'Show Details'),
-          )
-        ]),
-      ),
-      if (_isFormExpanded)
-        Expanded(
-          flex: 0,
-          child: SingleChildScrollView(padding: const EdgeInsets.fromLTRB(12, 0, 12, 12), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Expanded(flex: 2, child: DropdownButtonFormField<int>(
-                initialValue: _selectedCustomerId,
-                decoration: const InputDecoration(labelText:'Customer', border:OutlineInputBorder(), prefixIcon:Icon(Icons.person), isDense:true),
-                items: [const DropdownMenuItem<int>(value:null, child:Text('Select Customer')),
-                  ..._customers.map((c) => DropdownMenuItem<int>(value:c['id'] as int, child:Text(c['name'] as String? ?? '')))],
-                onChanged: (v) => setState(() => _selectedCustomerId = v),
-              )),
-              const SizedBox(width: 8),
-              Expanded(flex: 1, child: TextFormField(
-                readOnly: true,
-                controller: _dateCtrl,
-                onTap: () async {
-                  final p = await showDatePicker(context:context, initialDate:_selectedDate, firstDate:DateTime(2000), lastDate:DateTime(2100));
-                  if (p!=null) setState(() { _selectedDate=p; _dateCtrl.text = DatabaseHelper.formatDateFromDt(p); });
-                },
-                decoration: const InputDecoration(labelText:'Checkout Date', border:OutlineInputBorder(), isDense:true, contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 12)),
-                style: const TextStyle(fontSize: 14),
-              )),
-            ]),
-            const SizedBox(height: 12),
-            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Expanded(flex: 1, child: TextFormField(controller:_advC, decoration:InputDecoration(labelText:'Advance/Security ($curr)', border:const OutlineInputBorder(), isDense:true, prefixIcon:const Icon(Icons.payments)), keyboardType:const TextInputType.numberWithOptions(decimal:true))),
-              const SizedBox(width: 8),
-              Expanded(flex: 1, child: DropdownButtonFormField<String>(
-                initialValue: _selectedPaymentMethod,
-                decoration: const InputDecoration(labelText: 'Payment Method', border:OutlineInputBorder(), isDense:true, prefixIcon:Icon(Icons.payment)),
-                items: kPaymentMethods.map((m) => DropdownMenuItem(value:m, child:Text(m))).toList(),
-                onChanged: (v) { if (v!=null) setState(()=>_selectedPaymentMethod=v); },
-              )),
-            ]),
-            const SizedBox(height: 12),
-            TextFormField(controller: _notesC, maxLines:1, decoration:const InputDecoration(labelText:'Order Notes', border:OutlineInputBorder(), prefixIcon:Icon(Icons.notes), isDense:true)),
-          ])),
+      Container(padding: const EdgeInsets.symmetric(horizontal: 12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Customer Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)), TextButton.icon(onPressed: () => setState(() => _isFormExpanded = !_isFormExpanded), icon: Icon(_isFormExpanded ? Icons.expand_less : Icons.expand_more), label: Text(_isFormExpanded ? 'Hide' : 'Show'))])),
+      if (_isFormExpanded) SingleChildScrollView(padding: const EdgeInsets.fromLTRB(12, 0, 12, 12), child: Column(children: [
+        AppUI.buildPartyDateRow(
+          context: context, partyLabel: 'Customer', partyIcon: Icons.person, selectedPartyId: _selectedCustomerId,
+          partyList: _customers, filter: (c, q) => (c['name']?.toString().toLowerCase() ?? '').contains(q.toLowerCase()) || (c['phone']?.toString() ?? '').contains(q),
+          itemBuilder: (c) => ListTile(leading: const CircleAvatar(child: Icon(Icons.person, size: 20)), title: Text(c['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text(c['phone']?.toString().isNotEmpty == true ? c['phone'] : 'No phone'), trailing: const Icon(Icons.chevron_right, size: 16)),
+          onPartySelected: (id) => setState(() => _selectedCustomerId = id),
+          selectedDate: _selectedDate, dateCtrl: _dateCtrl, dateLabel: 'Checkout Date', onDateSelected: (d) => setState(() => _selectedDate = d),
         ),
-      Container(width:double.infinity, color:Theme.of(context).colorScheme.surfaceContainerHighest,
-          padding:const EdgeInsets.symmetric(horizontal:16,vertical:12),
-          child: const Text('Select Equipment to Rent', style:TextStyle(fontWeight:FontWeight.bold))
-      ),
-      Expanded(child: _items.isEmpty
-          ? const Center(child: Text('No items in inventory.\nAdd items first.', textAlign:TextAlign.center))
-          : ListView.builder(
-        padding: const EdgeInsets.symmetric(horizontal:12,vertical:8), itemCount:_items.length,
-        itemBuilder: (_, i) {
-          final it=_items[i]; final id=it['id'] as int; final avail=(it['total'] as int? ?? 0)-(it['rented'] as int? ?? 0);
-          return Card(margin:const EdgeInsets.only(bottom:8), child:Padding(padding:const EdgeInsets.symmetric(horizontal:10,vertical:12),
-              child:Row(crossAxisAlignment:CrossAxisAlignment.center, children:[
-                Expanded(flex:3, child:Column(crossAxisAlignment:CrossAxisAlignment.start, children:[
-                  Text(it['name']??'', style:const TextStyle(fontWeight:FontWeight.w600,fontSize:14)), const SizedBox(height:4),
-                  _StockChip('Avail: $avail', avail>0?Colors.green:Colors.red),
-                ])),
-                const SizedBox(width:8),
-                Expanded(flex:2, child:TextFormField(controller:_qtyC[id], enabled:avail>0, decoration:const InputDecoration(labelText:'Qty',border:OutlineInputBorder(),isDense:true,contentPadding:EdgeInsets.symmetric(horizontal:8,vertical:10)), keyboardType:TextInputType.number)),
-                const SizedBox(width:8),
-                Expanded(flex:2, child:TextFormField(controller:_rateC[id], enabled:avail>0, decoration:InputDecoration(labelText:'Rate($curr)',border:const OutlineInputBorder(),isDense:true,contentPadding:const EdgeInsets.symmetric(horizontal:8,vertical:10)), keyboardType:const TextInputType.numberWithOptions(decimal:true))),
-              ])));
-        },
+        const SizedBox(height: 12),
+        Row(children: [ Expanded(child: TextFormField(controller: _advC, decoration: AppUI.inputDecoration('Advance ($curr)', i: Icons.payments), keyboardType: const TextInputType.numberWithOptions(decimal: true))), const SizedBox(width: 8), Expanded(child: DropdownButtonFormField<String>(initialValue: _selectedPaymentMethod, decoration: AppUI.inputDecoration('Method', i: Icons.payment), items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(), onChanged: (v) { if (v != null) setState(() => _selectedPaymentMethod = v); })) ]),
+        const SizedBox(height: 12), TextFormField(controller: _notesC, decoration: AppUI.inputDecoration('Order Notes', i: Icons.notes)),
+      ])),
+      Container(width: double.infinity, color: Theme.of(context).colorScheme.surfaceContainerHighest, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), child: const Text('Select Equipment', style: TextStyle(fontWeight: FontWeight.bold))),
+      Expanded(child: AppUI.buildLineItemsList(
+        context: context, lines: _lines, inventoryItems: _items, priceLabel: 'Rate ($curr)',
+        onAddLine: _addLine, onRemoveLine: _removeLine, onStateChanged: () => setState((){}),
       )),
-      Padding(padding:const EdgeInsets.all(12), child:SizedBox(width:double.infinity,
-          child:ElevatedButton.icon(icon:const Icon(Icons.check), label:const Text('Confirm Rental'), style:ElevatedButton.styleFrom(padding:const EdgeInsets.symmetric(vertical:12)), onPressed:_saveOrder))),
+      Padding(padding: const EdgeInsets.all(12), child: SizedBox(width: double.infinity, child: ElevatedButton.icon(icon: const Icon(Icons.check), label: const Text('Save Rental'), style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)), onPressed: _saveOrder))),
     ]),
   );
 }
@@ -5466,9 +4399,12 @@ class _OrdersListScreenState extends State<OrdersListScreen> {
   Future<void> _load() async { final data = await DatabaseHelper.getOrders(); if (!mounted) return; setState(() => _orders = data); }
 
   Future<void> _openPdf(int orderId, {bool share = false}) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final nav = Navigator.of(context);
+
     final size = await pickPdfSize(context);
     if (size == null || !mounted) return;
-    final messenger = ScaffoldMessenger.of(context); final nav = Navigator.of(context);
+
     messenger.showSnackBar(const SnackBar(content: Text('Generating PDF...')));
     try {
       final bytes = await DatabaseHelper.generatePdfProformaForOrder(orderId, pageSize: size);
@@ -5477,7 +4413,9 @@ class _OrdersListScreenState extends State<OrdersListScreen> {
         if (!mounted) return;
         await nav.push(MaterialPageRoute(builder: (_) => Scaffold(appBar: AppBar(title: const Text('Proforma Preview')), body: PdfPreview(build: (_) async => bytes))));
       }
-    } catch (e) { if (mounted) messenger.showSnackBar(SnackBar(content: Text('Failed: $e'))); }
+    } catch (e) {
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Failed: $e')));
+    }
   }
 
   @override
@@ -5616,7 +4554,11 @@ class PurchaseOrdersScreen extends StatefulWidget {
 
 class _PurchaseOrdersScreenState extends State<PurchaseOrdersScreen> {
   List<Map<String, dynamic>> _pos = [];
+  Map<int, List<Map<String, dynamic>>> _paymentLogsByPO = {};
   bool _isLoading = true;
+  final _searchCtrl = TextEditingController();
+  Timer? _debounce;
+  String _sortMode = kSortOptions.first;
 
   @override
   void initState() {
@@ -5624,222 +4566,329 @@ class _PurchaseOrdersScreenState extends State<PurchaseOrdersScreen> {
     _loadData();
   }
 
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    _debounce?.cancel();
+    super.dispose();
+  }
+
   Future<void> _loadData() async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
+
     final data = await DatabaseHelper.getPurchaseOrders();
+    final logs = await DatabaseHelper.getVendorPaymentHistory();
+
+    Map<int, List<Map<String, dynamic>>> logMap = {};
+    for (var l in logs) {
+      final pId = l['poId'] as int;
+      logMap.putIfAbsent(pId, () => []).add(l);
+    }
+    for (var key in logMap.keys) {
+      logMap[key]!.sort((a, b) => (a['id'] as int).compareTo(b['id'] as int));
+    }
+
+    List<Map<String, dynamic>> filtered = List.from(data);
+
+    final q = _searchCtrl.text.trim().toLowerCase();
+    if (q.isNotEmpty) {
+      filtered = filtered.where((p) =>
+      (p['supplierName']?.toString().toLowerCase() ?? '').contains(q) ||
+          (p['poNumber']?.toString().toLowerCase() ?? '').contains(q)
+      ).toList();
+    }
+
+    if (_sortMode == 'Date (Newest)') {
+      filtered.sort((a, b) => (b['orderDate'] ?? '').compareTo(a['orderDate'] ?? ''));
+    } else if (_sortMode == 'Date (Oldest)') {
+      filtered.sort((a, b) => (a['orderDate'] ?? '').compareTo(b['orderDate'] ?? ''));
+    } else if (_sortMode == 'Highest Balance') {
+      filtered.sort((a, b) {
+        final balA = ((a['grandTotal'] as num?) ?? 0) - ((a['amountPaid'] as num?) ?? 0);
+        final balB = ((b['grandTotal'] as num?) ?? 0) - ((b['amountPaid'] as num?) ?? 0);
+        return balB.compareTo(balA);
+      });
+    }
+
     if (!mounted) return;
     setState(() {
-      _pos = data;
+      _pos = filtered;
+      _paymentLogsByPO = logMap;
       _isLoading = false;
     });
   }
 
-  Future<void> _showPaymentDialog(Map<String, dynamic> po, double balance) async {
-    final formKey = GlobalKey<FormState>();
-    final amountC = TextEditingController(text: balance.toStringAsFixed(2));
-    String method = kPaymentMethods.first;
-    DateTime date = DateTime.now();
+  void _onSearch(String _) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), _loadData);
+  }
 
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (context, setSt) => AlertDialog(
-          title: Text('Pay Supplier: ${po['supplierName']}'),
-          content: Form(
-            key: formKey,
-            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Outstanding Balance: ${formatMoney(balance)}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: amountC,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: InputDecoration(labelText: 'Payment Amount ($curr)', border: const OutlineInputBorder()),
-                validator: (v) {
-                  final val = double.tryParse(v ?? '');
-                  if (val == null || val <= 0) return 'Invalid amount';
-                  if (val > balance + 0.01) return 'Cannot pay more than the balance.';
-                  return null;
-                },
+
+  Widget _tag(String text, Color color) => Container(
+    margin: const EdgeInsets.only(left: 6),
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+    decoration: BoxDecoration(color: color.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
+    child: Text(text, style: TextStyle(color: color, fontSize: 10.5, fontWeight: FontWeight.bold)),
+  );
+
+  Widget _finRow(String lbl, String val, {Color? color, bool strike = false, bool bold = false}) => Padding(
+    padding: const EdgeInsets.only(bottom: 2),
+    child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+      Text(lbl, style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal)),
+      Text(val, style: TextStyle(color: color, fontWeight: bold ? FontWeight.bold : FontWeight.normal, decoration: strike ? TextDecoration.lineThrough : null))
+    ]),
+  );
+
+  Widget _buildPOCard(Map<String, dynamic> po) {
+    final settings = AppProvider.of(context);
+    final compact = settings.cardDensity == 'compact';
+    final divider = Divider(height: compact ? 10.0 : 16.0);
+
+    final date = DatabaseHelper.formatDateString(po['orderDate'] as String?);
+    final grandTotal = (po['grandTotal'] as num?)?.toDouble() ?? 0.0;
+    final amountPaid = (po['amountPaid'] as num?)?.toDouble() ?? 0.0;
+    final subtotal = (po['subtotal'] as num?)?.toDouble() ?? 0.0;
+    final taxAmount = (po['taxAmount'] as num?)?.toDouble() ?? 0.0;
+    final discount = (po['discount'] as num?)?.toDouble() ?? 0.0;
+    final penalty = (po['penaltyFee'] as num?)?.toDouble() ?? 0.0;
+    final isCancelled = (po['isCancelled'] as int? ?? 0) == 1;
+    final balance = grandTotal - amountPaid;
+    final isSettled = balance <= 0 && !isCancelled;
+
+    final int poId = po['id'] as int;
+    final payments = _paymentLogsByPO[poId] ?? [];
+    double initialAdvance = 0.0;
+    double laterPaid = 0.0;
+    if (payments.isNotEmpty) {
+      initialAdvance = (payments.first['amount'] as num).toDouble();
+      laterPaid = payments.skip(1).fold(0.0, (s, p) => s + ((p['amount'] as num).toDouble()));
+    } else {
+      initialAdvance = amountPaid;
+    }
+
+    final supplierName = po['supplierName'] as String? ?? 'Unknown Supplier';
+    final phone = po['phone'] as String? ?? '';
+    final phone2 = po['phone2'] as String? ?? '';
+    final poNum = po['poNumber'] as String? ?? '';
+    final billNum = po['billNumber'] as String? ?? '';
+
+    final itemsSummary = po['itemsSummary'] as String? ?? '';
+    final notes = po['notes'] as String? ?? '';
+    final List<Widget> itemWidgets = [];
+    if (itemsSummary.isNotEmpty) {
+      final lines = itemsSummary.split('^');
+      for (final line in lines) {
+        final parts = line.split('|');
+        if (parts.length == 4) {
+          itemWidgets.add(
+            Padding(
+              padding: EdgeInsets.symmetric(vertical: compact ? 2 : 4),
+              child: Row(
+                children: [
+                  Icon(isCancelled ? Icons.cancel : Icons.radio_button_checked, size: compact ? 14 : 16, color: isCancelled ? Colors.redAccent : Colors.blueGrey),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text('${parts[0]} x ${parts[1]} @ ${formatMoney(double.tryParse(parts[2]) ?? 0.0)}', style: TextStyle(fontSize: 13, decoration: isCancelled ? TextDecoration.lineThrough : null, color: isCancelled ? Colors.grey : null))),
+                  Text(formatMoney(double.tryParse(parts[3]) ?? 0.0), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, decoration: isCancelled ? TextDecoration.lineThrough : null, color: isCancelled ? Colors.grey : null)),
+                ],
               ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: method,
-                decoration: const InputDecoration(labelText: 'Payment Method', border: OutlineInputBorder()),
-                items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
-                onChanged: (v) { if (v != null) setSt(() => method = v); },
-              ),
-              const SizedBox(height: 12),
-              Row(children: [
-                Expanded(child: Text('Date: ${DatabaseHelper.formatDateFromDt(date)}')),
-                TextButton(
-                  onPressed: () async {
-                    final p = await showDatePicker(context: context, initialDate: date, firstDate: DateTime(2000), lastDate: DateTime.now());
-                    if (p != null) setSt(() => date = p);
-                  },
-                  child: const Text('Change'),
+            ),
+          );
+        }
+      }
+    }
+
+    return Card(
+      margin: EdgeInsets.only(bottom: compact ? 8 : 10),
+      clipBehavior: Clip.antiAlias,
+      child: Container(
+        decoration: isCancelled ? BoxDecoration(border: Border(left: BorderSide(color: Colors.redAccent.withValues(alpha: 0.5), width: 4))) : null,
+        padding: settings.cardPadding,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: Text.rich(TextSpan(children: [
+                  TextSpan(text: supplierName, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                  if (phone.isNotEmpty) TextSpan(text: '  | Ph# $phone${phone2.isNotEmpty ? ' / $phone2' : ''}', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
+                ]), overflow: TextOverflow.ellipsis)),
+                if (isCancelled) _tag('CANCELLED', Colors.redAccent) else if (isSettled) _tag('PAID', Colors.greenAccent) else _tag('PAYABLE', Colors.orange),
+                SizedBox(
+                  width: 32,
+                  child: PopupMenuButton<String>(
+                    tooltip: 'Options',
+                    onSelected: (val) async {
+                      if (val == 'cancel') {
+                        final ok = await _confirmDialog(context, title: 'Void PO', message: 'Cancel this purchase and reverse inventory?', confirmLabel: 'Void');
+                        if (ok) { await DatabaseHelper.cancelPurchaseOrder(po['id'] as int); _loadData(); }
+                      } else if (val == 'delete') {
+                        final ok = await _confirmDialog(context, title: 'Delete PO', message: 'Permanently remove record and inventory?');
+                        if (ok) { await DatabaseHelper.deletePurchaseOrder(po['id'] as int); _loadData(); }
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      if (!isCancelled) const PopupMenuItem(value: 'cancel', child: Row(children: [Icon(Icons.cancel_outlined, size: 18, color: Colors.orange), SizedBox(width: 8), Text('Cancel PO', style: TextStyle(color: Colors.orange))])),
+                      const PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 8), Text('Delete PO', style: TextStyle(color: Colors.red))])),
+                    ],
+                    child: const Align(alignment: Alignment.centerRight, child: Icon(Icons.more_vert, size: 20)),
+                  ),
                 ),
-              ]),
-            ]),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-            ElevatedButton(
-              onPressed: () async {
-                if (formKey.currentState!.validate()) {
-                  final amt = double.parse(amountC.text);
-                  await DatabaseHelper.recordPOPayment(
-                      po['id'] as int,
-                      amt,
-                      method,
-                      DatabaseHelper.isoDate(date),
-                      po['poNumber'] as String? ?? 'N/A',
-                      po['supplierName'] as String? ?? 'Unknown Supplier'
-                  );
-                  if (ctx.mounted) Navigator.pop(ctx);
-                }
-              },
-              child: const Text('Record Payment'),
+              ],
+            ),
+            Padding(padding: EdgeInsets.only(top: compact ? 1 : 2), child: Text.rich(TextSpan(style: TextStyle(fontSize: 13, color: Theme.of(context).textTheme.bodySmall?.color), children: [
+              TextSpan(text: poNum, style: const TextStyle(fontWeight: FontWeight.bold)),
+              if (billNum.isNotEmpty) TextSpan(text: ' ref $billNum', style: const TextStyle(fontStyle: FontStyle.italic, fontSize: 12)),
+            ]))),
+            Padding(padding: EdgeInsets.only(top: compact ? 1 : 2), child: Text('Date: $date', style: TextStyle(fontSize: 13, color: Theme.of(context).textTheme.bodySmall?.color))),
+            divider,
+            if (itemWidgets.isNotEmpty) ...itemWidgets,
+            if (notes.isNotEmpty) Padding(padding: EdgeInsets.only(top: compact ? 2 : 4), child: Text('Note: $notes', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12))),
+            if (itemWidgets.isNotEmpty || notes.isNotEmpty) divider,
+            // Financial Totals - Standardized Ledger Order
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _finRow('Total Billed:', formatMoney(subtotal), strike: isCancelled),
+                if (penalty > 0) _finRow('Penalty:', '+ ${formatMoney(penalty)}', color: Colors.redAccent),
+                if (taxAmount > 0) _finRow('Tax:', '+ ${formatMoney(taxAmount)}'),
+                if (discount > 0) _finRow('Discount:', '- ${formatMoney(discount)}'),
+                _finRow('Advance/Security:', '- ${formatMoney(initialAdvance)}'),
+                if (laterPaid > 0) _finRow('Payment(s):', '- ${formatMoney(laterPaid)}'),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  isSettled ? 'Settled: Balance Cleared' : (isCancelled ? 'VOIDED / CANCELLED' : 'Final Balance: ${formatMoney(balance)}'),
+                  style: TextStyle(
+                      color: isCancelled ? Colors.grey : (isSettled ? Colors.grey : (balance > 0 ? Colors.orange : Colors.green)),
+                      fontWeight: FontWeight.bold
+                  ),
+                ),
+                InkWell(
+                  onTap: () {
+                    showDialog(
+                      context: context,
+                      builder: (ctx) => SimpleDialog(
+                        title: const Text('Select View'),
+                        children: [
+                          SimpleDialogOption(
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                              Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentLedgerScreen(
+                                initialLedgerType: 'Vendor Ledger (A/P)',
+                                initialTabIndex: 1,
+                                initialDisplayDocNumber: po['poNumber'] as String? ?? 'PO#${po['id']}',
+                              )));
+                            },
+                            child: const Row(children: [Icon(Icons.history, color: Colors.blue), SizedBox(width: 12), Text('Payment History')]),
+                          ),
+                          SimpleDialogOption(
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                              Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentLedgerScreen(
+                                initialLedgerType: 'Vendor Ledger (A/P)',
+                                initialTabIndex: 0,
+                                initialDisplayDocNumber: po['poNumber'] as String? ?? 'PO#${po['id']}',
+                              )));
+                            },
+                            child: const Row(children: [Icon(Icons.account_balance_wallet, color: Colors.orange), SizedBox(width: 12), Text('Outstanding Ledger')]),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                  borderRadius: BorderRadius.circular(4),
+                  child: const Padding(
+                    padding: EdgeInsets.all(2),
+                    child: Icon(Icons.receipt_long, color: Colors.amber, size: 22),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
       ),
     );
-    amountC.dispose();
-    _loadData();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Procurement Ledger (POs)')),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _pos.isEmpty
-          ? const Center(child: Text('No Purchase Orders recorded yet.\nTap + to procure new equipment.', textAlign: TextAlign.center))
-          : ListView.builder(
-        padding: const EdgeInsets.all(12),
-        itemCount: _pos.length,
-        itemBuilder: (context, index) {
-          final po = _pos[index];
-          final date = DatabaseHelper.formatDateString(po['orderDate'] as String?);
-          final grandTotal = (po['grandTotal'] as num?)?.toDouble() ?? 0.0;
-          final amountPaid = (po['amountPaid'] as num?)?.toDouble() ?? 0.0;
-          final balance = grandTotal - amountPaid;
-
-          return Card(
-            margin: const EdgeInsets.only(bottom: 8),
-            child: Padding(
-              padding: appSettingsNotifier.cardPadding,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Expanded(
-                        child: Text(
-                          po['supplierName'] as String? ?? 'Unknown Supplier',
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                        ),
+      appBar: AppBar(title: const Text('POs & Bills')),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+            child: TextField(
+              controller: _searchCtrl,
+              decoration: InputDecoration(
+                hintText: 'Search supplier or PO...',
+                prefixIcon: const Icon(Icons.search),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
+                  if (_searchCtrl.text.isNotEmpty)
+                    IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); _loadData(); }),
+                  PopupMenuButton<String>(
+                    icon: Stack(clipBehavior: Clip.none, children: [
+                      Icon(Icons.filter_list, color: _sortMode != kSortOptions.first ? Colors.amber : null),
+                      if (_sortMode != kSortOptions.first) Positioned(
+                        right: -2, top: -2,
+                        child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)),
                       ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: balance <= 0 ? Colors.green.withValues(alpha: 0.1) : Colors.orange.withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(color: balance <= 0 ? Colors.green : Colors.orange),
-                        ),
-                        child: Text(
-                          balance <= 0 ? 'PAID' : 'PAYABLE',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                            color: balance <= 0 ? Colors.green : Colors.orange,
-                          ),
-                        ),
-                      ),
-                    ],
+                    ]),
+                    tooltip: 'Sort by',
+                    initialValue: _sortMode,
+                    onSelected: (v) { setState(() => _sortMode = v); _loadData(); },
+                    itemBuilder: (_) => kSortOptions.map((o) => PopupMenuItem(
+                      value: o,
+                      child: Row(children: [
+                        Icon(_sortMode == o ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber),
+                        const SizedBox(width: 8),
+                        Text(o),
+                      ]),
+                    )).toList(),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'PO #: ${po['poNumber']}  |  Date: $date',
-                    style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 13),
-                  ),
-                  const Divider(),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Grand Total:'),
-                      Text(formatMoney(grandTotal), style: const TextStyle(fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  if (balance > 0) ...[
-                    const SizedBox(height: 4),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('Amount Due:', style: TextStyle(color: Colors.redAccent)),
-                        Text(formatMoney(balance), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent)),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        icon: const Icon(Icons.payment, size: 18),
-                        label: const Text('Settle Bill'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.orange.withValues(alpha: 0.15),
-                          foregroundColor: Colors.orange[800],
-                        ),
-                        onPressed: () => _showPaymentDialog(po, balance),
-                      ),
-                    ),
-                  ] else ...[
-                    const SizedBox(height: 12),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      decoration: BoxDecoration(
-                        color: Colors.green.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
-                      ),
-                      child: const Center(
-                        child: Text('FULLY PAID', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
-                      ),
-                    ),
-                  ]
-                ],
+                ]),
+              ),
+              onChanged: _onSearch,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : _pos.isEmpty
+                ? const Center(child: Text('No Purchase Orders recorded yet.\nTap + to procure new equipment.', textAlign: TextAlign.center))
+                : RefreshIndicator(
+              onRefresh: _loadData,
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                itemCount: _pos.length,
+                itemBuilder: (context, index) => _buildPOCard(_pos[index]),
               ),
             ),
-          );
-        },
+          ),
+        ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
+      floatingActionButton: FloatingActionButton(
         onPressed: () async {
           await Navigator.push(context, MaterialPageRoute(builder: (_) => const NewPurchaseOrderScreen()));
+          if (!mounted) return;
           _loadData();
         },
-        icon: const Icon(Icons.add_shopping_cart),
-        label: const Text('New PO'),
+        tooltip: 'New PO',
+        child: const Icon(Icons.add_shopping_cart),
       ),
     );
   }
 }
 
 // ========New Purchase Order Screen========
-
-class _POLineItem {
-  int? itemId;
-  final TextEditingController qtyC = TextEditingController(text: '1');
-  final TextEditingController costC = TextEditingController(text: '0.00');
-
-  void dispose() {
-    qtyC.dispose();
-    costC.dispose();
-  }
-}
 
 class NewPurchaseOrderScreen extends StatefulWidget {
   const NewPurchaseOrderScreen({super.key});
@@ -5854,30 +4903,41 @@ class _NewPurchaseOrderScreenState extends State<NewPurchaseOrderScreen> {
 
   int? _selectedSupplierId;
   DateTime _orderDate = DateTime.now();
+  String _selectedPaymentMethod = 'Cash';
+  bool _isFormExpanded = true;
+
+  final _dateCtrl = TextEditingController();
   final _poNumC = TextEditingController();
+  final _billNumC = TextEditingController();
   final _notesC = TextEditingController();
   final _taxRateC = TextEditingController(text: '0');
   final _amountPaidC = TextEditingController(text: '0');
 
-  final List<_POLineItem> _lines = [];
+  final List<TransactionLineItem> _lines = [];
 
   @override
   void initState() {
     super.initState();
-    // Pre-fill a default PO number based on timestamp for uniqueness
-    _poNumC.text = 'PO-${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}';
+    _dateCtrl.text = DatabaseHelper.formatDateFromDt(_orderDate);
     _addLine();
     _loadData();
   }
 
   @override
   void dispose() {
+    _dateCtrl.dispose();
     _poNumC.dispose();
+    _billNumC.dispose();
     _notesC.dispose();
     _taxRateC.dispose();
     _amountPaidC.dispose();
     for (var l in _lines) { l.dispose(); }
     super.dispose();
+  }
+
+  Future<void> _updatePoNumber(DateTime date) async {
+    final nextPo = await DatabaseHelper.peekNextSequence('PO', date);
+    if (mounted) setState(() => _poNumC.text = nextPo);
   }
 
   Future<void> _loadData() async {
@@ -5888,36 +4948,24 @@ class _NewPurchaseOrderScreenState extends State<NewPurchaseOrderScreen> {
       _suppliers = suppliers;
       _inventoryItems = items;
     });
+    _updatePoNumber(_orderDate);
   }
 
-  void _addLine() {
-    setState(() => _lines.add(_POLineItem()));
-  }
-
-  void _removeLine(int index) {
-    if (_lines.length > 1) {
-      setState(() {
-        _lines[index].dispose();
-        _lines.removeAt(index);
-      });
-    }
-  }
+  void _addLine() => setState(() => _lines.add(TransactionLineItem()));
+  void _removeLine(int index) { if (_lines.length > 1) setState(() { _lines[index].dispose(); _lines.removeAt(index); }); }
 
   double _calculateSubtotal() {
     double sub = 0.0;
     for (var l in _lines) {
       final qty = int.tryParse(l.qtyC.text) ?? 0;
-      final cost = double.tryParse(l.costC.text) ?? 0.0;
+      final cost = double.tryParse(l.priceC.text) ?? 0.0;
       sub += (qty * cost);
     }
     return sub;
   }
 
   Future<void> _savePO() async {
-    if (_selectedSupplierId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a supplier.')));
-      return;
-    }
+    if (_selectedSupplierId == null) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a supplier.'))); return; }
 
     final subtotal = _calculateSubtotal();
     final taxRate = double.tryParse(_taxRateC.text) ?? 0.0;
@@ -5929,7 +4977,7 @@ class _NewPurchaseOrderScreenState extends State<NewPurchaseOrderScreen> {
     for (var l in _lines) {
       if (l.itemId == null) continue;
       final qty = int.tryParse(l.qtyC.text) ?? 0;
-      final cost = double.tryParse(l.costC.text) ?? 0.0;
+      final cost = double.tryParse(l.priceC.text) ?? 0.0;
       if (qty <= 0) continue;
 
       processedItems.add({
@@ -5948,11 +4996,13 @@ class _NewPurchaseOrderScreenState extends State<NewPurchaseOrderScreen> {
     final poData = {
       'supplierId': _selectedSupplierId,
       'poNumber': _poNumC.text.trim(),
+      'billNumber': _billNumC.text.trim(),
       'orderDate': DatabaseHelper.isoDate(_orderDate),
       'subtotal': subtotal,
       'taxAmount': taxAmount,
       'grandTotal': grandTotal,
       'amountPaid': amountPaid,
+      'paymentMethod': _selectedPaymentMethod,
       'notes': _notesC.text.trim()
     };
 
@@ -5962,6 +5012,7 @@ class _NewPurchaseOrderScreenState extends State<NewPurchaseOrderScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Purchase Order saved. Inventory costs updated.')));
       Navigator.pop(context);
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to save PO: $e')));
     }
   }
@@ -5974,209 +5025,45 @@ class _NewPurchaseOrderScreenState extends State<NewPurchaseOrderScreen> {
     final grandTotal = subtotal + taxAmount;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Create Purchase Order')),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // HEADER SECTION
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12.0),
-                child: Column(
-                  children: [
-                    DropdownButtonFormField<int>(
-                      initialValue: _selectedSupplierId,
-                      decoration: const InputDecoration(labelText: 'Supplier *', border: OutlineInputBorder(), prefixIcon: Icon(Icons.domain)),
-                      items: [
-                        const DropdownMenuItem(value: null, child: Text('Select Supplier')),
-                        ..._suppliers.map((s) => DropdownMenuItem(value: s['id'] as int, child: Text(s['name'] as String))),
-                      ],
-                      onChanged: (v) => setState(() => _selectedSupplierId = v),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextFormField(
-                            controller: _poNumC,
-                            decoration: const InputDecoration(labelText: 'PO Number', border: OutlineInputBorder()),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: InkWell(
-                            onTap: () async {
-                              final d = await showDatePicker(context: context, initialDate: _orderDate, firstDate: DateTime(2000), lastDate: DateTime.now());
-                              if (d != null) setState(() => _orderDate = d);
-                            },
-                            child: InputDecorator(
-                              decoration: const InputDecoration(labelText: 'Date', border: OutlineInputBorder()),
-                              child: Text(DatabaseHelper.formatDateFromDt(_orderDate)),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-
-            // LINE ITEMS SECTION
-            const Padding(
-              padding: EdgeInsets.only(left: 4, bottom: 8),
-              child: Text('Acquisition Items', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            ),
-            ..._lines.asMap().entries.map((entry) {
-              final i = entry.key;
-              final line = entry.value;
-              return Card(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                margin: const EdgeInsets.only(bottom: 8),
-                child: Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        flex: 3,
-                        child: DropdownButtonFormField<int>(
-                          initialValue: line.itemId,
-                          isExpanded: true,
-                          decoration: const InputDecoration(labelText: 'Item', isDense: true),
-                          items: _inventoryItems.map((it) => DropdownMenuItem(value: it['id'] as int, child: Text(it['name'] as String, overflow: TextOverflow.ellipsis))).toList(),
-                          onChanged: (v) {
-                            if (v != null) {
-                              setState(() {
-                                line.itemId = v;
-                                // Auto-fill last known purchase price
-                                final itemInfo = _inventoryItems.firstWhere((element) => element['id'] == v);
-                                line.costC.text = (itemInfo['purchasePrice'] as num?)?.toStringAsFixed(2) ?? '0.00';
-                              });
-                            }
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        flex: 1,
-                        child: TextFormField(
-                          controller: line.qtyC,
-                          decoration: const InputDecoration(labelText: 'Qty', isDense: true),
-                          keyboardType: TextInputType.number,
-                          onChanged: (_) => setState(() {}),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        flex: 2,
-                        child: TextFormField(
-                          controller: line.costC,
-                          decoration: InputDecoration(labelText: 'Cost ($curr)', isDense: true),
-                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                          onChanged: (_) => setState(() {}),
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.remove_circle, color: Colors.redAccent),
-                        onPressed: () => _removeLine(i),
-                      )
-                    ],
-                  ),
-                ),
-              );
-            }),
-            TextButton.icon(
-              onPressed: _addLine,
-              icon: const Icon(Icons.add),
-              label: const Text('Add Another Item'),
-            ),
-            const SizedBox(height: 16),
-
-            // FINANCIAL SUMMARY SECTION
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12.0),
-                child: Column(
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('Subtotal:', style: TextStyle(fontWeight: FontWeight.w600)),
-                        Text(formatMoney(subtotal), style: const TextStyle(fontWeight: FontWeight.w600)),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        const Text('Tax / VAT Rate (%):'),
-                        const Spacer(),
-                        SizedBox(
-                          width: 80,
-                          child: TextFormField(
-                            controller: _taxRateC,
-                            textAlign: TextAlign.right,
-                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                            decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.all(8), border: OutlineInputBorder()),
-                            onChanged: (_) => setState(() {}),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: Text('Input Tax (ITC): + ${formatMoney(taxAmount)}', style: const TextStyle(color: Colors.green, fontSize: 12)),
-                    ),
-                    const Divider(),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('GRAND TOTAL:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                        Text(formatMoney(grandTotal), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.blue)),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        const Text('Amount Paid Upfront:'),
-                        const Spacer(),
-                        SizedBox(
-                          width: 120,
-                          child: TextFormField(
-                            controller: _amountPaidC,
-                            textAlign: TextAlign.right,
-                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                            decoration: InputDecoration(isDense: true, contentPadding: const EdgeInsets.all(8), border: const OutlineInputBorder(), prefixText: curr),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
+      appBar: AppBar(title: const Text('New Purchase Order')),
+      body: Column(
+        children: [
+          Container(padding: const EdgeInsets.symmetric(horizontal: 12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Vendor Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)), TextButton.icon(onPressed: () => setState(() => _isFormExpanded = !_isFormExpanded), icon: Icon(_isFormExpanded ? Icons.expand_less : Icons.expand_more), label: Text(_isFormExpanded ? 'Hide' : 'Show'))])),
+          if (_isFormExpanded) Padding(padding: const EdgeInsets.fromLTRB(12, 0, 12, 12), child: Column(children: [
+            AppUI.buildPartyDateRow(
+              context: context, partyLabel: 'Vendor', partyIcon: Icons.domain, selectedPartyId: _selectedSupplierId, partyList: _suppliers,
+              filter: (s, q) => (s['name']?.toString().toLowerCase() ?? '').contains(q.toLowerCase()),
+              itemBuilder: (s) => ListTile(leading: const Icon(Icons.domain), title: Text(s['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)), trailing: const Icon(Icons.chevron_right, size: 16)),
+              onPartySelected: (id) => setState(() => _selectedSupplierId = id),
+              selectedDate: _orderDate, dateCtrl: _dateCtrl, dateLabel: 'Date', onDateSelected: (d) { setState(() { _orderDate = d; }); _updatePoNumber(d); }
             ),
             const SizedBox(height: 12),
-            TextFormField(
-              controller: _notesC,
-              maxLines: 2,
-              decoration: const InputDecoration(labelText: 'Internal Notes', border: OutlineInputBorder()),
+            Row(children: [ Expanded(child: TextFormField(controller: _amountPaidC, decoration: AppUI.inputDecoration('Advance ($curr)', i: Icons.payments), keyboardType: const TextInputType.numberWithOptions(decimal: true))), const SizedBox(width: 8), Expanded(child: DropdownButtonFormField<String>(initialValue: _selectedPaymentMethod, decoration: AppUI.inputDecoration('Method', i: Icons.payment), items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(), onChanged: (v) { if (v != null) setState(() => _selectedPaymentMethod = v); })) ]),
+            const SizedBox(height: 12),
+            Row(children: [ Expanded(child: TextFormField(controller: _poNumC, decoration: AppUI.inputDecoration('PO Number', i: Icons.receipt_long))), const SizedBox(width: 8), Expanded(child: TextFormField(controller: _billNumC, decoration: AppUI.inputDecoration('Vendor Bill No.', i: Icons.receipt))) ]),
+            const SizedBox(height: 12), TextFormField(controller: _notesC, decoration: AppUI.inputDecoration('Notes', i: Icons.notes)),
+          ])),
+          Container(width: double.infinity, color: Theme.of(context).colorScheme.surfaceContainerHighest, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), child: const Text('Acquisition Items', style: TextStyle(fontWeight: FontWeight.bold))),
+          Expanded(child: Column(children: [
+            Expanded(child: AppUI.buildLineItemsList(
+              context: context, lines: _lines, inventoryItems: _inventoryItems, priceLabel: 'Cost ($curr)',
+              onAddLine: _addLine, onRemoveLine: _removeLine, onStateChanged: () => setState((){}),
+            )),
+            Container(
+              margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5), borderRadius: BorderRadius.circular(8), border: Border.all(color: Theme.of(context).dividerColor)),
+              padding: const EdgeInsets.all(12),
+              child: Column(children: [
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Subtotal:', style: TextStyle(fontWeight: FontWeight.w600)), Text(formatMoney(subtotal), style: const TextStyle(fontWeight: FontWeight.w600))]),
+                const SizedBox(height: 8),
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Tax / VAT Rate (%):'), SizedBox(width: 80, child: TextFormField(controller: _taxRateC, textAlign: TextAlign.right, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.all(8), border: OutlineInputBorder()), onChanged: (_) => setState(() {})))]),
+                const SizedBox(height: 4), Align(alignment: Alignment.centerRight, child: Text('Tax Amount: + ${formatMoney(taxAmount)}', style: const TextStyle(color: Colors.green, fontSize: 12))), const Divider(),
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('GRAND TOTAL:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)), Text(formatMoney(grandTotal), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.blue))]),
+              ]),
             ),
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.save),
-                label: const Text('Save Purchase Order', style: TextStyle(fontSize: 16)),
-                onPressed: _savePO,
-              ),
-            ),
-            const SizedBox(height: 40),
-          ],
-        ),
+          ])),
+          Padding(padding: const EdgeInsets.all(12), child: SizedBox(width: double.infinity, child: ElevatedButton.icon(icon: const Icon(Icons.check), label: const Text('Save Purchase Order'), style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)), onPressed: _savePO))),
+        ],
       ),
     );
   }
@@ -6187,698 +5074,308 @@ class _NewPurchaseOrderScreenState extends State<NewPurchaseOrderScreen> {
 // =============================
 
 // ========Payment Ledger Screen========
-
 class PaymentLedgerScreen extends StatefulWidget {
-  final int? initialOrderId;
-  final int? initialFallbackRentalId;
-  final String? initialDisplayDocNumber; // NEW: FY-compliant document number
-  final int initialTabIndex;
-  const PaymentLedgerScreen({
-    super.key,
-    this.initialOrderId,
-    this.initialFallbackRentalId,
-    this.initialDisplayDocNumber,
-    this.initialTabIndex = 0,
-  });
-  @override
-  State<PaymentLedgerScreen> createState() => _PaymentLedgerScreenState();
+  final int? initialOrderId, initialFallbackRentalId; final String? initialDisplayDocNumber; final int initialTabIndex;
+  final String initialLedgerType;
+  const PaymentLedgerScreen({super.key, this.initialOrderId, this.initialFallbackRentalId, this.initialDisplayDocNumber, this.initialTabIndex = 0, this.initialLedgerType = 'Customer Ledger (A/R)'});
+  @override State<PaymentLedgerScreen> createState() => _PaymentLedgerScreenState();
 }
 
 class _PaymentLedgerScreenState extends State<PaymentLedgerScreen> {
-  List<RentalGroup> _ledger = [];
-  String _filterMode = kLedgerFilterOptions.first;
-  final _searchCtrl = TextEditingController();
-  final _scrollCtrl = ScrollController();
-  Timer? _debounce;
+  List<RentalGroup> _ledger = []; List<Map<String, dynamic>> _vendorLedger = [];
+  String _filterMode = kLedgerFilterOptions.first; String _ledgerType = 'Customer Ledger (A/R)';
+  final _searchCtrl = TextEditingController(), _scrollCtrl = ScrollController(); Timer? _debounce;
+  bool _isLoadingMore = false, _hasMore = true; int _offset = 0; final int _limit = 20;
+  double _totalDue = 0.0, _totalRefund = 0.0; int _totalCount = 0;
+  late final int _initialTabIndex; int? _scopedOrderId, _scopedFallbackRentalId; String? _displayDocNumber;
 
-  bool _isLoadingMore = false;
-  bool _hasMore = true;
-  int _offset = 0;
-  final int _limit = 20;
+  @override void initState() { super.initState(); _initialTabIndex = widget.initialTabIndex.clamp(0, 1); _scopedOrderId = widget.initialOrderId; _scopedFallbackRentalId = widget.initialFallbackRentalId; _displayDocNumber = widget.initialDisplayDocNumber; _ledgerType = widget.initialLedgerType; _scrollCtrl.addListener(_onScroll); _load(); }
+  @override void dispose() { _searchCtrl.dispose(); _scrollCtrl.dispose(); _debounce?.cancel(); super.dispose(); }
 
-  double _totalDue = 0.0;
-  double _totalRefund = 0.0;
-  int _totalCount = 0;
-
-  late final int _initialTabIndex;
-  int? _scopedOrderId;
-  int? _scopedFallbackRentalId;
-  String? _displayDocNumber;
-
-  @override
-  void initState() {
-    super.initState();
-    // Accept only valid tab indexes: 0 = OUTSTANDING, 1 = HISTORY.
-    _initialTabIndex = widget.initialTabIndex < 0 ? 0 : (widget.initialTabIndex > 1 ? 1 : widget.initialTabIndex);
-    _scopedOrderId = widget.initialOrderId;
-    _scopedFallbackRentalId = widget.initialFallbackRentalId;
-    _displayDocNumber = widget.initialDisplayDocNumber;
-    _scrollCtrl.addListener(_onScroll);
-    _load();
-  }
-
-  @override
-  void dispose() {
-    _searchCtrl.dispose();
-    _scrollCtrl.dispose();
-    _debounce?.cancel();
-    super.dispose();
-  }
-
-  void _onScroll() {
-    if (_scrollCtrl.position.pixels >= _scrollCtrl.position.maxScrollExtent - 200) {
-      _fetchPage();
-    }
-  }
+  void _onScroll() { if (_scrollCtrl.position.pixels >= _scrollCtrl.position.maxScrollExtent - 200) _fetchPage(); }
 
   Future<void> _load() async {
-    if (!mounted) return;
-    setState(() { _offset = 0; _hasMore = true; _ledger = []; });
+    if (!mounted) return; setState(() { _offset = 0; _hasMore = true; _ledger = []; _vendorLedger = []; });
     try {
-      // Load summary first, then append page data using the same scoped/search params.
-      final totals = await DatabaseHelper.getLedgerTotals(
-        filterMode: _filterMode,
-        search: _searchCtrl.text,
-        orderId: _scopedOrderId,
-        fallbackRentalId: _scopedFallbackRentalId,
-      );
-      if (!mounted) return;
-      setState(() {
-        _totalDue = totals['totalDue'] ?? 0.0;
-        _totalRefund = totals['totalRefund'] ?? 0.0;
-        _totalCount = (totals['count'] ?? 0).toInt();
-      });
+      if (_ledgerType == 'Customer Ledger (A/R)') {
+        final totals = await DatabaseHelper.getLedgerTotals(filterMode: _filterMode, search: _searchCtrl.text, orderId: _scopedOrderId, fallbackRentalId: _scopedFallbackRentalId);
+        if (!mounted) return; setState(() { _totalDue = totals['totalDue'] ?? 0.0; _totalRefund = totals['totalRefund'] ?? 0.0; _totalCount = (totals['count'] ?? 0).toInt(); });
+        await _fetchPage();
+      } else {
+        final pos = await DatabaseHelper.getPurchaseOrders();
+        List<Map<String, dynamic>> outstanding = [];
+        double tDue = 0.0;
+        double tRef = 0.0;
+        final s = _searchCtrl.text.trim().toLowerCase();
+        for (var po in pos) {
+          final isCancelled = (po['isCancelled'] as int? ?? 0) == 1;
+          // Conceptually, a cancelled PO has a billed total of $0.00
+          final gt = isCancelled ? 0.0 : (po['grandTotal'] as num?)?.toDouble() ?? 0.0;
+          final ap = (po['amountPaid'] as num?)?.toDouble() ?? 0.0;
+          final bal = gt - ap;
 
-      await _fetchPage();
-    } catch (e, st) {
-      debugPrint('Ledger load failed: $e\n$st');
-      if (!mounted) return;
-      setState(() {
-        _totalDue = 0.0;
-        _totalRefund = 0.0;
-        _totalCount = 0;
-        _hasMore = false;
-        _isLoadingMore = false;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not load ledger: $e')));
-    }
+          if (_displayDocNumber != null && po['poNumber'] != _displayDocNumber) continue;
+
+          // If it's cancelled and fully refunded/unpaid (balance is 0), ignore it.
+          // We only care if there is an orphaned advance we need to refund.
+          if (isCancelled && bal.abs() <= 0.01) continue;
+
+          // Apply Ledger Filters for A/P
+          if (_filterMode == 'Amount Due' && bal <= 0.01) continue;
+          if (_filterMode == 'Refund Due' && bal >= -0.01) continue;
+          if (_filterMode == 'All' && bal.abs() <= 0.01) continue;
+
+          if (s.isNotEmpty && !(po['supplierName']?.toString().toLowerCase().contains(s) ?? false) && !(po['poNumber']?.toString().toLowerCase().contains(s) ?? false)) continue;
+
+          outstanding.add(po);
+          if (bal > 0) tDue += bal;
+          if (bal < 0) tRef += bal.abs();
+        }
+        if (!mounted) return;
+        setState(() { _vendorLedger = outstanding; _totalDue = tDue; _totalRefund = tRef; _totalCount = outstanding.length; _hasMore = false; _isLoadingMore = false; });
+      }
+    } catch (e) { if (mounted) setState(() { _totalDue = 0.0; _totalRefund = 0.0; _totalCount = 0; _hasMore = false; _isLoadingMore = false; }); if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'))); }
   }
 
   Future<void> _fetchPage() async {
-    if (_isLoadingMore || !_hasMore) return;
-    setState(() => _isLoadingMore = true);
+    if (_isLoadingMore || !_hasMore) return; setState(() => _isLoadingMore = true);
     try {
-      // Pagination is applied after filtering to keep list/totals aligned.
-      final newGroups = await DatabaseHelper.getPaginatedLedgerGroups(
-          offset: _offset,
-          limit: _limit,
-          filterMode: _filterMode,
-          search: _searchCtrl.text,
-          orderId: _scopedOrderId,
-          fallbackRentalId: _scopedFallbackRentalId
-      );
-
-      if (!mounted) return;
-      setState(() {
-        if (newGroups.length < _limit) _hasMore = false;
-        _ledger.addAll(newGroups);
-        _offset += newGroups.length;
-        _isLoadingMore = false;
-      });
-    } catch (e, st) {
-      debugPrint('Ledger page load failed: $e\n$st');
-      if (!mounted) return;
-      setState(() {
-        _isLoadingMore = false;
-        _hasMore = false;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not load records: $e')));
-    }
+      final newGroups = await DatabaseHelper.getPaginatedLedgerGroups(offset: _offset, limit: _limit, filterMode: _filterMode, search: _searchCtrl.text, orderId: _scopedOrderId, fallbackRentalId: _scopedFallbackRentalId);
+      if (!mounted) return; setState(() { if (newGroups.length < _limit) _hasMore = false; _ledger.addAll(newGroups); _offset += newGroups.length; _isLoadingMore = false; });
+    } catch (e) { if (mounted) setState(() { _isLoadingMore = false; _hasMore = false; }); if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'))); }
   }
 
-  void _onSearch(String _) {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 300), _load);
-  }
+  void _onSearch(String _) { _debounce?.cancel(); _debounce = Timer(const Duration(milliseconds: 300), _load); }
 
-  Future<void> _settleGroup(RentalGroup group) async {
-    final isRefund   = group.balance < 0;
-    final absBalance = group.balance.abs();
-    final messenger  = ScaffoldMessenger.of(context);
-    final result = await showDialog<Map<String, String>>(
-      context: context,
-      builder: (_) => _SettleGroupDialog(group: group),
-    );
-    if (result == null || !mounted) return;
-
-    final amount = double.parse(result['amount']!);
-    final method = result['method']!;
-    final discount = double.parse(result['discount']!);
-    final isBadDebt = result['isBadDebt'] == 'true';
-    final isFull = (amount + discount) >= absBalance - 0.01;
-    final adjustedAmount = isRefund ? -amount : amount;
-
-    if (isBadDebt) {
-      // Fiscal Note: Writing off debt clears the ledger balance and moves the loss to the Bad Debt module.
-      await DatabaseHelper.writeOffBadDebt(
-        group.items.first['id'] as int,
-        amount,
-        isFull ? group.items.map((i) => i['id'] as int).toList() : [],
-      );
+  Future<void> _settleGroup(RentalGroup g) async {
+    final res = await showDialog<Map<String, String>>(context: context, builder: (_) => _SettleGroupDialog(group: g)); if (res == null || !mounted) return;
+    final amt = double.parse(res['amount']!), disc = double.parse(res['discount']!), isFull = (amt + disc) >= g.balance.abs() - 0.01;
+    if (res['isBadDebt'] == 'true') {
+      await DatabaseHelper.writeOffBadDebt(g.items.first['id'] as int, amt, isFull ? g.items.map((i) => i['id'] as int).toList() : []);
       if (!mounted) return;
-      _load();
-      messenger.showSnackBar(SnackBar(content: Text(isFull ? 'Balance written off as bad debt. Invoice closed.' : 'Partial bad debt written off.')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isFull ? 'Debt written off.' : 'Partial bad debt recorded.')));
     } else {
-      await DatabaseHelper.addPaymentToRentalGroup(
-          group.items.first['id'] as int,
-          adjustedAmount,
-          isFull,
-          group.items.map((i) => i['id'] as int).toList(),
-          paymentMethod: method,
-          discountAmount: discount
-      );
+      await DatabaseHelper.addPaymentToRentalGroup(g.items.first['id'] as int, g.balance < 0 ? -amt : amt, isFull, g.items.map((i) => i['id'] as int).toList(), paymentMethod: res['method']!, discountAmount: disc);
       if (!mounted) return;
-      _load();
-      messenger.showSnackBar(SnackBar(content: Text(isFull
-          ? (isRefund ? 'Refund recorded. Invoice settled.' : 'Invoice marked as fully paid & settled.')
-          : (isRefund ? 'Partial refund recorded.' : 'Partial payment recorded.'))));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isFull ? 'Settled fully.' : 'Partial recorded.')));
     }
+    if (!mounted) return;
+    _load();
   }
 
-  @override
-  Widget build(BuildContext context) => DefaultTabController(
-    length: 2,
-    initialIndex: _initialTabIndex,
-    child: Scaffold(
+  Future<void> _recordVendorPayment(Map<String, dynamic> po, {bool isRefund = false, double absBalance = 0.0}) async {
+    final payC = TextEditingController(text: absBalance > 0 ? absBalance.toStringAsFixed(2) : ((po['grandTotal'] as num) - (po['amountPaid'] as num)).toStringAsFixed(2));
+    String method = kPaymentMethods.first;
+    DateTime dt = DateTime.now();
+    final formKey = GlobalKey<FormState>();
+
+    final res = await showDialog<Map<String, dynamic>>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+            title: Text(isRefund ? 'Record Vendor Refund' : 'Record Vendor Payment'),
+            content: StatefulBuilder(
+                builder: (context, setSt) => Form(
+                    key: formKey,
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Text(isRefund ? 'Refund Due from Vendor: ${formatMoney(absBalance)}' : 'Amount Due to Vendor: ${formatMoney(absBalance)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 16),
+                      TextFormField(controller: payC, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: InputDecoration(labelText: isRefund ? 'Amount Refunded ($curr)' : 'Amount Paid ($curr)', border: const OutlineInputBorder()), validator: (v) { final val = double.tryParse(v??''); if (val == null || val <= 0) return 'Invalid'; if (val > absBalance + 0.01) return 'Cannot exceed balance'; return null; }),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(initialValue: method, decoration: const InputDecoration(labelText: 'Payment Method', border: OutlineInputBorder()), items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(), onChanged: (v) { if (v != null) method = v; }),
+                      const SizedBox(height: 12),
+                      ListTile(contentPadding: EdgeInsets.zero, title: Text('Date: ${DatabaseHelper.formatDateFromDt(dt)}'), trailing: const Icon(Icons.calendar_month), onTap: () async { final p = await showDatePicker(context: ctx, initialDate: dt, firstDate: DateTime(2000), lastDate: DateTime.now()); if (p != null) setSt(() => dt = p); }),
+                    ])
+                )
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              ElevatedButton(onPressed: () { if (formKey.currentState!.validate()) Navigator.pop(ctx, {'amount': double.parse(payC.text), 'method': method, 'date': DatabaseHelper.isoDate(dt)}); }, child: Text(isRefund ? 'Save Refund' : 'Save')),
+            ]
+        )
+    );
+    payC.dispose();
+    if (res == null || !mounted) return;
+
+    // ACCOUNTING SYNC: A refund subtracts from the amount paid to the vendor.
+    final finalAmount = isRefund ? -(res['amount'] as double) : (res['amount'] as double);
+
+    await DatabaseHelper.recordPOPayment(po['id'] as int, finalAmount, res['method'], res['date'], po['poNumber'] as String? ?? '', po['supplierName'] as String? ?? '');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isRefund ? 'Vendor refund recorded.' : 'Vendor payment recorded.')));
+    _load();
+  }
+
+  Widget _txtRow(String l, String r, {bool strike = false, bool bld = false, Color? c}) => Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(l, style: TextStyle(fontWeight: bld ? FontWeight.bold : null)), Text(r, style: TextStyle(fontWeight: bld ? FontWeight.bold : null, decoration: strike ? TextDecoration.lineThrough : null, color: c))]);
+
+  @override Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return DefaultTabController(length: 2, initialIndex: _initialTabIndex, child: Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
-        title: TabBar(
-          tabs: const [
-            Tab(text: 'OUTSTANDING'),
-            Tab(text: 'HISTORY'),
-          ],
-          indicator: BoxDecoration(
-            borderRadius: BorderRadius.circular(24),
-            color: Colors.black12,
+        title: Padding(
+          padding: const EdgeInsets.only(left: 16.0),
+          child: _scopedOrderId != null || _scopedFallbackRentalId != null || _displayDocNumber != null
+              ? Text(_ledgerType, style: const TextStyle(fontSize: 18, color: Colors.black87, fontWeight: FontWeight.bold))
+              : DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                  value: _ledgerType,
+                  icon: const Icon(Icons.arrow_drop_down, color: Colors.black87),
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: isDark ? Colors.white : Colors.black87),
+                  dropdownColor: isDark ? Colors.grey[900] : Colors.amber.shade100,
+                  selectedItemBuilder: (BuildContext context) {
+                    return ['Customer Ledger (A/R)', 'Vendor Ledger (A/P)'].map((String value) {
+                      return Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87)),
+                      );
+                    }).toList();
+                  },
+                  items: const [
+                    DropdownMenuItem(value: 'Customer Ledger (A/R)', child: Text('Customer Ledger (A/R)')),
+                    DropdownMenuItem(value: 'Vendor Ledger (A/P)', child: Text('Vendor Ledger (A/P)')),
+                  ],
+                  onChanged: (v) { if (v != null) setState((){ _ledgerType = v; _searchCtrl.clear(); _load(); }); }
+              )
           ),
-          indicatorSize: TabBarIndicatorSize.tab,
-          dividerColor: Colors.transparent,
-          labelColor: Colors.black,
-          unselectedLabelColor: Colors.black54,
-          labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-          splashBorderRadius: BorderRadius.circular(24),
         ),
+        bottom: TabBar(tabs: const [Tab(text: 'OUTSTANDING'), Tab(text: 'HISTORY')], indicator: BoxDecoration(borderRadius: BorderRadius.circular(24), color: Colors.black12), indicatorSize: TabBarIndicatorSize.tab, dividerColor: Colors.transparent, labelColor: Colors.black, unselectedLabelColor: Colors.black54, labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
       ),
-      body: TabBarView(
-        children: [
-          _buildLedgerTab(),
-          // Rebuild history tab when scoped invoice changes from navigation context.
-          PaymentHistoryScreen(
-            key: ValueKey('history_${_scopedOrderId ?? 'n'}_${_scopedFallbackRentalId ?? 'n'}'),
-            isTab: true,
-            initialOrderId: _scopedOrderId,
-            initialFallbackRentalId: _scopedFallbackRentalId,
-            initialDisplayDocNumber: _displayDocNumber, // NEW: Pass the doc number down to history
-          ),
-        ],
-      ),
-    ),
-  );
+      body: TabBarView(children: [_buildLedgerTab(), PaymentHistoryScreen(key: ValueKey('hist_${_scopedOrderId??'n'}_${_scopedFallbackRentalId??'n'}_$_ledgerType'), isTab: true, initialOrderId: _scopedOrderId, initialFallbackRentalId: _scopedFallbackRentalId, initialDisplayDocNumber: _displayDocNumber, ledgerType: _ledgerType)]),
+    ));
+  }
 
-  // -------------------------------------------------
-  // Outstanding Tab UI
-  // -------------------------------------------------
   Widget _buildLedgerTab() => Column(children: [
-    if (_scopedOrderId != null || _scopedFallbackRentalId != null)
-      Container(
-        width: double.infinity,
-        margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: Colors.amber.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: Colors.amber.withValues(alpha: 0.45)),
-        ),
-        child: Row(
-          children: [
-            const Icon(Icons.link, size: 16, color: Colors.amber),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                _displayDocNumber != null
-                    ? 'Showing Outstanding for $_displayDocNumber'
-                    : 'Showing Outstanding for Invoice #${_scopedOrderId ?? _scopedFallbackRentalId}',
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-              ),
-            ),
-          ],
-        ),
-      ),
-    Padding(
-      padding: EdgeInsets.fromLTRB(12, (_scopedOrderId != null || _scopedFallbackRentalId != null) ? 8 : 12, 12, 0),
-      child: TextField(
-        controller: _searchCtrl,
-        enabled: _scopedOrderId == null && _scopedFallbackRentalId == null,
-        decoration: InputDecoration(
-          hintText: _scopedOrderId != null ? 'Filtered by ID' : 'Search customer, phone, or invoice...',
-          prefixIcon: const Icon(Icons.search),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
-            if (_searchCtrl.text.isNotEmpty)
-              IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); _load(); }),
-            PopupMenuButton<String>(
-              icon: Stack(clipBehavior: Clip.none, children: [
-                Icon(Icons.filter_list, color: _filterMode != kLedgerFilterOptions.first ? Colors.amber : null),
-                if (_filterMode != kLedgerFilterOptions.first) Positioned(
-                  right: -2, top: -2,
-                  child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)),
-                ),
-              ]),
-              tooltip: 'Filter by',
-              initialValue: _filterMode,
-              onSelected: (v) { setState(() { _filterMode = v; _load(); }); },
-              itemBuilder: (_) => kLedgerFilterOptions.map((opt) => PopupMenuItem(
-                value: opt,
-                child: Row(children: [
-                  Icon(_filterMode == opt ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber),
-                  const SizedBox(width: 8),
-                  Text(opt),
-                ]),
-              )).toList(),
-            ),
-          ]),
-        ),
-        onChanged: _onSearch,
-      ),
-    ),
-    Card(
-      margin: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-      child: Padding(
-        padding: appSettingsNotifier.cardPadding,
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Total Due', style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)),
-                  const SizedBox(height: 2),
-                  Text(formatMoney(_totalDue), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
-                ],
-              ),
-            ),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Total Refunds', style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)),
-                  const SizedBox(height: 2),
-                  Text(formatMoney(_totalRefund), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
-                ],
-              ),
-            ),
-            Text('$_totalCount inv', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
-          ],
-        ),
-      ),
-    ),
-    Expanded(child: _ledger.isEmpty && !_isLoadingMore
-        ? Center(child: Text(
-        _scopedOrderId != null ? 'Invoice #$_scopedOrderId is settled or not found.' :
-        _filterMode == 'Amount Due' ? 'No pending collections.' :
-        _filterMode == 'Refund Due' ? 'No pending refunds.' :
-        'All returned invoices are settled!',
-        style: const TextStyle(fontSize: 16, color: Colors.green)))
-        : RefreshIndicator(onRefresh: _load, child: ListView.builder(
-      controller: _scrollCtrl,
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-      itemCount: _ledger.length + (_hasMore ? 1 : 0),
-      itemBuilder: (_, i) {
-        if (i == _ledger.length) return const Padding(padding: EdgeInsets.all(16.0), child: Center(child: CircularProgressIndicator()));
-        final g = _ledger[i];
-        final isRefund = g.balance < 0;
-        return Card(
-          margin: const EdgeInsets.only(bottom: 12),
-          shape: RoundedRectangleBorder(side: BorderSide(color: isRefund ? Colors.green : Colors.orange), borderRadius: BorderRadius.circular(12)),
-          child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              Expanded(child: Text(g.contractor, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), overflow: TextOverflow.ellipsis)),
-              if (g.orderId != null) Text(g.invoiceNumber.isNotEmpty ? g.invoiceNumber : (g.proformaNumber.isNotEmpty ? g.proformaNumber : 'ORD-${g.orderId}'), style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontWeight: FontWeight.w500)),
-            ]),
-            const SizedBox(height: 6),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              Text('Out: ${DatabaseHelper.formatDateString(g.checkoutDate)}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 14)),
-              if (g.isCancelled) Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6), border: Border.all(color: Colors.red.withValues(alpha: 0.5), width: 0.8)),
-                child: const Text('CANCELLED INVOICE', style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
-              ),
-            ]),
-            const Divider(height: 20),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total Billed:'), Text(formatMoney(g.calculateTotalCost()), style: TextStyle(decoration: g.isCancelled ? TextDecoration.lineThrough : null))]),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Paid:'), Text('- ${formatMoney(g.advance)}')]),
-            if (g.discount > 0) Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Discount Applied:'), Text('- ${formatMoney(g.discount)}')]),
-            const SizedBox(height: 4),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              Text(isRefund ? 'Refund Due:' : 'Amount Due:', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-              Text(formatMoney(g.balance, absolute: true), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: isRefund ? Colors.green : Colors.orange)),
-            ]),
-            const SizedBox(height: 16),
-            SizedBox(width: double.infinity, child: ElevatedButton.icon(
-              icon: Icon(isRefund ? Icons.undo : Icons.payment),
-              label: Text(isRefund ? 'Record Refund/Discount' : 'Record Payment/Discount'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: isRefund ? Colors.green.withValues(alpha: 0.2) : Colors.orange.withValues(alpha: 0.2),
-                foregroundColor: isRefund ? Colors.greenAccent : Colors.orangeAccent,
-              ),
-              onPressed: () => _settleGroup(g),
-            )),
-          ])),
-        );
-      },
-    )),
-    ),
+    if (_scopedOrderId != null || _scopedFallbackRentalId != null || _displayDocNumber != null) Container(width: double.infinity, margin: const EdgeInsets.fromLTRB(12, 12, 12, 0), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10), decoration: BoxDecoration(color: Colors.amber.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.amber.withValues(alpha: 0.45))), child: Row(children: [const Icon(Icons.link, size: 16, color: Colors.amber), const SizedBox(width: 8), Expanded(child: Text(_displayDocNumber != null ? 'Showing Outstanding for $_displayDocNumber' : 'Showing Outstanding for Invoice #${_scopedOrderId ?? _scopedFallbackRentalId}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)))])),
+    Padding(padding: EdgeInsets.fromLTRB(12, (_scopedOrderId != null || _scopedFallbackRentalId != null || _displayDocNumber != null) ? 8 : 12, 12, 0), child: TextField(controller: _searchCtrl, enabled: _scopedOrderId == null && _scopedFallbackRentalId == null && _displayDocNumber == null, decoration: InputDecoration(hintText: _displayDocNumber != null || _scopedOrderId != null ? 'Filtered by ID' : (_ledgerType == 'Customer Ledger (A/R)' ? 'Search customer, phone, or invoice...' : 'Search supplier or PO...'), prefixIcon: const Icon(Icons.search), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)), suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [if (_searchCtrl.text.isNotEmpty) IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); _load(); }), PopupMenuButton<String>(icon: Stack(clipBehavior: Clip.none, children: [Icon(Icons.filter_list, color: _filterMode != kLedgerFilterOptions.first ? Colors.amber : null), if (_filterMode != kLedgerFilterOptions.first) Positioned(right: -2, top: -2, child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)))]), initialValue: _filterMode, onSelected: (v) { setState(() { _filterMode = v; _load(); }); }, itemBuilder: (_) => kLedgerFilterOptions.map((opt) => PopupMenuItem(value: opt, child: Row(children: [Icon(_filterMode == opt ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber), const SizedBox(width: 8), Text(opt)]))).toList())])), onChanged: _onSearch)),
+    Card(margin: const EdgeInsets.fromLTRB(12, 12, 12, 8), child: Padding(padding: appSettingsNotifier.cardPadding, child: Row(children: [Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Total Due', style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)), Text(formatMoney(_totalDue), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange))])), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(_ledgerType == 'Customer Ledger (A/R)' ? 'Total Refunds' : 'Total Overpaid', style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)), Text(formatMoney(_totalRefund), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green))])), Text('$_totalCount ${_ledgerType == 'Customer Ledger (A/R)' ? 'inv' : 'pos'}', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color))]))),
+    Expanded(child: (_ledgerType == 'Customer Ledger (A/R)' ? _ledger.isEmpty : _vendorLedger.isEmpty) && !_isLoadingMore ? Center(child: Text(_scopedOrderId != null || _displayDocNumber != null ? 'Settled or not found.' : 'All ledgers are settled!', style: const TextStyle(fontSize: 16, color: Colors.green))) : RefreshIndicator(onRefresh: _load, child: ListView.builder(controller: _scrollCtrl, padding: const EdgeInsets.fromLTRB(12, 4, 12, 12), itemCount: (_ledgerType == 'Customer Ledger (A/R)' ? _ledger.length : _vendorLedger.length) + (_hasMore ? 1 : 0), itemBuilder: (_, i) {
+      if (i == (_ledgerType == 'Customer Ledger (A/R)' ? _ledger.length : _vendorLedger.length)) return const Padding(padding: EdgeInsets.all(16.0), child: Center(child: CircularProgressIndicator()));
+
+      if (_ledgerType == 'Vendor Ledger (A/P)') {
+        final g = _vendorLedger[i];
+        final isCancelled = (g['isCancelled'] as int? ?? 0) == 1;
+        final gt = isCancelled ? 0.0 : (g['grandTotal'] as num).toDouble();
+        final ap = (g['amountPaid'] as num).toDouble();
+        final bal = gt - ap;
+        final isRef = bal < 0;
+        final col = isRef ? Colors.green : Colors.orange;
+
+        return Card(margin: const EdgeInsets.only(bottom: 12), shape: RoundedRectangleBorder(side: BorderSide(color: col), borderRadius: BorderRadius.circular(12)), child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Text(g['supplierName'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), overflow: TextOverflow.ellipsis)), Text(g['poNumber'] ?? '', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontWeight: FontWeight.w500))]),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('Date: ${DatabaseHelper.formatDateString(g['orderDate'] as String?)}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 14)), if (isCancelled) Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6), border: Border.all(color: Colors.red.withValues(alpha: 0.5))), child: const Text('CANCELLED PO', style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)))]),
+          const Divider(height: 20),
+          _txtRow('Total Billed:', formatMoney(isCancelled ? (g['grandTotal'] as num).toDouble() : gt), strike: isCancelled), _txtRow('Paid:', '- ${formatMoney(ap)}'),
+          const SizedBox(height: 4), _txtRow(isRef ? 'Refund Due:' : 'Amount Due:', formatMoney(bal, absolute: true), bld: true, c: col),
+          const SizedBox(height: 16), SizedBox(width: double.infinity, child: ElevatedButton.icon(icon: Icon(isRef ? Icons.undo : Icons.payment), label: Text(isRef ? 'Record Refund' : 'Record Payment'), style: ElevatedButton.styleFrom(backgroundColor: col.withValues(alpha: 0.2), foregroundColor: isRef ? Colors.greenAccent : Colors.orangeAccent), onPressed: () => _recordVendorPayment(g, isRefund: isRef, absBalance: bal.abs()))),
+        ])));
+      }
+
+      final g = _ledger[i], isRef = g.balance < 0, col = isRef ? Colors.green : Colors.orange;
+      return Card(margin: const EdgeInsets.only(bottom: 12), shape: RoundedRectangleBorder(side: BorderSide(color: col), borderRadius: BorderRadius.circular(12)), child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Text(g.contractor, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), overflow: TextOverflow.ellipsis)), if (g.orderId != null) Text(g.invoiceNumber.isNotEmpty ? g.invoiceNumber : (g.proformaNumber.isNotEmpty ? g.proformaNumber : 'ORD-${g.orderId}'), style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontWeight: FontWeight.w500))]),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('Out: ${DatabaseHelper.formatDateString(g.checkoutDate)}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 14)), if (g.isCancelled) Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6), border: Border.all(color: Colors.red.withValues(alpha: 0.5))), child: const Text('CANCELLED INVOICE', style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)))]),
+        const Divider(height: 20),
+        _txtRow('Total Billed:', formatMoney(g.calculateTotalCost()), strike: g.isCancelled), _txtRow('Paid:', '- ${formatMoney(g.advance)}'),
+        if (g.discount > 0) _txtRow('Discount:', '- ${formatMoney(g.discount)}'), const SizedBox(height: 4), _txtRow(isRef ? 'Refund Due:' : 'Amount Due:', formatMoney(g.balance, absolute: true), bld: true, c: col),
+        const SizedBox(height: 16), SizedBox(width: double.infinity, child: ElevatedButton.icon(icon: Icon(isRef ? Icons.undo : Icons.payment), label: Text(isRef ? 'Record Refund/Discount' : 'Record Payment/Discount'), style: ElevatedButton.styleFrom(backgroundColor: col.withValues(alpha: 0.2), foregroundColor: isRef ? Colors.greenAccent : Colors.orangeAccent), onPressed: () => _settleGroup(g))),
+      ])));
+    }))),
   ]);
 }
 
 // ========Payment History Screen========
 
 class PaymentHistoryScreen extends StatefulWidget {
-  final int? initialOrderId;
-  final int? initialFallbackRentalId;
-  final String? initialDisplayDocNumber; // NEW: FY-compliant document number
-  final bool isTab;
-  const PaymentHistoryScreen({
-    super.key,
-    this.initialOrderId,
-    this.initialFallbackRentalId,
-    this.initialDisplayDocNumber,
-    this.isTab = false,
-  });
-  @override
-  State<PaymentHistoryScreen> createState() => _PaymentHistoryScreenState();
+  final int? initialOrderId, initialFallbackRentalId; final String? initialDisplayDocNumber; final bool isTab;
+  final String ledgerType;
+  const PaymentHistoryScreen({super.key, this.initialOrderId, this.initialFallbackRentalId, this.initialDisplayDocNumber, this.isTab = false, this.ledgerType = 'Customer Ledger (A/R)'});
+  @override State<PaymentHistoryScreen> createState() => _PaymentHistoryScreenState();
 }
 
 class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
-  final _searchCtrl = TextEditingController();
-  Timer? _debounce;
-  String _filterMode = 'All';
-  bool _loading = true;
-  List<Map<String, dynamic>> _rows = [];
-  double _totalPayments = 0.0;
-  double _totalRefunds = 0.0;
-  late final int? _scopedOrderId;
-  late final int? _scopedFallbackRentalId;
-  late final String? _displayDocNumber;
+  final _searchCtrl = TextEditingController(); Timer? _debounce; String _filterMode = 'All';
+  bool _loading = true; List<Map<String, dynamic>> _rows = []; double _totalPayments = 0.0, _totalRefunds = 0.0;
+  late final int? _scopedOrderId, _scopedFallbackRentalId; late final String? _displayDocNumber;
 
-  @override
-  void initState() {
-    super.initState();
-    _scopedOrderId = widget.initialOrderId;
-    _scopedFallbackRentalId = widget.initialFallbackRentalId;
-    _displayDocNumber = widget.initialDisplayDocNumber;
-    _load();
-  }
+  @override void initState() { super.initState(); _scopedOrderId = widget.initialOrderId; _scopedFallbackRentalId = widget.initialFallbackRentalId; _displayDocNumber = widget.initialDisplayDocNumber; _load(); }
+  @override void dispose() { _debounce?.cancel(); _searchCtrl.dispose(); super.dispose(); }
 
-  @override
-  void dispose() {
-    _debounce?.cancel();
-    _searchCtrl.dispose();
-    super.dispose();
-  }
-
-  void _onSearch(String _) {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 300), _load);
-  }
+  void _onSearch(String _) { _debounce?.cancel(); _debounce = Timer(const Duration(milliseconds: 300), _load); }
 
   Future<void> _load() async {
-    final rows = await DatabaseHelper.getPaymentHistory(
-      search: _searchCtrl.text,
-      type: _filterMode,
-      orderId: _scopedOrderId,
-      fallbackRentalId: _scopedFallbackRentalId,
-    );
-    double inAmt = 0.0;
-    double outAmt = 0.0;
-    // Fiscal Note: Accurately separating inbound cash flows from outbound refunds for ledger reconciliation.
-    for (final r in rows) {
-      final a = (r['amount'] as num?)?.toDouble() ?? 0.0;
-      if (a >= 0) {
-        inAmt += a;
-      } else {
-        outAmt += a.abs();
+    if (widget.ledgerType == 'Customer Ledger (A/R)') {
+      final rows = await DatabaseHelper.getPaymentHistory(search: _searchCtrl.text, type: _filterMode, orderId: _scopedOrderId, fallbackRentalId: _scopedFallbackRentalId);
+      double inAmt = 0.0, outAmt = 0.0;
+      for (final r in rows) { final a = (r['amount'] as num?)?.toDouble() ?? 0.0; if (a >= 0) { inAmt += a; } else { outAmt += a.abs(); } }
+      if (!mounted) return; setState(() { _rows = rows; _totalPayments = inAmt; _totalRefunds = outAmt; _loading = false; });
+    } else {
+      // Fetch directly from the dedicated Vendor Payment Logs table
+      final vendorLogs = await DatabaseHelper.getVendorPaymentHistory(poNumber: _displayDocNumber);
+      List<Map<String, dynamic>> apLogs = [];
+      double outAmt = 0.0;
+      double inAmt = 0.0;
+      final s = _searchCtrl.text.trim().toLowerCase();
+
+      for (var v in vendorLogs) {
+        final amt = (v['amount'] as num).toDouble();
+        if (_filterMode == 'Payment' && amt < 0) continue;
+        if (_filterMode == 'Refund' && amt > 0) continue;
+
+        final supplierName = v['supplierName'] as String? ?? 'Unknown';
+        final poNum = v['poNumber'] as String? ?? '';
+        final method = v['method'] as String? ?? '';
+
+        if (s.isNotEmpty && !supplierName.toLowerCase().contains(s) && !poNum.toLowerCase().contains(s) && !method.toLowerCase().contains(s)) continue;
+
+        apLogs.add({
+          'id': v['id'],
+          'amount': amt,
+          'customerName': supplierName,
+          'method': method,
+          'paidAt': v['paidAt'],
+          'baseDate': v['paidAt'],
+          'proformaNumber': poNum,
+          'isCancelled': v['isCancelled'] as int? ?? 0,
+          'firstLogId': v['firstLogId']
+        });
+
+        // outAmt = Outbound to Vendor. inAmt = Inbound Refunds from Vendor.
+        if (amt >= 0) { outAmt += amt; } else { inAmt += amt.abs(); }
       }
-    }
-    if (!mounted) return;
-    setState(() {
-      _rows = rows;
-      _totalPayments = inAmt;
-      _totalRefunds = outAmt;
-      _loading = false;
-    });
-  }
-
-  String _formatTimeText(String paidAt, String fallbackDate) {
-    final raw = paidAt.trim().isNotEmpty ? paidAt.trim() : fallbackDate.trim();
-    if (raw.isEmpty) return '';
-    try {
-      final dt = DateTime.parse(raw);
-      return formatTimeByPreference(dt);
-    } catch (_) {
-      return '';
+      if (!mounted) return; setState(() { _rows = apLogs; _totalRefunds = outAmt; _totalPayments = inAmt; _loading = false; });
     }
   }
 
-  String _formatDateText(String paidAt, String fallbackDate) {
-    final raw = paidAt.trim().isNotEmpty ? paidAt.trim() : fallbackDate.trim();
-    if (raw.isEmpty) return '-';
-    try {
-      final dt = DateTime.parse(raw);
-      return DatabaseHelper.formatDateFromDt(dt);
-    } catch (_) {
-      return DatabaseHelper.formatDateString(raw);
-    }
-  }
+  String _fmtTm(String p, String f) { final raw = p.trim().isNotEmpty ? p.trim() : f.trim(); return raw.isEmpty ? '' : (DateTime.tryParse(raw) != null ? formatTimeByPreference(DateTime.parse(raw)) : ''); }
+  String _fmtDt(String p, String f) { final raw = p.trim().isNotEmpty ? p.trim() : f.trim(); return raw.isEmpty ? '-' : (DateTime.tryParse(raw) != null ? DatabaseHelper.formatDateFromDt(DateTime.parse(raw)) : DatabaseHelper.formatDateString(raw)); }
+  Widget _tag(String t, Color c) => Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5), decoration: BoxDecoration(color: c.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(4), border: Border.all(color: c.withValues(alpha: 0.5), width: 0.8)), child: Text(t, style: TextStyle(fontSize: 12, color: c, fontWeight: FontWeight.w600)));
 
-  Widget _tag(String text, Color color) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
-    decoration: BoxDecoration(
-      color: color.withValues(alpha: 0.14),
-      borderRadius: BorderRadius.circular(4),
-      border: Border.all(color: color.withValues(alpha: 0.5), width: 0.8),
-    ),
-    child: Text(text, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w600)),
-  );
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: widget.isTab ? null : AppBar(title: const Text('Payment History')),
-    body: Column(
-      children: [
-        if (_scopedOrderId != null || _scopedFallbackRentalId != null)
-          Container(
-            width: double.infinity,
-            margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: Colors.amber.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Colors.amber.withValues(alpha: 0.45)),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.link, size: 16, color: Colors.amber),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    _displayDocNumber != null
-                        ? 'Showing Payments History for $_displayDocNumber'
-                        : (_scopedOrderId != null
-                        ? 'Showing payments History for Invoice #$_scopedOrderId'
-                        : 'Showing payments History for linked record #$_scopedFallbackRentalId'),
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        Padding(
-          padding: EdgeInsets.fromLTRB(12, (_scopedOrderId != null || _scopedFallbackRentalId != null) ? 8 : 12, 12, 0),
-          child: TextField(
-            controller: _searchCtrl,
-            decoration: InputDecoration(
-              hintText: 'Search customer, method, or invoice...',
-              prefixIcon: const Icon(Icons.search),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-              suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
-                if (_searchCtrl.text.isNotEmpty)
-                  IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); _load(); }),
-                PopupMenuButton<String>(
-                  icon: Stack(clipBehavior: Clip.none, children: [
-                    Icon(Icons.filter_list, color: _filterMode != 'All' ? Colors.amber : null),
-                    if (_filterMode != 'All') Positioned(
-                      right: -2, top: -2,
-                      child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)),
-                    ),
-                  ]),
-                  tooltip: 'Filter by',
-                  initialValue: _filterMode,
-                  onSelected: (v) {
-                    setState(() {
-                      _filterMode = v;
-                      _loading = true;
-                    });
-                    _load();
-                  },
-                  itemBuilder: (_) => ['All', 'Payment', 'Refund'].map((mode) => PopupMenuItem(
-                    value: mode,
-                    child: Row(children: [
-                      Icon(_filterMode == mode ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber),
-                      const SizedBox(width: 8),
-                      Text(mode),
-                    ]),
-                  )).toList(),
-                ),
+  @override Widget build(BuildContext context) {
+    final isVendor = widget.ledgerType == 'Vendor Ledger (A/P)';
+    return Scaffold(
+      appBar: widget.isTab ? null : AppBar(title: const Text('Payment History')),
+      body: Column(children: [
+        if (_scopedOrderId != null || _scopedFallbackRentalId != null || _displayDocNumber != null) Container(width: double.infinity, margin: const EdgeInsets.fromLTRB(12, 12, 12, 0), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10), decoration: BoxDecoration(color: Colors.amber.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.amber.withValues(alpha: 0.45))), child: Row(children: [const Icon(Icons.link, size: 16, color: Colors.amber), const SizedBox(width: 8), Expanded(child: Text(_displayDocNumber != null ? 'Showing Payments for $_displayDocNumber' : 'Showing payments for Invoice #${_scopedOrderId ?? _scopedFallbackRentalId}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)))])),
+        Padding(padding: EdgeInsets.fromLTRB(12, (_scopedOrderId != null || _scopedFallbackRentalId != null || _displayDocNumber != null) ? 8 : 12, 12, 0), child: TextField(controller: _searchCtrl, decoration: InputDecoration(hintText: isVendor ? 'Search vendor, method, or PO...' : 'Search customer, method, or invoice...', prefixIcon: const Icon(Icons.search), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)), suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [if (_searchCtrl.text.isNotEmpty) IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchCtrl.clear(); _load(); }), PopupMenuButton<String>(icon: Stack(clipBehavior: Clip.none, children: [Icon(Icons.filter_list, color: _filterMode != 'All' ? Colors.amber : null), if (_filterMode != 'All') Positioned(right: -2, top: -2, child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle)))]), initialValue: _filterMode, onSelected: (v) { setState(() { _filterMode = v; _loading = true; }); _load(); }, itemBuilder: (_) => ['All', 'Payment', 'Refund'].map((m) => PopupMenuItem(value: m, child: Row(children: [Icon(_filterMode == m ? Icons.radio_button_checked : Icons.radio_button_off, size: 18, color: Colors.amber), const SizedBox(width: 8), Text(m)]))).toList())])), onChanged: _onSearch)),
+        if (_loading) const Expanded(child: Center(child: CircularProgressIndicator())) else if (_rows.isEmpty) const Expanded(child: Center(child: Text('No payment history found.'))) else Expanded(child: RefreshIndicator(onRefresh: _load, child: ListView(padding: const EdgeInsets.all(12), children: [
+          Card(margin: const EdgeInsets.only(bottom: 10), child: Padding(padding: appSettingsNotifier.cardPadding, child: Row(children: [Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(isVendor ? 'Payments Sent' : 'Total Payments', style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)), Text(formatMoney(isVendor ? _totalRefunds : _totalPayments), style: TextStyle(fontWeight: FontWeight.bold, color: isVendor ? Colors.orange : Colors.green))])), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(isVendor ? 'Refunds Rcvd' : 'Total Refunds', style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)), Text(formatMoney(isVendor ? _totalPayments : _totalRefunds), style: TextStyle(fontWeight: FontWeight.bold, color: isVendor ? Colors.green : Colors.orange))])), Text('${_rows.length} txn', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color))]))),
+          ..._rows.map((r) {
+            final amt = (r['amount'] as num?)?.toDouble() ?? 0.0, isRef = amt < 0, cust = (r['customerName'] as String? ?? '').trim(), mth = (r['method'] as String? ?? '').trim(), oId = r['orderId'] as int?, fId = r['fallbackRentalId'] as int?, inv = r['invoiceNumber'] as String? ?? '', prf = r['proformaNumber'] as String? ?? '';
+            final ref = isVendor ? prf : (oId != null ? (inv.isNotEmpty ? inv : (prf.isNotEmpty ? prf : 'Invoice #$oId')) : (fId != null ? 'Record #$fId' : 'Record'));
+            final tm = _fmtTm(r['paidAt'] ?? '', r['baseDate'] ?? ''), dt = _fmtDt(r['paidAt'] ?? '', r['baseDate'] ?? ''), isCan = (r['isCancelled'] as int? ?? 0) == 1, col = isVendor ? (isRef ? Colors.green : Colors.orange) : (isRef ? Colors.orange : Colors.green), isAdv = !isRef && (r['id'] == r['firstLogId']);
+            return Card(margin: const EdgeInsets.only(bottom: 8), child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                CircleAvatar(radius: 13.5, backgroundColor: col.withValues(alpha: 0.15), child: Icon(isVendor ? (isRef ? Icons.undo : Icons.payment) : (isRef ? Icons.undo : Icons.payments), color: col, size: 14.5)), const SizedBox(width: 6),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(cust.isEmpty ? 'Unknown' : cust, style: const TextStyle(fontWeight: FontWeight.w700)), Text(appSettingsNotifier.showPaymentHistoryTime && tm.isNotEmpty ? '$ref  |  $dt  |  $tm' : '$ref  |  $dt', maxLines: 1, overflow: TextOverflow.visible, style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color))])),
+                const SizedBox(width: 8), Text('${isVendor ? (isRef ? '+' : '-') : (isRef ? '-' : '+')}${formatMoney(amt, absolute: true)}', style: TextStyle(fontWeight: FontWeight.bold, color: col)),
               ]),
-            ),
-            onChanged: _onSearch,
-          ),
-        ),
-        if (_loading)
-          const Expanded(child: Center(child: CircularProgressIndicator()))
-        else if (_rows.isEmpty)
-          const Expanded(child: Center(child: Text('No payment history found.')))
-        else
-          Expanded(
-            child: RefreshIndicator(
-              onRefresh: _load,
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
-                children: [
-                  Card(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    child: Padding(
-                      padding: appSettingsNotifier.cardPadding,
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('Total Payments', style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)),
-                                const SizedBox(height: 2),
-                                Text(formatMoney(_totalPayments), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
-                              ],
-                            ),
-                          ),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('Total Refunds', style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)),
-                                const SizedBox(height: 2),
-                                Text(formatMoney(_totalRefunds), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
-                              ],
-                            ),
-                          ),
-                          Text('${_rows.length} txn', style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
-                        ],
-                      ),
-                    ),
-                  ),
-                  ..._rows.map((r) {
-                    final amount = (r['amount'] as num?)?.toDouble() ?? 0.0;
-                    final isRefund = amount < 0;
-                    final customer = (r['customerName'] as String? ?? '').trim();
-                    final method = (r['method'] as String? ?? '').trim();
-                    final orderId = r['orderId'] as int?;
-                    final fallbackId = r['fallbackRentalId'] as int?;
-                    final invNum = r['invoiceNumber'] as String? ?? '';
-                    final profNum = r['proformaNumber'] as String? ?? '';
-
-                    final ref = orderId != null
-                        ? (invNum.isNotEmpty ? invNum : (profNum.isNotEmpty ? profNum : 'Invoice #$orderId'))
-                        : fallbackId != null
-                        ? 'Record #$fallbackId'
-                        : 'Record';
-                    final timeText = _formatTimeText(
-                      (r['paidAt'] as String? ?? ''),
-                      (r['baseDate'] as String? ?? ''),
-                    );
-                    final dateText = _formatDateText(
-                      (r['paidAt'] as String? ?? ''),
-                      (r['baseDate'] as String? ?? ''),
-                    );
-                    final isCancelled = (r['isCancelled'] as int? ?? 0) == 1;
-                    final showTime = appSettingsNotifier.showPaymentHistoryTime;
-                    final refLine = showTime && timeText.isNotEmpty
-                        ? '$ref  |  $dateText  |  $timeText'
-                        : '$ref  |  $dateText';
-                    final amountColor = isRefund ? Colors.orange : Colors.green;
-                    final isAdvance = !isRefund && (r['id'] == r['firstLogId']);
-
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: Padding(
-                        padding: appSettingsNotifier.cardPadding,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                CircleAvatar(
-                                  radius: 13.5,
-                                  backgroundColor: amountColor.withValues(alpha: 0.15),
-                                  child: Icon(isRefund ? Icons.undo : Icons.payments, color: amountColor, size: 14.5),
-                                ),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(customer.isEmpty ? 'Unknown Customer' : customer, style: const TextStyle(fontWeight: FontWeight.w700)),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        refLine,
-                                        maxLines: 1,
-                                        softWrap: false,
-                                        overflow: TextOverflow.visible,
-                                        style: TextStyle(fontSize: 14.0, color: Theme.of(context).textTheme.bodySmall?.color),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Text(
-                                  '${isRefund ? '-' : '+'}${formatMoney(amount, absolute: true)}',
-                                  style: TextStyle(fontWeight: FontWeight.bold, color: amountColor),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 6,
-                              runSpacing: 6,
-                              children: [
-                                _tag(isRefund ? 'Refund' : (isAdvance ? 'Adv/Security' : 'Payment'), amountColor),
-                                _tag(method.isEmpty ? 'Method: N/A' : 'Method: $method', Colors.blueGrey),
-                                if (isCancelled) _tag('Cancelled Invoice', Colors.red),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  }),
-                ],
-              ),
-            ),
-          ),
-      ],
-    ),
-  );
+              const SizedBox(height: 8), Wrap(spacing: 6, runSpacing: 6, children: [_tag(isVendor ? (isRef ? 'Vendor Refund' : (isAdv ? 'Adv/Security' : 'Vendor Payment')) : (isRef ? 'Refund' : (isAdv ? 'Adv/Security' : 'Payment')), col), _tag(mth.isEmpty ? 'Method: N/A' : 'Method: $mth', Colors.blueGrey), if (isCan) _tag(isVendor ? 'Cancelled PO' : 'Cancelled Invoice', Colors.red)]),
+            ])));
+          }),
+        ]))),
+      ]),
+    );
+  }
 }
 
 // =============================
@@ -6889,331 +5386,80 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
 
 class FinancialReportsScreen extends StatefulWidget {
   const FinancialReportsScreen({super.key});
-  @override
-  State<FinancialReportsScreen> createState() => _FinancialReportsScreenState();
+  @override State<FinancialReportsScreen> createState() => _FinancialReportsScreenState();
 }
 
 class _FinancialReportsScreenState extends State<FinancialReportsScreen> {
-  bool _loading = true;
+  Map<String, dynamic> _plData = {}, _taxData = {}; List<Map<String, dynamic>> _arAging = [];
+  bool _loading = true; String _period = 'This Month';
 
-  // A/R Aging Data
-  double _ar0to30 = 0.0;
-  double _ar31to60 = 0.0;
-  double _ar61to90 = 0.0;
-  double _ar90Plus = 0.0;
-  double _totalAR = 0.0;
+  @override void initState() { super.initState(); _load(); }
 
-  // Tax Liability Data
-  Map<String, dynamic> _bizInfo = {};
-  double _totalPaymentsCollectedFY = 0.0;
-  double _taxLiabilityFY = 0.0;
-  double _totalInputTaxFY = 0.0;
-  double _netTaxLiabilityFY = 0.0;
-  String _fyString = '';
-
-  @override
-  void initState() {
-    super.initState();
-    _loadData();
-  }
-
-  Future<void> _loadData() async {
-    final db = await DatabaseHelper.getDatabase();
-    final bizInfo = await DatabaseHelper.getBusinessInfo();
-
-    // 1. Calculate A/R Aging
-    final allGroups = groupRentalsByInvoice(await DatabaseHelper.getAllRentals());
-    final outstanding = allGroups.where((g) => g.isFullyReturned && !g.isSettled && g.balance > 0).toList();
-
-    double ar0 = 0, ar31 = 0, ar61 = 0, ar90 = 0, totalAr = 0;
-    final now = DateTime.now();
-
-    for (final g in outstanding) {
-      final checkoutDt = DateTime.tryParse(g.checkoutDate) ?? now;
-      final daysOld = now.difference(checkoutDt).inDays;
-      final bal = g.balance;
-
-      totalAr += bal;
-      if (daysOld <= 30) { ar0 += bal; }
-      else if (daysOld <= 60) { ar31 += bal; }
-      else if (daysOld <= 90) { ar61 += bal; }
-      else { ar90 += bal; }
-    }
-
-    // 2. Calculate Cash-Basis Tax Liability for Current FY
-    final fyStartMonth = bizInfo['fyStartMonth'] as int? ?? 4;
-    final currentYear = now.year;
-    final isPastStartMonth = now.month >= fyStartMonth;
-
-    final fyStartDate = DateTime(
-        isPastStartMonth ? currentYear : currentYear - 1,
-        fyStartMonth,
-        1
-    );
-
-    _fyString = '${fyStartDate.year}-${fyStartDate.year + 1}';
-
-    // Sum payments collected strictly within this FY (Output Tax Base)
-    final payments = await db.rawQuery(
-        'SELECT SUM(amount) as total FROM payment_logs WHERE paidAt >= ? AND amount > 0',
-        [DatabaseHelper.isoDate(fyStartDate)]
-    );
-
-    final totalCollected = (payments.first['total'] as num?)?.toDouble() ?? 0.0;
-
-    // Sum input tax from purchase orders within this FY
-    double totalInputTax = 0.0;
+  Future<void> _load() async {
+    if (!mounted) return; setState(() => _loading = true);
     try {
-      final purchases = await db.rawQuery(
-          'SELECT SUM(taxAmount) as totalTax FROM purchase_orders WHERE orderDate >= ?',
-          [DatabaseHelper.isoDate(fyStartDate)]
-      );
-      totalInputTax = (purchases.first['totalTax'] as num?)?.toDouble() ?? 0.0;
-    } catch (e) {
-      // Graceful fallback if purchase_orders table is still empty or migrating
-      totalInputTax = 0.0;
-    }
-
-    // Tax Extraction Logic (Output Tax)
-    final taxRate = (bizInfo['taxRate'] as num?)?.toDouble() ?? 0.0;
-    final taxType = (bizInfo['taxType'] as String? ?? 'none');
-    double outputTaxLiability = 0.0;
-
-    if (taxType != 'none' && taxRate > 0) {
-      // Formula: Output Tax = Total Paid - (Total Paid / (1 + (Rate/100)))
-      outputTaxLiability = totalCollected - (totalCollected / (1 + (taxRate / 100.0)));
-    }
-
-    // Net Tax Payable = Output Tax - Input Tax Credit
-    final netTaxLiability = outputTaxLiability - totalInputTax;
-
-    if (!mounted) return;
-    setState(() {
-      _ar0to30 = ar0;
-      _ar31to60 = ar31;
-      _ar61to90 = ar61;
-      _ar90Plus = ar90;
-      _totalAR = totalAr;
-
-      _bizInfo = bizInfo;
-      _totalPaymentsCollectedFY = totalCollected;
-      _taxLiabilityFY = outputTaxLiability;
-      _totalInputTaxFY = totalInputTax;
-      _netTaxLiabilityFY = netTaxLiability > 0 ? netTaxLiability : 0.0; // Ensure it doesn't show negative tax owed
-      _loading = false;
-    });
+      final pl = await DatabaseHelper.getProfitAndLoss(_period);
+      final ar = await DatabaseHelper.getARAging();
+      final tax = await DatabaseHelper.getTaxLiability(_period);
+      if (!mounted) return; setState(() { _plData = pl; _arAging = ar; _taxData = tax; _loading = false; });
+    } catch (e) { if (mounted) { setState(() => _loading = false); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error loading reports: $e'))); } }
   }
 
-  Widget _buildAgingIndicator(Color color, String label, double amount) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          Container(width: 16, height: 16, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-          const SizedBox(width: 8),
-          Expanded(child: Text(label, style: const TextStyle(fontWeight: FontWeight.w500))),
-          Text(formatMoney(amount), style: const TextStyle(fontWeight: FontWeight.bold)),
-        ],
-      ),
-    );
+  Widget _finRow(String l, double v, {bool bld = false, Color? c, double fs = 14}) => Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(l, style: TextStyle(fontWeight: bld ? FontWeight.bold : null, fontSize: fs)), Text(formatMoney(v), style: TextStyle(fontWeight: bld ? FontWeight.bold : null, color: c ?? (v < 0 ? Colors.red : null), fontSize: fs))]));
+  Widget _hdr(String t) => Padding(padding: const EdgeInsets.only(bottom: 8, top: 8), child: Text(t, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.blueGrey)));
+
+  Widget _buildPLTab() {
+    final rev = (_plData['revenue'] as num?)?.toDouble() ?? 0.0, exp = (_plData['expenses'] as num?)?.toDouble() ?? 0.0, net = rev - exp;
+    return ListView(padding: const EdgeInsets.all(16), children: [
+      Card(child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _hdr('Income Statement'), const Divider(),
+        _finRow('Gross Rental Revenue', rev), _finRow('Damages & Penalties Collected', (_plData['penalties'] as num?)?.toDouble() ?? 0.0),
+        const Divider(height: 24), _hdr('Deductions & Expenses'),
+        _finRow('Discounts Given', -((_plData['discounts'] as num?)?.toDouble() ?? 0.0)), _finRow('Bad Debt Written Off', -((_plData['badDebt'] as num?)?.toDouble() ?? 0.0)), _finRow('Operational Expenses', -exp),
+        const Divider(height: 24, thickness: 2), _finRow('NET PROFIT / LOSS', net, bld: true, c: net >= 0 ? Colors.green : Colors.red, fs: 16),
+      ]))),
+    ]);
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 4,
-      child: Scaffold(
-        appBar: AppBar(
-          titleSpacing: 0,
-          title: TabBar(
-            isScrollable: true,
-            tabs: const [
-              Tab(text: 'P&L STATEMENT'),
-              Tab(text: 'A/R AGING'),
-              Tab(text: 'TAX LIABILITY'),
-              Tab(text: 'INVENTORY ROI'),
-            ],
-            indicator: BoxDecoration(borderRadius: BorderRadius.circular(24), color: Colors.black12),
-            indicatorSize: TabBarIndicatorSize.tab,
-            dividerColor: Colors.transparent,
-            labelColor: Colors.black,
-            unselectedLabelColor: Colors.black54,
-            labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-          ),
-        ),
-        body: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : TabBarView(
-          children: [
-            // TAB 1: P&L Statement (All-Time)
-            const ProfitAndLossTab(),
-
-            // TAB 2: Accounts Receivable Aging
-            SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Accounts Receivable Aging Summary', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 4),
-                  Text('Unpaid settled invoices categorized by age.', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
-                  const SizedBox(height: 24),
-
-                  if (_totalAR <= 0)
-                    const Center(child: Padding(
-                      padding: EdgeInsets.all(32.0),
-                      child: Text('Outstanding! Your Accounts Receivable is \$0.00.', style: TextStyle(color: Colors.green, fontSize: 16)),
-                    ))
-                  else ...[
-                    SizedBox(
-                      height: 250,
-                      child: PieChart(
-                        PieChartData(
-                          sectionsSpace: 2,
-                          centerSpaceRadius: 60,
-                          sections: [
-                            if (_ar0to30 > 0) PieChartSectionData(color: Colors.green, value: _ar0to30, title: '', radius: 50),
-                            if (_ar31to60 > 0) PieChartSectionData(color: Colors.amber, value: _ar31to60, title: '', radius: 50),
-                            if (_ar61to90 > 0) PieChartSectionData(color: Colors.orange, value: _ar61to90, title: '', radius: 50),
-                            if (_ar90Plus > 0) PieChartSectionData(color: Colors.red, value: _ar90Plus, title: '', radius: 50),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          children: [
-                            _buildAgingIndicator(Colors.green, 'Current (0-30 Days)', _ar0to30),
-                            const Divider(),
-                            _buildAgingIndicator(Colors.amber, 'Overdue (31-60 Days)', _ar31to60),
-                            const Divider(),
-                            _buildAgingIndicator(Colors.orange, 'Critical (61-90 Days)', _ar61to90),
-                            const Divider(),
-                            _buildAgingIndicator(Colors.red, 'High Risk (90+ Days)', _ar90Plus),
-                            const SizedBox(height: 16),
-                            Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(color: Colors.blue.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  const Text('TOTAL A/R:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                                  Text(formatMoney(_totalAR), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.blue)),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ]
-                ],
-              ),
-            ),
-
-            // TAB 2: Tax Liability & Input Tax Credit
-            SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Estimated Net Tax Liability (Cash Basis)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 4),
-                  Text('Based on payments received and equipment procured in FY $_fyString.', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color)),
-                  const SizedBox(height: 24),
-
-                  if (_bizInfo['taxType'] == 'none' || _bizInfo['taxType'] == null)
-                    const Center(child: Padding(
-                      padding: EdgeInsets.all(32.0),
-                      child: Text('Taxes are currently disabled in Business Info.', style: TextStyle(color: Colors.grey, fontSize: 16)),
-                    ))
-                  else
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                const Text('Tax Configuration:', style: TextStyle(fontWeight: FontWeight.bold)),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(color: Colors.amber.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(8)),
-                                  child: Text('${(_bizInfo['taxType'] as String).toUpperCase()} @ ${_bizInfo['taxRate']}%', style: const TextStyle(fontWeight: FontWeight.bold)),
-                                ),
-                              ],
-                            ),
-                            const Divider(height: 24),
-
-                            // Output Tax Section
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                const Text('Output Tax (Collected from Sales)', style: TextStyle(fontWeight: FontWeight.w600)),
-                                Text('+ ${formatMoney(_taxLiabilityFY)}', style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            Text('Derived from ${formatMoney(_totalPaymentsCollectedFY)} in gross customer payments.', style: const TextStyle(fontSize: 11, color: Colors.grey)),
-
-                            const SizedBox(height: 16),
-
-                            // Input Tax Section (ITC)
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                const Text('Input Tax Credit (Paid on Purchases)', style: TextStyle(fontWeight: FontWeight.w600)),
-                                Text('- ${formatMoney(_totalInputTaxFY)}', style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            const Text('Taxes paid to suppliers on capital equipment acquisitions.', style: TextStyle(fontSize: 11, color: Colors.grey)),
-
-                            const Divider(height: 32, thickness: 1.5),
-
-                            // Net Liability
-                            const Text('Estimated Net Remittance Due'),
-                            Text(formatMoney(_netTaxLiabilityFY), style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.blue)),
-
-                            const SizedBox(height: 16),
-                            Container(
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(color: Colors.orange.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.orange.withValues(alpha: 0.5))),
-                              child: const Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Icon(Icons.info_outline, size: 16, color: Colors.orange),
-                                  SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text('This is a cash-basis estimation for internal audits. Net liability = Output Tax minus Input Tax Credit (ITC). Consult your CPA for statutory filings.', style: TextStyle(fontSize: 12, color: Colors.orange)),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-
-            // TAB 3: Inventory ROI & Valuation
-            const InventoryValuationScreen(),
-          ],
-        ),
-      ),
-    );
+  Widget _buildARTab() {
+    double t0_30 = 0, t31_60 = 0, t61_90 = 0, t90p = 0;
+    for (var r in _arAging) { t0_30 += r['0_30']; t31_60 += r['31_60']; t61_90 += r['61_90']; t90p += r['90_plus']; }
+    final total = t0_30 + t31_60 + t61_90 + t90p;
+    return ListView(padding: const EdgeInsets.all(16), children: [
+      Card(child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _hdr('A/R Aging Summary'), const Divider(),
+        _finRow('0 - 30 Days', t0_30), _finRow('31 - 60 Days', t31_60), _finRow('61 - 90 Days', t61_90, c: Colors.orange), _finRow('90+ Days (High Risk)', t90p, c: Colors.redAccent),
+        const Divider(height: 24, thickness: 2), _finRow('TOTAL OUTSTANDING', total, bld: true, c: Colors.orange, fs: 16),
+      ]))),
+      const SizedBox(height: 16), const Text('Customer Breakdown', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)), const SizedBox(height: 8),
+      ..._arAging.map((c) => Card(margin: const EdgeInsets.only(bottom: 8), child: ListTile(title: Text(c['name'], style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Oldest: ${c['oldest_inv']} days'), trailing: Text(formatMoney(c['total']), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange, fontSize: 15)))))
+    ]);
   }
+
+  Widget _buildTaxTab() {
+    final tax = (_taxData['collected'] as num?)?.toDouble() ?? 0.0, base = (_taxData['base'] as num?)?.toDouble() ?? 0.0;
+    return ListView(padding: const EdgeInsets.all(16), children: [
+      Card(child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _hdr('Tax Liability Report'), const Divider(),
+        _finRow('Taxable Base', base), _finRow('Estimated Tax Collected', tax, c: Colors.blue),
+        const Divider(height: 24, thickness: 2), _finRow('TOTAL LIABILITY', tax, bld: true, fs: 16),
+      ]))),
+    ]);
+  }
+
+  @override Widget build(BuildContext context) => DefaultTabController(length: 3, child: Scaffold(
+    appBar: AppBar(
+      title: const Text('Financial Reports'),
+      bottom: TabBar(isScrollable: true, tabs: const [Tab(text: 'PROFIT & LOSS'), Tab(text: 'A/R AGING'), Tab(text: 'TAX LIABILITY')], indicator: BoxDecoration(borderRadius: BorderRadius.circular(24), color: Colors.black12), indicatorSize: TabBarIndicatorSize.tab, dividerColor: Colors.transparent, labelColor: Colors.black, unselectedLabelColor: Colors.black54, labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+      actions: [
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: DropdownButtonHideUnderline(child: DropdownButton<String>(value: _period, icon: const Icon(Icons.calendar_month, color: Colors.black87), items: ['This Month', 'Last Month', 'This Year', 'All Time'].map((String val) => DropdownMenuItem(value: val, child: Text(val))).toList(), onChanged: (v) { if (v != null) { setState(() => _period = v); _load(); } })))
+      ],
+    ),
+    body: _loading ? const Center(child: CircularProgressIndicator()) : TabBarView(children: [_buildPLTab(), _buildARTab(), _buildTaxTab()]),
+  ));
 }
 
 // ========Profit & Loss (Income Statement) Screen========
-
 class ProfitAndLossTab extends StatefulWidget {
   const ProfitAndLossTab({super.key});
   @override
@@ -7352,7 +5598,6 @@ class _ProfitAndLossTabState extends State<ProfitAndLossTab> {
 }
 
 // ========Inventory Valuation & ROI Screen========
-
 class InventoryValuationScreen extends StatefulWidget {
   const InventoryValuationScreen({super.key});
   @override
@@ -7457,7 +5702,7 @@ class _InventoryValuationScreenState extends State<InventoryValuationScreen> {
               return Card(
                 margin: const EdgeInsets.only(bottom: 12),
                 child: Padding(
-                  padding: appSettingsNotifier.cardPadding, // Respects global density settings
+                  padding: appSettingsNotifier.cardPadding,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -7529,7 +5774,6 @@ class _InventoryValuationScreenState extends State<InventoryValuationScreen> {
 }
 
 // ========Expense Tracking Screen========
-
 class ExpenseTrackingScreen extends StatefulWidget {
   const ExpenseTrackingScreen({super.key});
   @override
@@ -7584,85 +5828,29 @@ class _ExpenseTrackingScreenState extends State<ExpenseTrackingScreen> {
   }
 
   Future<void> _showExpenseDialog() async {
-    final formKey = GlobalKey<FormState>();
-    final amountC = TextEditingController();
-    final vendorC = TextEditingController();
-    final notesC  = TextEditingController();
-    String category = _expenseCategories.first;
-    String method   = kPaymentMethods.first;
-    DateTime selectedDate = DateTime.now();
+    final amtC = TextEditingController(), venC = TextEditingController(), noteC = TextEditingController();
+    String cat = _expenseCategories.first, meth = kPaymentMethods.first;
+    DateTime dt = DateTime.now();
 
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (context, setSt) => AlertDialog(
-          title: const Text('Log Business Expense'),
-          content: SingleChildScrollView(
-            child: Form(key: formKey, child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextFormField(
-                controller: amountC,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: InputDecoration(labelText: 'Amount ($curr) *', border: const OutlineInputBorder()),
-                validator: (v) {
-                  final val = double.tryParse(v ?? '');
-                  if (val == null || val <= 0) return 'Invalid amount';
-                  return null;
-                },
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: category,
-                decoration: const InputDecoration(labelText: 'Category', border: OutlineInputBorder()),
-                items: _expenseCategories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-                onChanged: (v) { if (v != null) setSt(() => category = v); },
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: method,
-                decoration: const InputDecoration(labelText: 'Paid Via', border: OutlineInputBorder()),
-                items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
-                onChanged: (v) { if (v != null) setSt(() => method = v); },
-              ),
-              const SizedBox(height: 12),
-              TextFormField(controller: vendorC, decoration: const InputDecoration(labelText: 'Vendor / Payee', border: OutlineInputBorder())),
-              const SizedBox(height: 12),
-              TextFormField(controller: notesC, decoration: const InputDecoration(labelText: 'Notes', border: OutlineInputBorder()), maxLines: 2),
-              const SizedBox(height: 12),
-              Row(children: [
-                Expanded(child: Text('Date: ${DatabaseHelper.formatDateFromDt(selectedDate)}')),
-                TextButton(
-                  onPressed: () async {
-                    final p = await showDatePicker(context: context, initialDate: selectedDate, firstDate: DateTime(2000), lastDate: DateTime.now());
-                    if (p != null) setSt(() => selectedDate = p);
-                  },
-                  child: const Text('Change'),
-                ),
-              ]),
-            ])),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-            ElevatedButton(
-              onPressed: () { if (formKey.currentState!.validate()) Navigator.pop(ctx, true); },
-              child: const Text('Save Expense'),
-            ),
-          ],
-        ),
-      ),
+    await AppUI.showFormDialog(context,
+      title: 'Log Business Expense',
+      onSave: () async {
+        await DatabaseHelper.insertExpense(DatabaseHelper.isoDate(dt), cat, double.parse(amtC.text), meth, venC.text.trim(), noteC.text.trim());
+        _load();
+      },
+      children: [
+        AppUI.buildTextField(controller: amtC, label: 'Amount ($curr) *', type: const TextInputType.numberWithOptions(decimal: true), validator: (v) => double.tryParse(v ?? '') == null ? 'Required' : null),
+        StatefulBuilder(builder: (ctx, setSt) => Column(children: [
+          DropdownButtonFormField<String>(initialValue: cat, decoration: AppUI.inputDecoration('Category'), items: _expenseCategories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(), onChanged: (v) => setSt(() => cat = v ?? cat)),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(initialValue: meth, decoration: AppUI.inputDecoration('Paid Via'), items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(), onChanged: (v) => setSt(() => meth = v ?? meth)),
+          const SizedBox(height: 12),
+          ListTile(contentPadding: EdgeInsets.zero, title: Text('Date: ${DatabaseHelper.formatDateFromDt(dt)}'), trailing: const Icon(Icons.calendar_month), onTap: () async { final p = await showDatePicker(context: ctx, initialDate: dt, firstDate: DateTime(2000), lastDate: DateTime.now()); if (p != null) setSt(() => dt = p); }),
+        ])),
+        AppUI.buildTextField(controller: venC, label: 'Vendor / Payee'),
+        AppUI.buildTextField(controller: noteC, label: 'Notes', maxLines: 2),
+      ],
     );
-
-    if (result == true) {
-      await DatabaseHelper.insertExpense(
-        DatabaseHelper.isoDate(selectedDate),
-        category,
-        double.parse(amountC.text),
-        method,
-        vendorC.text.trim(),
-        notesC.text.trim(),
-      );
-      _load();
-    }
-    amountC.dispose(); vendorC.dispose(); notesC.dispose();
   }
 
   Future<void> _delete(int id) async {
@@ -7677,6 +5865,7 @@ class _ExpenseTrackingScreenState extends State<ExpenseTrackingScreen> {
         ],
       ),
     );
+    if (!mounted) return;
     if (ok == true) {
       await DatabaseHelper.deleteExpense(id);
       _load();
@@ -7762,7 +5951,7 @@ class _ExpenseTrackingScreenState extends State<ExpenseTrackingScreen> {
               child: Padding(
                 padding: appSettingsNotifier.cardPadding,
                 child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start, // Absolute top alignment
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     CircleAvatar(
                       backgroundColor: Colors.red.withValues(alpha: 0.1),
@@ -7793,7 +5982,7 @@ class _ExpenseTrackingScreenState extends State<ExpenseTrackingScreen> {
                       ),
                     ),
                     SizedBox(
-                      width: 28, // Constrains ripple effect to match UniversalRentalCard
+                      width: 28,
                       child: PopupMenuButton<String>(
                         icon: const Icon(Icons.more_vert, size: 20),
                         padding: EdgeInsets.zero,
@@ -7838,7 +6027,6 @@ class _StockChip extends StatelessWidget {
 }
 
 // ========Losses & Bad Debt Screen========
-
 class LossesAndBadDebtScreen extends StatefulWidget {
   const LossesAndBadDebtScreen({super.key});
   @override
@@ -8308,12 +6496,12 @@ class _SettleGroupDialogState extends State<_SettleGroupDialog> {
               title: const Text('Write off as Bad Debt', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent)),
               subtitle: const Text('Customer absconded or refused payment.'),
               value: isBadDebtWriteOff,
-              activeThumbColor: Colors.red, // Modern SDK standard
+              activeThumbColor: Colors.red,
               onChanged: (v) => setState(() { isBadDebtWriteOff = v; if (v) discountType = 'None'; }),
             ),
           ],
 
-          if (!isBadDebtWriteOff) ...[ // FIX: Correctly opening the array block here
+          if (!isBadDebtWriteOff) ...[
             const SizedBox(height: 24),
             const Text('Apply Discount (Optional)', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber)),
             const SizedBox(height: 8),
@@ -8338,7 +6526,7 @@ class _SettleGroupDialogState extends State<_SettleGroupDialog> {
                 ),
               ),
             ],
-          ], // FIXED: Added the missing closing bracket and comma
+          ],
         ])),
       ),
       actions: [
@@ -8390,7 +6578,7 @@ class _PartialReturnDialogState extends State<_PartialReturnDialog> {
     super.initState();
     for (final r in widget.activeItems) {
       final id = r['id'] as int;
-      _goodCtrl[id] = TextEditingController(text: r['qty'].toString()); // Default to all good
+      _goodCtrl[id] = TextEditingController(text: r['qty'].toString());
       _lostCtrl[id] = TextEditingController(text: '0');
       _penaltyCtrl[id] = TextEditingController(text: '0');
     }
@@ -8563,12 +6751,20 @@ class _EditGroupDialogState extends State<_EditGroupDialog> {
           onPressed: () async {
             final nav = Navigator.of(context);
             final messenger = ScaffoldMessenger.of(context);
+
             final ok = await _confirmDialog(context, title: 'Delete Record', message: 'Permanently delete this entire record? This cannot be undone.');
-            if (!ok || !context.mounted) return;
+
+            if (!ok) return;
+            if (!mounted) return;
+
             try {
               await DatabaseHelper.deleteRentalGroup(g.items);
+              if (!mounted) return;
               nav.pop();
-            } catch (e) { messenger.showSnackBar(SnackBar(content: Text('Delete failed: $e'))); }
+            } catch (e) {
+              if (!mounted) return;
+              messenger.showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+            }
           },
           child: const Text('Delete'),
         ),
@@ -8588,8 +6784,12 @@ class _EditGroupDialogState extends State<_EditGroupDialog> {
                 checkoutDate: DatabaseHelper.isoDate(selected),
                 notes: notesC.text.trim(),
               );
+              if (!mounted) return;
               nav.pop();
-            } catch (e) { messenger.showSnackBar(SnackBar(content: Text('Save failed: $e'))); }
+            } catch (e) {
+              if (!mounted) return;
+              messenger.showSnackBar(SnackBar(content: Text('Save failed: $e')));
+            }
           },
           child: const Text('Save'),
         ),
@@ -8599,7 +6799,6 @@ class _EditGroupDialogState extends State<_EditGroupDialog> {
 }
 
 // ========Invoice Manager Screen (Unified)========
-
 class InvoiceManagerScreen extends StatelessWidget {
   final int initialIndex;
   const InvoiceManagerScreen({super.key, this.initialIndex = 0});
@@ -8674,10 +6873,12 @@ class _FinalInvoicesScreenState extends State<FinalInvoicesScreen> {
   }
 
   Future<void> _openPdf(int orderId, {bool share = false}) async {
-    final size = await pickPdfSize(context);
-    if (size == null || !mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     final nav = Navigator.of(context);
+
+    final size = await pickPdfSize(context);
+    if (size == null || !mounted) return;
+
     messenger.showSnackBar(const SnackBar(content: Text('Generating PDF...')));
     try {
       final bytes = await DatabaseHelper.generatePdfFinalInvoiceForOrder(orderId, pageSize: size);
@@ -8786,7 +6987,6 @@ class _FinalInvoicesScreenState extends State<FinalInvoicesScreen> {
 // ==============================
 
 // ========Settings Screen========
-
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
   @override
@@ -8794,6 +6994,8 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  static const _iconChannel = MethodChannel('com.wjust4435.rental_manager/icon');
+
   @override
   void initState() {
     super.initState();
@@ -8810,521 +7012,120 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _rebuild() { if (mounted) setState(() {}); }
 
-// ---- dialog helpers ----
-
-  static const _iconChannel = MethodChannel('com.wjust4435.rental_manager/icon');
+  // Unified selection dialog to replace repetitive list builders
+  void _showSelectionDialog({required String title, required String currentVal, required List<Map<String, String>> items, required Function(String) onSelect}) {
+    showDialog(context: context, builder: (ctx) => SimpleDialog(
+      title: Text(title),
+      children: items.map((o) => ListTile(
+        title: Text(o['title']!), subtitle: o['sub'] != null ? Text(o['sub']!) : null,
+        trailing: currentVal == o['val'] ? const Icon(Icons.check, color: Colors.amber) : null,
+        onTap: () { onSelect(o['val']!); Navigator.pop(ctx); },
+      )).toList(),
+    ));
+  }
 
   Future<void> _changeAppIcon(String iconKey) async {
-    final s = appSettingsNotifier;
-    final messenger = ScaffoldMessenger.of(context);
-
     try {
       await _iconChannel.invokeMethod('setIcon', {'iconKey': iconKey});
-      await s.setAppIcon(iconKey);
-
-      if (mounted) {
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text(iconKey == 'default'
-                ? 'App icon reset to default.'
-                : 'App icon changed successfully.'),
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
+      await appSettingsNotifier.setAppIcon(iconKey);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(iconKey == 'default' ? 'App icon reset to default.' : 'App icon changed successfully.'), duration: const Duration(seconds: 2)));
     } catch (e) {
-      if (mounted) {
-        messenger.showSnackBar(
-          SnackBar(content: Text('Failed to change icon: $e')),
-        );
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to change icon: $e')));
     }
-  }
-
-  void _showAppIconDialog() {
-    final s = appSettingsNotifier;
-    final icons = [
-      {'name': 'Default Icon', 'key': 'default'},
-      {'name': 'Icon Variant 1', 'key': 'icon1'},
-      {'name': 'Icon Variant 2', 'key': 'icon2'},
-      {'name': 'Icon Variant 3', 'key': 'icon3'},
-    ];
-
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => SimpleDialog(
-        title: const Text('Choose App Icon'),
-        children: icons.map((icon) => ListTile(
-          leading: const Icon(Icons.app_shortcut, color: Colors.amber),
-          title: Text(icon['name']!),
-          trailing: s.appIcon == icon['key'] ? const Icon(Icons.check, color: Colors.amber) : null,
-          onTap: () {
-            Navigator.pop(ctx);
-            _changeAppIcon(icon['key']!);
-          },
-        )).toList(),
-      ),
-    );
-  }
-
-  void _showCardDensityDialog() {
-    final s = appSettingsNotifier;
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => SimpleDialog(
-        title: const Text('Card Density'),
-        children: [
-          ListTile(
-            title: const Text('Comfortable'),
-            subtitle: const Text('Easier to read, more spacing'),
-            trailing: s.cardDensity == 'comfortable' ? const Icon(Icons.check, color: Colors.amber) : null,
-            onTap: () { s.setCardDensity('comfortable'); Navigator.pop(ctx); },
-          ),
-          ListTile(
-            title: const Text('Compact'),
-            subtitle: const Text('Show more cards at once'),
-            trailing: s.cardDensity == 'compact' ? const Icon(Icons.check, color: Colors.amber) : null,
-            onTap: () { s.setCardDensity('compact'); Navigator.pop(ctx); },
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showFontSizeDialog() {
-    final s = appSettingsNotifier;
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => SimpleDialog(
-        title: const Text('Font Size'),
-        children: [
-          ListTile(
-            title: const Text('Small'),
-            subtitle: const Text('90% - fits more on screen'),
-            trailing: s.fontSize == 'small' ? const Icon(Icons.check, color: Colors.amber) : null,
-            onTap: () { s.setFontSize('small'); Navigator.pop(ctx); },
-          ),
-          ListTile(
-            title: const Text('Medium'),
-            subtitle: const Text('100% - default size'),
-            trailing: s.fontSize == 'medium' ? const Icon(Icons.check, color: Colors.amber) : null,
-            onTap: () { s.setFontSize('medium'); Navigator.pop(ctx); },
-          ),
-          ListTile(
-            title: const Text('Large'),
-            subtitle: const Text('115% - easier to read'),
-            trailing: s.fontSize == 'large' ? const Icon(Icons.check, color: Colors.amber) : null,
-            onTap: () { s.setFontSize('large'); Navigator.pop(ctx); },
-          ),
-        ],
-      ),
-    );
   }
 
   void _showCurrencyDialog() {
     final s = appSettingsNotifier;
     final customC = TextEditingController(text: s.currencySymbol);
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Currency Symbol'),
-        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Choose a symbol:'),
-          const SizedBox(height: 12),
-          StatefulBuilder(builder: (_, setSt) => Wrap(
-            spacing: 8, runSpacing: 8,
-            children: ['\u20B9', '\$', '\u20AC', '\u00A3', '\u00A5', '\u0E3F'].map((sym) => ChoiceChip(
-              label: Text(sym, style: const TextStyle(fontSize: 18)),
-              selected: s.currencySymbol == sym,
-              onSelected: (_) { s.setCurrencySymbol(sym); customC.text = sym; setSt(() {}); },
-            )).toList(),
-          )),
-          const SizedBox(height: 16),
-          TextField(
-            controller: customC,
-            decoration: const InputDecoration(
-              labelText: 'Or type a custom symbol',
-              border: OutlineInputBorder(),
-              isDense: true,
-              helperText: 'Max 4 characters',
-              counterText: '',
-            ),
-            maxLength: 4,
-            onChanged: (v) { if (v.trim().isNotEmpty) s.setCurrencySymbol(v.trim()); },
-          ),
-        ]),
-        actions: [
-          ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('Done')),
-        ],
-      ),
-    ).then((_) => customC.dispose());
+    showDialog<void>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text('Currency Symbol'),
+      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Choose a symbol:'), const SizedBox(height: 12),
+        StatefulBuilder(builder: (_, setSt) => Wrap(spacing: 8, runSpacing: 8, children: ['\u20B9', '\$', '\u20AC', '\u00A3', '\u00A5', '\u0E3F'].map((sym) => ChoiceChip(
+          label: Text(sym, style: const TextStyle(fontSize: 18)), selected: s.currencySymbol == sym,
+          onSelected: (_) { s.setCurrencySymbol(sym); customC.text = sym; setSt(() {}); },
+        )).toList())),
+        const SizedBox(height: 16),
+        TextField(controller: customC, decoration: const InputDecoration(labelText: 'Or type custom symbol', border: OutlineInputBorder(), isDense: true, helperText: 'Max 4 chars', counterText: ''), maxLength: 4, onChanged: (v) { if (v.trim().isNotEmpty) s.setCurrencySymbol(v.trim()); }),
+      ]),
+      actions: [ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('Done'))],
+    )).then((_) => customC.dispose());
   }
 
   void _showOverdueDaysDialog() {
     final s = appSettingsNotifier;
     final ctrl = TextEditingController(text: s.overdueDays.toString());
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Overdue Threshold'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text('Rentals older than this many days will be flagged as overdue.',
-              style: TextStyle(fontSize: 13, color: Theme.of(ctx).textTheme.bodySmall?.color)),
-          const SizedBox(height: 16),
-          TextField(
-            controller: ctrl,
-            autofocus: true,
-            keyboardType: TextInputType.number,
-            textAlign: TextAlign.center,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              suffixText: 'days',
-              isDense: true,
-            ),
-          ),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () {
-              final n = int.tryParse(ctrl.text);
-              if (n != null && n > 0) s.setOverdueDays(n);
-              Navigator.pop(ctx);
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    ).then((_) => ctrl.dispose());
+    showDialog<void>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text('Overdue Threshold'),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        Text('Rentals older than this many days will be flagged as overdue.', style: TextStyle(fontSize: 13, color: Theme.of(ctx).textTheme.bodySmall?.color)),
+        const SizedBox(height: 16),
+        TextField(controller: ctrl, autofocus: true, keyboardType: TextInputType.number, textAlign: TextAlign.center, decoration: const InputDecoration(border: OutlineInputBorder(), suffixText: 'days', isDense: true)),
+      ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        ElevatedButton(onPressed: () { final n = int.tryParse(ctrl.text); if (n != null && n > 0) s.setOverdueDays(n); Navigator.pop(ctx); }, child: const Text('Save')),
+      ],
+    )).then((_) => ctrl.dispose());
   }
 
-  void _showDateFormatDialog() {
-    final s = appSettingsNotifier;
-    const formats = ['dd/MMM/yyyy', 'dd/MM/yyyy', 'MM/dd/yyyy', 'yyyy-MM-dd'];
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => SimpleDialog(
-        title: const Text('Date Format'),
-        children: formats.map((f) => ListTile(
-          title: Text(f),
-          trailing: s.dateFormat == f ? const Icon(Icons.check, color: Colors.amber) : null,
-          onTap: () {
-            s.setDateFormat(f);
-            Navigator.pop(ctx);
-          },
-        )).toList(),
-      ),
-    );
-  }
+  void _showPrivacyDialog() => showDialog(context: context, builder: (ctx) => AlertDialog(
+    title: const Text('Privacy & Data'),
+    content: const SingleChildScrollView(child: Text('Rental Manager is offline-first.\n\n- Data is stored locally.\n- No internet required.\n- You control your data exports and deletions.')),
+    actions: [ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+  ));
 
-  void _showTimeFormatDialog() {
-    final s = appSettingsNotifier;
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => SimpleDialog(
-        title: const Text('Time Format'),
-        children: [
-          ListTile(
-            title: const Text('12-hour (AM/PM)'),
-            trailing: s.timeFormat == '12h' ? const Icon(Icons.check, color: Colors.amber) : null,
-            onTap: () {
-              s.setTimeFormat('12h');
-              Navigator.pop(ctx);
-            },
-          ),
-          ListTile(
-            title: const Text('24-hour'),
-            trailing: s.timeFormat == '24h' ? const Icon(Icons.check, color: Colors.amber) : null,
-            onTap: () {
-              s.setTimeFormat('24h');
-              Navigator.pop(ctx);
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showPrivacyDialog() {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Privacy & Data'),
-        content: const SingleChildScrollView(
-          child: Text(
-            'Rental Manager is designed for offline-first use.\n\n'
-                '- Your business data is stored locally on your device database.\n'
-                '- The app does not require internet for normal operation.\n'
-                '- Payment and customer records stay on your device unless you export a backup manually.\n'
-                '- Keep your backup files secure, because they contain your app data.\n\n'
-                'You control your data: export, restore, and deletion actions are initiated by you.',
-          ),
-        ),
-        actions: [
-          ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
-        ],
-      ),
-    );
-  }
-
-  // ---- section header ----
-  Widget _sectionHeader(String title) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 24, 16, 6),
-    child: Text(title,
-        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.5, color: Colors.amber[700])),
-  );
-
-  Widget _infoBox(String text, {Color? color}) => Container(
-    margin: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-    padding: const EdgeInsets.all(10),
-    decoration: BoxDecoration(
-      color: (color ?? Colors.blue).withValues(alpha: 0.1),
-      borderRadius: BorderRadius.circular(8),
-      border: Border.all(color: (color ?? Colors.blue).withValues(alpha: 0.3)),
-    ),
-    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Icon(Icons.info_outline, size: 15, color: color ?? Colors.blue),
-      const SizedBox(width: 8),
-      Expanded(child: Text(text, style: TextStyle(fontSize: 12, color: color ?? Colors.blue))),
-    ]),
-  );
-
-  Widget _switchSettingTile({
-    required IconData icon,
-    required Color color,
-    required String title,
-    required String subtitle,
-    required bool value,
-    required ValueChanged<bool> onChanged,
-  }) => SwitchListTile(
-    secondary: Icon(icon, color: color),
-    title: Text(title),
-    subtitle: Text(subtitle),
-    value: value,
-    onChanged: onChanged,
-  );
+  Widget _hdr(String t) => Padding(padding: const EdgeInsets.fromLTRB(16, 24, 16, 6), child: Text(t, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.5, color: Colors.amber[700])));
+  Widget _infoBox(String t) => Container(margin: const EdgeInsets.fromLTRB(16, 4, 16, 8), padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.blue.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.blue.withValues(alpha: 0.3))), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [const Icon(Icons.info_outline, size: 15, color: Colors.blue), const SizedBox(width: 8), Expanded(child: Text(t, style: const TextStyle(fontSize: 12, color: Colors.blue)))]));
+  Widget _tile({required IconData i, required String t, required String s, VoidCallback? onTap, Widget? trail}) => ListTile(leading: Icon(i, color: Colors.amber), title: Text(t), subtitle: Text(s), trailing: trail ?? const Icon(Icons.chevron_right), onTap: onTap);
+  Widget _swt({required IconData i, required String t, required String s, required bool v, required ValueChanged<bool> onChange}) => SwitchListTile(secondary: Icon(i, color: Colors.amber), title: Text(t), subtitle: Text(s), value: v, onChanged: onChange);
 
   @override
   Widget build(BuildContext context) {
-    final s  = appSettingsNotifier;
+    final s = appSettingsNotifier;
     final tm = themeModeNotifier.mode;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(children: [
-
-        // ------------------------------------
-        // APPEARANCE
-        // ------------------------------------
-        _sectionHeader('APPEARANCE'),
-
-        // ---------------Theme-----------------
-        ListTile(
-          leading: Icon(
-            tm == ThemeMode.light ? Icons.light_mode :
-            tm == ThemeMode.dark  ? Icons.dark_mode  : Icons.brightness_auto,
-            color: Colors.amber,
-          ),
-          title: const Text('Theme'),
-          subtitle: Text(tm == ThemeMode.light ? 'Light' : tm == ThemeMode.dark ? 'Dark' : 'System Default'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => themeModeNotifier.setMode(
-            tm == ThemeMode.system ? ThemeMode.light :
-            tm == ThemeMode.light  ? ThemeMode.dark  : ThemeMode.system,
-          ),
-        ),
-
-        // ---------------App Icon-----------------
-        ListTile(
-          leading: const Icon(Icons.app_shortcut, color: Colors.amber),
-          title: const Text('App Icon'),
-          subtitle: const Text('Change home screen icon'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _showAppIconDialog,
-        ),
-
-        // ---------------Card Density-----------------
-        ListTile(
-          leading: const Icon(Icons.density_medium, color: Colors.amber),
-          title: const Text('Card Density'),
-          subtitle: Text(s.cardDensity == 'compact' ? 'Compact' : 'Comfortable'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _showCardDensityDialog,
-        ),
-
-        // ---------------Font Size-----------------
-        ListTile(
-          leading: const Icon(Icons.text_fields, color: Colors.amber),
-          title: const Text('Font Size'),
-          subtitle: Text(s.fontSize == 'small' ? 'Small (90%)' : s.fontSize == 'large' ? 'Large (115%)' : 'Medium (default)'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _showFontSizeDialog,
-        ),
-
+        _hdr('APPEARANCE'),
+        _tile(i: tm == ThemeMode.light ? Icons.light_mode : tm == ThemeMode.dark ? Icons.dark_mode : Icons.brightness_auto, t: 'Theme', s: tm == ThemeMode.light ? 'Light' : tm == ThemeMode.dark ? 'Dark' : 'System', onTap: () => themeModeNotifier.setMode(tm == ThemeMode.system ? ThemeMode.light : tm == ThemeMode.light ? ThemeMode.dark : ThemeMode.system)),
+        _tile(i: Icons.app_shortcut, t: 'App Icon', s: 'Change home screen icon', onTap: () => _showSelectionDialog(title: 'Choose App Icon', currentVal: s.appIcon, items: [{'title': 'Default Icon', 'val': 'default'}, {'title': 'Icon Variant 1', 'val': 'icon1'}, {'title': 'Icon Variant 2', 'val': 'icon2'}, {'title': 'Icon Variant 3', 'val': 'icon3'}], onSelect: _changeAppIcon)),
+        _tile(i: Icons.density_medium, t: 'Card Density', s: s.cardDensity == 'compact' ? 'Compact' : 'Comfortable', onTap: () => _showSelectionDialog(title: 'Card Density', currentVal: s.cardDensity, items: [{'title': 'Comfortable', 'sub': 'More spacing', 'val': 'comfortable'}, {'title': 'Compact', 'sub': 'Show more cards', 'val': 'compact'}], onSelect: s.setCardDensity)),
+        _tile(i: Icons.text_fields, t: 'Font Size', s: s.fontSize == 'small' ? 'Small (90%)' : s.fontSize == 'large' ? 'Large (115%)' : 'Medium', onTap: () => _showSelectionDialog(title: 'Font Size', currentVal: s.fontSize, items: [{'title': 'Small', 'sub': '90%', 'val': 'small'}, {'title': 'Medium', 'sub': '100%', 'val': 'medium'}, {'title': 'Large', 'sub': '115%', 'val': 'large'}], onSelect: s.setFontSize)),
         const Divider(height: 1),
 
-        // ------------------------------------
-        // BUSINESS
-        // ------------------------------------
-        _sectionHeader('BUSINESS'),
-
-        // ---------------Currency Symbol-----------------
-        ListTile(
-          leading: const Icon(Icons.currency_exchange, color: Colors.amber),
-          title: const Text('Currency Symbol'),
-          subtitle: Text('Currently: ${s.currencySymbol}'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _showCurrencyDialog,
-        ),
-
-        // ---------------Overdue Threshold-----------------
-        ListTile(
-          leading: const Icon(Icons.warning_amber_rounded, color: Colors.amber),
-          title: const Text('Overdue Threshold'),
-          subtitle: Text('Flagged after ${s.overdueDays} days'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _showOverdueDaysDialog,
-        ),
-
-        // ---------------Performa Signatures-----------------
-        _switchSettingTile(
-            icon: Icons.draw_outlined,
-            color: Colors.amber,
-            title: 'Proforma Signatures',
-            subtitle: 'Show signature lines on Proforma PDFs',
-            value: s.showProformaSignatures,
-            onChanged: s.setShowProformaSignatures
-        ),
-
-        // ---------------Invoice Signatures-----------------
-        _switchSettingTile(
-            icon: Icons.draw,
-            color: Colors.amber,
-            title: 'Invoice Signatures',
-            subtitle: 'Show signature lines on Final Invoice PDFs',
-            value: s.showInvoiceSignatures,
-            onChanged: s.setShowInvoiceSignatures
-        ),
-
-        // ---------------Allow Invoice Editing-----------------
-        _switchSettingTile(
-            icon: Icons.edit_document,
-            color: Colors.amber,
-            title: 'Allow Invoice Editing',
-            subtitle: 'Allow modifying records after a Final Invoice is issued',
-            value: s.allowFinalInvoiceEditing,
-            onChanged: s.setAllowFinalInvoiceEditing
-        ),
-
+        _hdr('BUSINESS'),
+        _tile(i: Icons.currency_exchange, t: 'Currency Symbol', s: 'Currently: ${s.currencySymbol}', onTap: _showCurrencyDialog),
+        _tile(i: Icons.warning_amber_rounded, t: 'Overdue Threshold', s: 'Flagged after ${s.overdueDays} days', onTap: _showOverdueDaysDialog),
+        _swt(i: Icons.draw_outlined, t: 'Proforma Signatures', s: 'Show signature lines on Proforma PDFs', v: s.showProformaSignatures, onChange: s.setShowProformaSignatures),
+        _swt(i: Icons.draw, t: 'Invoice Signatures', s: 'Show signature lines on Final Invoices', v: s.showInvoiceSignatures, onChange: s.setShowInvoiceSignatures),
+        _swt(i: Icons.edit_document, t: 'Allow Invoice Editing', s: 'Modify records after Final Invoice is issued', v: s.allowFinalInvoiceEditing, onChange: s.setAllowFinalInvoiceEditing),
         const Divider(height: 1),
 
-        // ------------------------------------
-        // DASHBOARD
-        // ------------------------------------
-        _sectionHeader('DASHBOARD'),
-
-        // ---------------Top Customers by Revenue-----------------
-        _switchSettingTile(icon: Icons.leaderboard_outlined, color: Colors.amber, title: 'Top Customers by Revenue', subtitle: 'Show/hide Top 5 revenue list on dashboard', value: s.showTopCustomersByRevenue, onChanged: s.setShowTopCustomersByRevenue),
-        // ---------------Payment History Time Stamp-----------------
-        _switchSettingTile(icon: Icons.history, color: Colors.amber, title: 'Payment History Time Stamp', subtitle: 'Show/hide time (AM/PM) in Payment History entries', value: s.showPaymentHistoryTime, onChanged: s.setShowPaymentHistoryTime),
-
+        _hdr('DASHBOARD'),
+        _swt(i: Icons.leaderboard_outlined, t: 'Top Customers by Revenue', s: 'Show Top 5 list on dashboard', v: s.showTopCustomersByRevenue, onChange: s.setShowTopCustomersByRevenue),
+        _swt(i: Icons.history, t: 'Payment History Time Stamp', s: 'Show time (AM/PM) in Payment History', v: s.showPaymentHistoryTime, onChange: s.setShowPaymentHistoryTime),
         const Divider(height: 1),
 
-        // ------------------------------------
-        // NOTIFICATIONS
-        // ------------------------------------
-        _sectionHeader('NOTIFICATIONS'),
-        // ---------------Overdue Rental Alert-----------------
-        _switchSettingTile(icon: Icons.alarm_on, color: Colors.amber, title: 'Overdue Rental Alert', subtitle: 'Alert when a rental exceeds ${s.overdueDays} days', value: s.notifyOverdue, onChanged: s.setNotifyOverdue),
-        // ---------------Pending Payment Reminder-----------------
-        _switchSettingTile(icon: Icons.payments_outlined, color: Colors.amber, title: 'Pending Payment Reminder', subtitle: 'Remind about unsettled returned invoices', value: s.notifyPendingPayments, onChanged: s.setNotifyPendingPayments),
-
-        const Divider(height: 1, indent: 16, endIndent: 16),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-          child: Text('SCHEDULED DIGESTS',
-              style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.4, color: Colors.amber[600])),
-        ),
-        _switchSettingTile(icon: Icons.summarize_outlined, color: Colors.amber, title: 'Daily Summary', subtitle: 'A morning snapshot of active rentals and pending collections', value: s.notifySummary, onChanged: s.setNotifySummary),
+        _hdr('NOTIFICATIONS'),
+        _swt(i: Icons.alarm_on, t: 'Overdue Rental Alert', s: 'Alert when a rental exceeds ${s.overdueDays} days', v: s.notifyOverdue, onChange: s.setNotifyOverdue),
+        _swt(i: Icons.payments_outlined, t: 'Pending Payment Reminder', s: 'Remind about unsettled returned invoices', v: s.notifyPendingPayments, onChange: s.setNotifyPendingPayments),
+        _hdr('SCHEDULED DIGESTS'),
+        _swt(i: Icons.summarize_outlined, t: 'Daily Summary', s: 'Snapshot of active rentals/pending collections', v: s.notifySummary, onChange: s.setNotifySummary),
         _infoBox('Fires once per app open, at most once per day.'),
-
         const Divider(height: 1),
 
-        // ------------------------------------
-        // REGIONAL
-        // ------------------------------------
-        _sectionHeader('REGIONAL'),
-
-        // ---------------Language-----------------
-        ListTile(
-          leading: const Icon(Icons.language, color: Colors.amber),
-          title: const Text('Language'),
-          subtitle: Text(s.language == 'Hindi' ? 'Hindi (India)' : 'English (US)'),
-          trailing: DropdownButton<String>(
-            value: s.language,
-            underline: const SizedBox(),
-            items: const <DropdownMenuItem<String>>[
-              DropdownMenuItem<String>(
-                value: 'English',
-                child: Text('English'),
-              ),
-            ],
-            onChanged: (String? v) {
-              if (v != null) s.setLanguage(v);
-            },
-          ),
-        ),
-
-        // ---------------Date Format-----------------
-        ListTile(
-          leading: const Icon(Icons.date_range_outlined, color: Colors.amber),
-          title: const Text('Date Format'),
-          subtitle: Text('Currently: ${s.dateFormat}'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _showDateFormatDialog,
-        ),
-
-        // ---------------Time Format-----------------
-        ListTile(
-          leading: const Icon(Icons.access_time, color: Colors.amber),
-          title: const Text('Time Format'),
-          subtitle: Text(s.timeFormat == '24h' ? '24-hour' : '12-hour (AM/PM)'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _showTimeFormatDialog,
-        ),
+        _hdr('REGIONAL'),
+        _tile(i: Icons.language, t: 'Language', s: s.language == 'Hindi' ? 'Hindi (India)' : 'English (US)', trail: DropdownButton<String>(value: s.language, underline: const SizedBox(), items: const [DropdownMenuItem(value: 'English', child: Text('English'))], onChanged: (v) { if (v != null) s.setLanguage(v); })),
+        _tile(i: Icons.date_range_outlined, t: 'Date Format', s: 'Currently: ${s.dateFormat}', onTap: () => _showSelectionDialog(title: 'Date Format', currentVal: s.dateFormat, items: [{'title': 'dd/MMM/yyyy', 'val': 'dd/MMM/yyyy'}, {'title': 'dd/MM/yyyy', 'val': 'dd/MM/yyyy'}, {'title': 'MM/dd/yyyy', 'val': 'MM/dd/yyyy'}, {'title': 'yyyy-MM-dd', 'val': 'yyyy-MM-dd'}], onSelect: s.setDateFormat)),
+        _tile(i: Icons.access_time, t: 'Time Format', s: s.timeFormat == '24h' ? '24-hour' : '12-hour (AM/PM)', onTap: () => _showSelectionDialog(title: 'Time Format', currentVal: s.timeFormat, items: [{'title': '12-hour (AM/PM)', 'val': '12h'}, {'title': '24-hour', 'val': '24h'}], onSelect: s.setTimeFormat)),
         const Divider(height: 1),
 
-        // ------------------------------------
-        // ABOUT
-        // ------------------------------------
-        _sectionHeader('ABOUT'),
-
-        // ---------------Rental Manager-----------------
-        const ListTile(
-          leading: Icon(Icons.construction, color: Colors.amber),
-          title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: Text('Version 2.7.0  |  Database v30'),
-        ),
-
-        // ---------------Privacy & Data-----------------
-        ListTile(
-          leading: const Icon(Icons.privacy_tip_outlined, color: Colors.amber),
-          title: const Text('Privacy & Data'),
-          subtitle: const Text('Offline-first data handling and user control'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _showPrivacyDialog,
-        ),
-
-        // ---------------Tell a Friend-----------------
-        ListTile(
-          leading: const Icon(Icons.share, color: Colors.amber),
-          title: const Text('Tell a Friend'),
-          subtitle: const Text('Share the app with others'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () {
-            Share.share('Check out Rental Manager, a great offline tool for tracking inventory and invoices: https://gitlab.com/wjust4435/rental_manager');
-          },
-        ),
+        _hdr('ABOUT'),
+        const ListTile(leading: Icon(Icons.construction, color: Colors.amber), title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Version 2.8.0  |  Database v32')),
+        _tile(i: Icons.privacy_tip_outlined, t: 'Privacy & Data', s: 'Offline-first data handling', onTap: _showPrivacyDialog),
+        _tile(i: Icons.share, t: 'Tell a Friend', s: 'Share the app with others', onTap: () => Share.share('Check out Rental Manager, a great offline tool for tracking inventory and invoices: https://gitlab.com/wjust4435/rental_manager')),
         const SizedBox(height: 40),
       ]),
     );
