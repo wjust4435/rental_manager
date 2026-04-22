@@ -36,6 +36,7 @@ void main() {
 
 Future<void> _initializeServicesInBackground() async {
   try {
+    await DatabaseHelper.getBusinessInfo();
     await NotificationService.initialize();
   } catch (_) {
     // Keep app startup resilient even if a platform service init fails.
@@ -326,7 +327,7 @@ class NotificationService {
 
 // ========Database Helper========
 class DatabaseHelper {
-  static const int _dbVersion = 32;
+  static const int _dbVersion = 33;
   static Database? _db;
   static String _activeDbFile = 'rental_manager_v1.db';
 
@@ -477,6 +478,52 @@ class DatabaseHelper {
             // FINANCIAL SYNC: Ensure existing databases have the cancellation flag for POs
             await db.execute("ALTER TABLE purchase_orders ADD COLUMN isCancelled INTEGER DEFAULT 0");
           } catch (e, st) { debugPrint('Migration v32 error: $e\n$st'); }
+        }
+
+        if (oldV < 33) {
+          try {
+            // HEALING MIGRATION: Restore any missing schemas deleted between v23-v28 in v2.8.1
+            // 1. Ensure all auxiliary tables exist safely
+            await db.execute("CREATE TABLE IF NOT EXISTS sequences(seqKey TEXT PRIMARY KEY, seqValue INTEGER)");
+            await db.execute("CREATE TABLE IF NOT EXISTS expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, paymentMethod TEXT, vendor TEXT, receiptPath TEXT, notes TEXT)");
+            await db.execute("CREATE TABLE IF NOT EXISTS suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT, email TEXT, address TEXT, taxRegNo TEXT, notes TEXT, joinedDate TEXT)");
+            await db.execute("CREATE TABLE IF NOT EXISTS purchase_orders(id INTEGER PRIMARY KEY AUTOINCREMENT, supplierId INTEGER, poNumber TEXT, billNumber TEXT DEFAULT '', orderDate TEXT, subtotal REAL DEFAULT 0, taxAmount REAL DEFAULT 0, grandTotal REAL DEFAULT 0, amountPaid REAL DEFAULT 0, notes TEXT, isCancelled INTEGER DEFAULT 0)");
+            await db.execute("CREATE TABLE IF NOT EXISTS purchase_order_items(id INTEGER PRIMARY KEY AUTOINCREMENT, poId INTEGER, itemId INTEGER, qty INTEGER, unitCost REAL, lineTotal REAL)");
+            await db.execute("CREATE TABLE IF NOT EXISTS vendor_payment_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, poId INTEGER NOT NULL, amount REAL NOT NULL, method TEXT NOT NULL, paidAt TEXT NOT NULL)");
+            await db.execute("CREATE TABLE IF NOT EXISTS maintenance_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, itemId INTEGER NOT NULL, description TEXT NOT NULL, cost REAL NOT NULL, logDate TEXT NOT NULL, FOREIGN KEY (itemId) REFERENCES items (id) ON DELETE CASCADE)");
+
+            // 2. Universalized abstract to safely patch missing columns
+            Future<void> safeAddColumn(String table, String definition) async {
+              try {
+                await db.execute("ALTER TABLE $table ADD COLUMN $definition");
+              } catch (_) {
+                // Ignore duplicate column errors if the user already has it
+              }
+            }
+
+            // 3. Apply schema patches for data integrity
+            await safeAddColumn("items", "supplierId INTEGER DEFAULT NULL");
+            await safeAddColumn("purchase_orders", "billNumber TEXT DEFAULT ''");
+            await safeAddColumn("purchase_orders", "isCancelled INTEGER DEFAULT 0");
+            await safeAddColumn("rentals", "isCancelled INTEGER DEFAULT 0");
+            await safeAddColumn("rentals", "invoiceNumber TEXT DEFAULT ''");
+            await safeAddColumn("rentals", "voidedAt TEXT DEFAULT ''");
+            await safeAddColumn("orders", "invoiceNumber TEXT DEFAULT ''");
+            await safeAddColumn("orders", "voidedAt TEXT DEFAULT ''");
+            await safeAddColumn("customers", "partyType TEXT DEFAULT 'Customer'");
+            await safeAddColumn("customers", "taxRegNo TEXT DEFAULT ''");
+
+            // 4. Financial & Tax System columns
+            await safeAddColumn("business_info", "taxProfile TEXT DEFAULT 'No Tax'");
+            await safeAddColumn("business_info", "taxType TEXT DEFAULT 'none'");
+            await safeAddColumn("business_info", "taxRate REAL DEFAULT 0");
+            await safeAddColumn("business_info", "taxMode TEXT DEFAULT 'exclusive'");
+            await safeAddColumn("business_info", "taxRegNo TEXT DEFAULT ''");
+            await safeAddColumn("business_info", "fyStartMonth INTEGER DEFAULT 4");
+
+          } catch (e, st) {
+            debugPrint('Critical Migration v33 error: $e\n$st');
+          }
         }
       },
     );
@@ -673,9 +720,10 @@ class DatabaseHelper {
       totalDepreciation += (v['accumulatedDepreciation'] as num?)?.toDouble() ?? 0.0;
     }
 
-    // 5. EBITDA and Net Profit Calculations
+    // 5. CPA Standard: EBITDA -> EBIT -> EBT -> Net Profit
     double ebitda = grossRevenue - opex;
-    double netProfit = ebitda - badDebt - totalDepreciation;
+    // Depreciation and Bad Debt (Losses) are deducted to arrive at Net Taxable Profit
+    double netProfit = ebitda - totalDepreciation - badDebt;
 
     return {
       'grossRevenue': grossRevenue,
@@ -1605,16 +1653,20 @@ class DatabaseHelper {
     return db.rawQuery("SELECT rentals.*, items.name as itemName FROM rentals JOIN items ON rentals.itemId=items.id WHERE rentals.orderId=?", [orderId]);
   }
 
+  static Map<String, dynamic>? _cachedBizInfo;
+
   static Future<Map<String, dynamic>> getBusinessInfo() async {
     final db = await getDatabase();
     final rows = await db.query('business_info', where: 'id=?', whereArgs: [1]);
     if (rows.isEmpty) {
-      return {
+      _cachedBizInfo = {
         'name': '', 'phone': '', 'phone2': '', 'email': '', 'address': '', 'upiId': '', 'upiName': '',
         'taxProfile': 'No Tax', 'taxType': 'none', 'taxRate': 0.0, 'taxMode': 'exclusive', 'taxRegNo': '', 'fyStartMonth': 4,
       };
+    } else {
+      _cachedBizInfo = rows.first;
     }
-    return rows.first;
+    return _cachedBizInfo!;
   }
 
   static Future<void> saveBusinessInfo(
@@ -1622,21 +1674,14 @@ class DatabaseHelper {
         String taxProfile = 'No Tax', String taxType = 'none', double taxRate = 0.0, String taxMode = 'exclusive', String taxRegNo = '', int fyStartMonth = 4,
       }) async {
     final db = await getDatabase();
-    await db.update('business_info', {
-      'name': name,
-      'phone': phone,
-      'phone2': phone2,
-      'email': email,
-      'address': address,
-      'upiId': upiId,
-      'upiName': upiName,
-      'taxProfile': taxProfile,
-      'taxType': taxType,
-      'taxRate': taxRate,
-      'taxMode': taxMode,
-      'taxRegNo': taxRegNo,
-      'fyStartMonth': fyStartMonth,
-    }, where: 'id=?', whereArgs: [1]);
+
+    final updatedData = {
+      'name': name, 'phone': phone, 'phone2': phone2, 'email': email, 'address': address, 'upiId': upiId, 'upiName': upiName,
+      'taxProfile': taxProfile, 'taxType': taxType, 'taxRate': taxRate, 'taxMode': taxMode, 'taxRegNo': taxRegNo, 'fyStartMonth': fyStartMonth,
+    };
+
+    await db.update('business_info', updatedData, where: 'id=?', whereArgs: [1]);
+    _cachedBizInfo = updatedData;
 
     // Update display name cache for the Account Switcher UI
     final SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -2186,14 +2231,13 @@ class DatabaseHelper {
     final db = await getDatabase();
     final biz = await getBusinessInfo();
     final tax = _taxSettingsFromBiz(biz);
-    final revResult = await db.rawQuery("SELECT SUM((qty * rentalRate * MAX(1, CAST(julianday(IFNULL(NULLIF(returnDate, ''), date('now', 'localtime'))) - julianday(checkoutDate) AS INTEGER))) + penaltyFee - discount - badDebt) as rev FROM rentals WHERE isCancelled = 0");
-    final totals = _taxBreakdown((revResult.first['rev'] as num?)?.toDouble() ?? 0.0, tax);
+    final revResult = await db.rawQuery("SELECT SUM((qty * rentalRate * MAX(1, CAST(julianday(IFNULL(NULLIF(returnDate, ''), date('now', 'localtime'))) - julianday(checkoutDate) AS INTEGER))) + penaltyFee - discount - badDebt) as realizedRev FROM rentals WHERE isCancelled = 0");
+    final totals = _taxBreakdown((revResult.first['realizedRev'] as num?)?.toDouble() ?? 0.0, tax);
     return {'base': totals['taxableBase'], 'collected': totals['taxAmount']};
   }
 }
 
 // ========Rental Group & Shared Models========
-
 class RentalGroup {
   final int? orderId, fallbackId;
   final List<Map<String, dynamic>> items;
@@ -2222,7 +2266,16 @@ class RentalGroup {
   double get advance => items.fold(0.0, (s, r) => s + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0));
   double get discount => items.fold(0.0, (s, r) => s + ((r['discount'] as num?)?.toDouble() ?? 0.0));
   double get badDebt => items.fold(0.0, (s, r) => s + ((r['badDebt'] as num?)?.toDouble() ?? 0.0));
-  double get balance => calculateTotalCost() - advance - discount - badDebt;
+  double get grandTotal {
+    final biz = DatabaseHelper._cachedBizInfo ?? {};
+    final tax = DatabaseHelper._taxSettingsFromBiz(biz);
+    // Standard CPA practice: Calculate net subtotal before applying tax engine
+    final netSubtotal = calculateTotalCost() - discount;
+    final totals = DatabaseHelper._taxBreakdown(netSubtotal, tax);
+    return totals['grandTotal'] ?? netSubtotal;
+  }
+
+  double get balance => grandTotal - advance - badDebt;
 
   double calculateTotalCost() {
     if (isCancelled) return 0.0;
@@ -2698,14 +2751,10 @@ class UniversalRentalCard extends StatelessWidget {
     final dayCount = DateTime.now().difference(checkoutDt).inDays;
     final isOverdue = !group.isFullyReturned && dayCount > settings.overdueDays;
 
-    double initialAdvance = 0.0, laterPaid = 0.0;
     if (group.isFullyReturned) {
       final payments = paymentLogs ?? const [];
       if (payments.isNotEmpty) {
-        initialAdvance = (payments.first['amount'] as num?)?.toDouble() ?? 0.0;
-        laterPaid = payments.skip(1).fold(0.0, (s, p) => s + ((p['amount'] as num?)?.toDouble() ?? 0.0));
       } else {
-        initialAdvance = group.advance;
       }
     }
 
@@ -2730,8 +2779,11 @@ class UniversalRentalCard extends StatelessWidget {
             SizedBox(width: 32, child: PopupMenuButton<String>(
               tooltip: 'Options',
               onSelected: (val) {
-                if (val == 'edit') onEdit?.call(); if (val == 'cancel') onCancel?.call(); if (val == 'delete') onDelete?.call();
-                if (val == 'pdf' && group.orderId != null) onPdf?.call(); if (val == 'proforma' && group.orderId != null) onProforma?.call();
+                if (val == 'edit') { onEdit?.call(); }
+                if (val == 'cancel') { onCancel?.call(); }
+                if (val == 'delete') { onDelete?.call(); }
+                if (val == 'pdf' && group.orderId != null) { onPdf?.call(); }
+                if (val == 'proforma' && group.orderId != null) { onProforma?.call(); }
               },
               itemBuilder: (_) => [
                 if (onEdit != null) const PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit_outlined, size: 18), SizedBox(width: 8), Text('Edit')])),
@@ -2767,30 +2819,76 @@ class UniversalRentalCard extends StatelessWidget {
           }),
           if (group.notes.isNotEmpty) Padding(padding: EdgeInsets.only(top: compact ? 2 : 4), child: Text('Note: ${group.notes}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 12))),
           divider,
-          // Detailed Ledger Rows (Left Aligned)
-          FutureBuilder<Map<String, dynamic>>(
-              future: DatabaseHelper.getBusinessInfo(),
-              builder: (context, snapshot) {
-                final biz = snapshot.data ?? {};
+          // Detailed Ledger Rows (Left Aligned & Synchronous)
+          Builder(
+              builder: (context) {
+                final biz = DatabaseHelper._cachedBizInfo ?? {};
                 final taxRate = (biz['taxRate'] as num?)?.toDouble() ?? 0.0;
-                final subtotal = group.calculateTotalCost();
+                final taxType = biz['taxType'] as String? ?? 'none';
+                final taxMode = biz['taxMode'] as String? ?? 'exclusive';
+
+                final subtotal = group.calculateTotalCost(); // already contains penalty
                 final penalty = group.items.fold(0.0, (s, r) => s + ((r['penaltyFee'] as num?)?.toDouble() ?? 0.0));
-                final taxAmount = (subtotal + penalty - group.discount) * (taxRate / 100);
+                final lineCostOnly = subtotal - penalty;
+
+                double taxableBase = subtotal - group.discount;
+                double taxAmount = 0.0;
+                if (taxType != 'none' && taxRate > 0) {
+                  if (taxMode == 'exclusive') {
+                    taxAmount = taxableBase * (taxRate / 100.0);
+                  } else {
+                    taxAmount = taxableBase - (taxableBase / (1 + (taxRate / 100.0)));
+                  }
+                }
+
+                double advancePaid = 0.0;
+                double laterPayments = 0.0;
+                double totalRefunds = 0.0;
+
+                if (group.isFullyReturned) {
+                  final payments = paymentLogs ?? const [];
+                  if (payments.isNotEmpty) {
+                    for (var p in payments) {
+                      double amt = (p['amount'] as num).toDouble();
+                      if (amt < 0) {
+                        totalRefunds += amt.abs();
+                      } else {
+                        String pDate = (p['paidAt'] as String).split('T')[0];
+                        String cDate = group.checkoutDate.split('T')[0];
+                        // Check if the payment occurred identically to the checkout date
+                        if (pDate == cDate && advancePaid == 0.0 && p['id'] == payments.first['id']) {
+                          advancePaid += amt;
+                        } else {
+                          laterPayments += amt;
+                        }
+                      }
+                    }
+                  } else {
+                    if (group.advance < 0) {
+                      totalRefunds = group.advance.abs();
+                    } else {
+                      advancePaid = group.advance;
+                    }
+                  }
+                }
 
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     if (!group.isFullyReturned) ...[
-                      Text('Estimated Total: ${formatMoney(group.calculateTotalCost())}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                      Row(mainAxisAlignment: MainAxisAlignment.start, children: [Text('Adv/Security: ${formatMoney(group.advance)}'), _PaymentLabel(group.paymentMethod)]),
+                      Text('Estimated Total: ${formatMoney(group.grandTotal)}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                      if (group.advance > 0) Row(mainAxisAlignment: MainAxisAlignment.start, children: [Text('Adv/Security: ${formatMoney(group.advance)}'), _PaymentLabel(group.paymentMethod)]),
+                      if (group.advance < 0) Row(mainAxisAlignment: MainAxisAlignment.start, children: [Text('Refund Issued: ${formatMoney(group.advance.abs())}'), _PaymentLabel(group.paymentMethod)]),
                     ] else ...[
-                      _finRow('Total Billed:', formatMoney(subtotal), strike: group.isCancelled),
+                      _finRow('Total Billed:', formatMoney(lineCostOnly), strike: group.isCancelled),
                       if (penalty > 0) _finRow('Penalty:', '+ ${formatMoney(penalty)}', color: Colors.redAccent),
-                      if (taxAmount > 0) _finRow('Tax:', '+ ${formatMoney(taxAmount)}'),
-                      if (group.discount != 0) _finRow('Discount:', '- ${formatMoney(group.discount)}'),
-                      if (group.badDebt != 0) _finRow('Written Off:', '- ${formatMoney(group.badDebt)}', color: Colors.redAccent),
-                      _finRow('Advance/Security:', '- ${formatMoney(initialAdvance)}'),
-                      if (laterPaid != 0) _finRow('Payment(s):', '- ${formatMoney(laterPaid)}'),
+                      if (group.discount > 0) _finRow('Discount:', '- ${formatMoney(group.discount)}'),
+                      if (taxAmount > 0) _finRow('Tax (${taxRate.toStringAsFixed(1)}%):', '+ ${formatMoney(taxAmount)}'),
+                      if (group.badDebt > 0) _finRow('Written Off:', '- ${formatMoney(group.badDebt)}', color: Colors.redAccent),
+
+                      if (advancePaid > 0) _finRow('Advance/Security:', '- ${formatMoney(advancePaid)}'),
+                      if (laterPayments > 0) _finRow('Payment(s):', '- ${formatMoney(laterPayments)}'),
+                      if (totalRefunds > 0) _finRow('Refund(s):', '+ ${formatMoney(totalRefunds)}'),
                     ],
                   ],
                 );
@@ -3407,9 +3505,9 @@ class _InventoryTabState extends State<InventoryTab> {
                 icon: const Icon(Icons.more_vert, size: 22),
                 tooltip: 'Options',
                 onSelected: (val) {
-                  if (val == 'edit') _showItemDialog(item: it);
-                  if (val == 'repair') _showMaintenanceDialog(it);
-                  if (val == 'history') _showMaintenanceHistory(it);
+                  if (val == 'edit') { _showItemDialog(item: it); }
+                  if (val == 'repair') { _showMaintenanceDialog(it); }
+                  if (val == 'history') { _showMaintenanceHistory(it); }
                 },
                 itemBuilder: (_) => const [
                   PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit_outlined, size: 18), SizedBox(width: 8), Text('Edit Details')])),
@@ -4085,7 +4183,12 @@ class _PartiesListTabState extends State<_PartiesListTab> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No phone numbers saved.')));
       return;
     }
-    Future<void> dial(String num) async { final u = Uri.parse('tel:${num.replaceAll(RegExp(r'[^0-9+]'), '')}'); if (await canLaunchUrl(u)) await launchUrl(u); }
+    Future<void> dial(String num) async {
+      final u = Uri.parse('tel:${num.replaceAll(RegExp(r'[^0-9+]'), '')}');
+      if (await canLaunchUrl(u)) {
+        await launchUrl(u);
+      }
+    }
     if (p1.isNotEmpty && p2.isNotEmpty) {
       if (!mounted) return;
       showDialog(context: context, builder: (ctx) => SimpleDialog(title: const Text('Call'), children: [ListTile(leading: const Icon(Icons.phone, color: Colors.green), title: Text(p1), onTap: () { Navigator.pop(ctx); dial(p1); }), ListTile(leading: const Icon(Icons.phone, color: Colors.green), title: Text(p2), onTap: () { Navigator.pop(ctx); dial(p2); })]));
@@ -4116,7 +4219,15 @@ class _PartiesListTabState extends State<_PartiesListTab> {
   Future<void> _delete(int id) async {
     if (!await _confirmDialog(context, title:'Delete', message:'Permanently delete?')) return;
     if (!mounted) return;
-    try { await DatabaseHelper.deleteCustomer(id); if (mounted) _load(); } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Cannot delete: $e'))); }
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await DatabaseHelper.deleteCustomer(id);
+      if (!mounted) return;
+      _load();
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('Cannot delete: $e')));
+    }
   }
 
   @override Widget build(BuildContext context) => Scaffold(
@@ -4340,6 +4451,36 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
   Future<void> _saveOrder() async {
     if (_selectedCustomerId == null) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a customer.'))); return; }
     final cust = _customers.firstWhere((c) => c['id']==_selectedCustomerId, orElse: () => <String,dynamic>{});
+
+    // CPA Control: Verify financial standing and blacklist status before committing inventory.
+    final isBlacklisted = (cust['isBlacklisted'] as int? ?? 0) == 1;
+    final stats = await DatabaseHelper.getCustomerLifetimeStats(cust['id'] as int, cust['name'] as String? ?? '');
+    if (!mounted) return;
+    final badDebt = (stats['badDebt'] as num?)?.toDouble() ?? 0.0;
+
+    if (isBlacklisted || badDebt > 0) {
+      final proceed = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Row(children: [Icon(Icons.warning_amber_rounded, color: Colors.red), SizedBox(width: 8), Text('High Risk Customer')]),
+            content: Text('Warning:\n\n'
+                '${isBlacklisted ? '• This customer is strictly BLACKLISTED.\n' : ''}'
+                '${badDebt > 0 ? '• Prior bad debt / write-off: ${formatMoney(badDebt)}.\n' : ''}'
+                '\nDo you really want to proceed with this rental?'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Proceed Anyway')
+              ),
+            ],
+          )
+      );
+      if (!mounted) return;
+      if (proceed != true) return;
+    }
+
     final sel = <Map<String,dynamic>>[]; bool isFirst = true;
     for (final l in _lines) {
       if (l.itemId == null) continue;
@@ -4351,7 +4492,9 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
     try {
       final oid = await DatabaseHelper.createOrder(cust['id'], sel.first['contractor'], DatabaseHelper.isoDate(_selectedDate));
       await DatabaseHelper.createOrderRentals(oid, sel);
-      if (mounted) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Order saved!'))); Navigator.pop(context); }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Order saved!')));
+      Navigator.pop(context);
     } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e'))); }
   }
 
@@ -4455,8 +4598,8 @@ class _OrdersListScreenState extends State<OrdersListScreen> {
                     icon: const Icon(Icons.more_vert, size: 20),
                     tooltip: 'Options',
                     onSelected: (val) {
-                      if (val == 'preview') _openPdf(o['id'] as int);
-                      if (val == 'share') _openPdf(o['id'] as int, share: true);
+                      if (val == 'preview') { _openPdf(o['id'] as int); }
+                      if (val == 'share') { _openPdf(o['id'] as int, share: true); }
                     },
                     itemBuilder: (_) => const [
                       PopupMenuItem(value: 'preview', child: Row(children: [Icon(Icons.visibility_outlined, size: 18), SizedBox(width: 8), Text('Preview PDF')])),
@@ -4660,11 +4803,29 @@ class _PurchaseOrdersScreenState extends State<PurchaseOrdersScreen> {
     final payments = _paymentLogsByPO[poId] ?? [];
     double initialAdvance = 0.0;
     double laterPaid = 0.0;
+    double totalRefunds = 0.0;
+
     if (payments.isNotEmpty) {
-      initialAdvance = (payments.first['amount'] as num).toDouble();
-      laterPaid = payments.skip(1).fold(0.0, (s, p) => s + ((p['amount'] as num).toDouble()));
+      for (var p in payments) {
+        double amt = (p['amount'] as num).toDouble();
+        if (amt < 0) {
+          totalRefunds += amt.abs();
+        } else {
+          String pDate = (p['paidAt'] as String).split('T')[0];
+          String cDate = po['orderDate'].toString().split('T')[0];
+          if (pDate == cDate && initialAdvance == 0.0 && p['id'] == payments.first['id']) {
+            initialAdvance += amt;
+          } else {
+            laterPaid += amt;
+          }
+        }
+      }
     } else {
-      initialAdvance = amountPaid;
+      if (amountPaid < 0) {
+        totalRefunds = amountPaid.abs();
+      } else {
+        initialAdvance = amountPaid;
+      }
     }
 
     final supplierName = po['supplierName'] as String? ?? 'Unknown Supplier';
@@ -4754,8 +4915,9 @@ class _PurchaseOrdersScreenState extends State<PurchaseOrdersScreen> {
                 if (penalty > 0) _finRow('Penalty:', '+ ${formatMoney(penalty)}', color: Colors.redAccent),
                 if (taxAmount > 0) _finRow('Tax:', '+ ${formatMoney(taxAmount)}'),
                 if (discount > 0) _finRow('Discount:', '- ${formatMoney(discount)}'),
-                _finRow('Advance/Security:', '- ${formatMoney(initialAdvance)}'),
+                if (initialAdvance > 0) _finRow('Advance/Security:', '- ${formatMoney(initialAdvance)}'),
                 if (laterPaid > 0) _finRow('Payment(s):', '- ${formatMoney(laterPaid)}'),
+                if (totalRefunds > 0) _finRow('Refund(s) Rcvd:', '+ ${formatMoney(totalRefunds)}', color: Colors.orange),
               ],
             ),
             const SizedBox(height: 4),
@@ -5362,7 +5524,11 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
           ..._rows.map((r) {
             final amt = (r['amount'] as num?)?.toDouble() ?? 0.0, isRef = amt < 0, cust = (r['customerName'] as String? ?? '').trim(), mth = (r['method'] as String? ?? '').trim(), oId = r['orderId'] as int?, fId = r['fallbackRentalId'] as int?, inv = r['invoiceNumber'] as String? ?? '', prf = r['proformaNumber'] as String? ?? '';
             final ref = isVendor ? prf : (oId != null ? (inv.isNotEmpty ? inv : (prf.isNotEmpty ? prf : 'Invoice #$oId')) : (fId != null ? 'Record #$fId' : 'Record'));
-            final tm = _fmtTm(r['paidAt'] ?? '', r['baseDate'] ?? ''), dt = _fmtDt(r['paidAt'] ?? '', r['baseDate'] ?? ''), isCan = (r['isCancelled'] as int? ?? 0) == 1, col = isVendor ? (isRef ? Colors.green : Colors.orange) : (isRef ? Colors.orange : Colors.green), isAdv = !isRef && (r['id'] == r['firstLogId']);
+            final tm = _fmtTm(r['paidAt'] ?? '', r['baseDate'] ?? ''), dt = _fmtDt(r['paidAt'] ?? '', r['baseDate'] ?? ''), isCan = (r['isCancelled'] as int? ?? 0) == 1, col = isVendor ? (isRef ? Colors.green : Colors.orange) : (isRef ? Colors.orange : Colors.green);
+            final pDate = (r['paidAt'] as String? ?? '').split('T')[0];
+            final cDate = (r['baseDate'] as String? ?? '').split('T')[0];
+            final isAdv = !isRef && (r['id'] == r['firstLogId']) && (pDate == cDate);
+
             return Card(margin: const EdgeInsets.only(bottom: 8), child: Padding(padding: appSettingsNotifier.cardPadding, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 CircleAvatar(radius: 13.5, backgroundColor: col.withValues(alpha: 0.15), child: Icon(isVendor ? (isRef ? Icons.undo : Icons.payment) : (isRef ? Icons.undo : Icons.payments), color: col, size: 14.5)), const SizedBox(width: 6),
@@ -5988,7 +6154,7 @@ class _ExpenseTrackingScreenState extends State<ExpenseTrackingScreen> {
                         padding: EdgeInsets.zero,
                         tooltip: 'Options',
                         onSelected: (val) {
-                          if (val == 'delete') _delete(e['id'] as int);
+                          if (val == 'delete') { _delete(e['id'] as int); }
                         },
                         itemBuilder: (_) => const [
                           PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 8), Text('Delete', style: TextStyle(color: Colors.red))])),
@@ -6076,6 +6242,7 @@ class _LossesAndBadDebtScreenState extends State<LossesAndBadDebtScreen> {
     final payC = TextEditingController(text: group.badDebt.toStringAsFixed(2));
     String method = kPaymentMethods.first;
     final formKey = GlobalKey<FormState>();
+    final messenger = ScaffoldMessenger.of(context);
 
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
@@ -6104,7 +6271,7 @@ class _LossesAndBadDebtScreenState extends State<LossesAndBadDebtScreen> {
               initialValue: method,
               decoration: const InputDecoration(labelText: 'Payment Method', border: OutlineInputBorder()),
               items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
-              onChanged: (v) { if (v != null) method = v; },
+              onChanged: (v) { if (v != null) { method = v; } },
             ),
           ]),
         ),
@@ -6138,7 +6305,7 @@ class _LossesAndBadDebtScreenState extends State<LossesAndBadDebtScreen> {
 
     if (!mounted) return;
     _load();
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Bad debt recovery recorded successfully.')));
+    messenger.showSnackBar(const SnackBar(content: Text('Bad debt recovery recorded successfully.')));
   }
 
   @override
@@ -6963,8 +7130,8 @@ class _FinalInvoicesScreenState extends State<FinalInvoicesScreen> {
                       icon: const Icon(Icons.more_vert, size: 20),
                       tooltip: 'Options',
                       onSelected: (val) {
-                        if (val == 'preview') _openPdf(g.orderId!);
-                        if (val == 'share') _openPdf(g.orderId!, share: true);
+                        if (val == 'preview') { _openPdf(g.orderId!); }
+                        if (val == 'share') { _openPdf(g.orderId!, share: true); }
                       },
                       itemBuilder: (_) => const [
                         PopupMenuItem(value: 'preview', child: Row(children: [Icon(Icons.visibility_outlined, size: 18), SizedBox(width: 8), Text('Preview PDF')])),
@@ -7025,12 +7192,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _changeAppIcon(String iconKey) async {
+    final messenger = ScaffoldMessenger.of(context);
     try {
       await _iconChannel.invokeMethod('setIcon', {'iconKey': iconKey});
       await appSettingsNotifier.setAppIcon(iconKey);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(iconKey == 'default' ? 'App icon reset to default.' : 'App icon changed successfully.'), duration: const Duration(seconds: 2)));
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text(iconKey == 'default' ? 'App icon reset to default.' : 'App icon changed successfully.'), duration: const Duration(seconds: 2)));
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to change icon: $e')));
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('Failed to change icon: $e')));
     }
   }
 
@@ -7117,13 +7287,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const Divider(height: 1),
 
         _hdr('REGIONAL'),
-        _tile(i: Icons.language, t: 'Language', s: s.language == 'Hindi' ? 'Hindi (India)' : 'English (US)', trail: DropdownButton<String>(value: s.language, underline: const SizedBox(), items: const [DropdownMenuItem(value: 'English', child: Text('English'))], onChanged: (v) { if (v != null) s.setLanguage(v); })),
-        _tile(i: Icons.date_range_outlined, t: 'Date Format', s: 'Currently: ${s.dateFormat}', onTap: () => _showSelectionDialog(title: 'Date Format', currentVal: s.dateFormat, items: [{'title': 'dd/MMM/yyyy', 'val': 'dd/MMM/yyyy'}, {'title': 'dd/MM/yyyy', 'val': 'dd/MM/yyyy'}, {'title': 'MM/dd/yyyy', 'val': 'MM/dd/yyyy'}, {'title': 'yyyy-MM-dd', 'val': 'yyyy-MM-dd'}], onSelect: s.setDateFormat)),
-        _tile(i: Icons.access_time, t: 'Time Format', s: s.timeFormat == '24h' ? '24-hour' : '12-hour (AM/PM)', onTap: () => _showSelectionDialog(title: 'Time Format', currentVal: s.timeFormat, items: [{'title': '12-hour (AM/PM)', 'val': '12h'}, {'title': '24-hour', 'val': '24h'}], onSelect: s.setTimeFormat)),
+        _tile(i: Icons.language, t: 'Language', s: s.language == 'Hindi' ? 'Hindi (India)' : 'English (US)', trail: DropdownButton<String>(value: s.language, underline: const SizedBox(), items: const [DropdownMenuItem(value: 'English', child: Text('English'))], onChanged: (v) { if (v != null) { s.setLanguage(v); } })),
+        _tile(i: Icons.date_range_outlined, t: 'Date Format', s: 'Currently: ${s.dateFormat}', onTap: () => _showSelectionDialog(title: 'Date Format', currentVal: s.dateFormat, items: [{'title': 'dd/MMM/yyyy', 'val': 'dd/MMM/yyyy'}, {'title': 'dd/MM/yyyy', 'val': 'dd/MM/yyyy'}, {'title': 'MM/dd/yyyy', 'val': 'MM/dd/yyyy'}, {'title': 'yyyy-MM-dd', 'val': 'yyyy-MM-dd'}], onSelect: (v) { s.setDateFormat(v); })),
+        _tile(i: Icons.access_time, t: 'Time Format', s: s.timeFormat == '24h' ? '24-hour' : '12-hour (AM/PM)', onTap: () => _showSelectionDialog(title: 'Time Format', currentVal: s.timeFormat, items: [{'title': '12-hour (AM/PM)', 'val': '12h'}, {'title': '24-hour', 'val': '24h'}], onSelect: (v) { s.setTimeFormat(v); })),
         const Divider(height: 1),
 
         _hdr('ABOUT'),
-        const ListTile(leading: Icon(Icons.construction, color: Colors.amber), title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Version 2.8.0  |  Database v32')),
+        const ListTile(leading: Icon(Icons.construction, color: Colors.amber), title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Version 2.8.1  |  Database v32')),
         _tile(i: Icons.privacy_tip_outlined, t: 'Privacy & Data', s: 'Offline-first data handling', onTap: _showPrivacyDialog),
         _tile(i: Icons.share, t: 'Tell a Friend', s: 'Share the app with others', onTap: () => Share.share('Check out Rental Manager, a great offline tool for tracking inventory and invoices: https://gitlab.com/wjust4435/rental_manager')),
         const SizedBox(height: 40),
