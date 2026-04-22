@@ -1,160 +1,168 @@
 # Rental Manager
 
-Offline-first Flutter app for rental businesses to manage inventory, customer orders, returns, invoices, payments, and bad debt from a local SQLite database.
+**Professional offline-first rental management system for Android**
+
+Comprehensive Flutter application for rental businesses to manage inventory, customers, orders, invoices, payments, and financial reporting—all from a local SQLite database with zero internet dependency.
 
 ## License
 
-Rental Manager is licensed under the GNU General Public License v3.0 or later.  
-See [LICENSE](LICENSE).
+GNU General Public License v3.0 or later (GPL-3.0-or-later). See [LICENSE](LICENSE).
 
-## Current App Scope
+---
 
-- Platform target: Android-first Flutter app (offline operation).
-- Version: `2.6.1`
-- Local database: `siteyard_v3.db`
-- Database schema version in app: `v26`
+## Current Version
+
+- **App Version:** `2.8.1`
+- **Database Schema:** `v33`
+- **Platform:** Android (Flutter)
+- **Database File:** `rental_manager_v33.db`
+
+---
+
+## Core Philosophy
+
+- **100% Offline** – No internet required, complete data privacy
+- **Multi-Business Support** – Manage multiple rental accounts
+- **CPA-Compliant Financials** – Professional accounting standards
+- **Professional Invoicing** – A4 and 57mm thermal PDF formats
+
+---
 
 ## Key Features
 
-### Dashboard
+### 📊 Dashboard
+Real-time metrics: inventory, active rentals, overdue alerts, pending collections, revenue stats, Top 5 customers by revenue.
 
-- Inventory/rental/customer stats at a glance.
-- Overdue rental visibility based on configurable overdue days.
-- Pending collection total (unsettled returned invoices).
-- Optional top customers by revenue.
-- Quick actions to core screens.
+### 🏢 Multi-Business Management
+Account switcher, separate databases per business, tax configuration (GST/VAT/Sales Tax), UPI QR code generation, fiscal year setup.
 
-### Inventory
+### 📦 Inventory
+Item tracking with categories, supplier linking, availability checks, depreciation tracking, maintenance logs, search & filter.
 
-- Add/edit/delete inventory items.
-- Category and search filtering.
-- Availability checks to prevent over-renting.
-- Tracks rented quantity and lost/damaged quantity.
+### 👥 Customers & Parties
+Customer profiles, supplier management, blacklist flags, lifetime statistics, risk alerts (bad debt warnings), direct phone dialing.
 
-### Rentals Workflow
+### 🛒 Rental Orders
+Multi-item orders, walk-in or saved customers, full/partial returns, damaged/lost tracking, penalty fees, order cancellation, automatic inventory restoration.
 
-- Create multi-item rental orders for saved customers or walk-ins.
-- Full return and partial return support.
-- Partial return can capture:
-  - good returned quantity
-  - damaged/lost quantity
-  - penalty fee
-- Invoice grouping by order ID (or fallback rental ID for standalone records).
+### 💰 Transactions
+**Outstanding Tab:** Payment ledger with filters (All/Amount Due/Refund Due), smart invoice search, payment recording, discounts, bad debt write-offs.  
+**Payment History Tab:** Complete transaction log, payment method tracking, timestamp display, search & filter.
 
-### Transactions (Unified Screen)
+### 📋 Purchase Orders
+Supplier POs, multi-item support, payment tracking, vendor payment logs, inventory integration, PO cancellation.
 
-- One Transactions page with 2 tabs:
-  - `OUTSTANDING` (ledger)
-  - `HISTORY` (payment/refund logs)
-- Supports scoped navigation from Rental History/Customer Profile:
-  - Opens directly for a specific invoice/group.
-- Outstanding search supports customer fields and invoice-style input (`15`, `#15`, `INV#15`, `Invoice 15`).
+### 📈 Financial Reports
+- **P&L Statement:** Gross revenue, EBITDA, depreciation, bad debt, net profit (CPA-compliant)
+- **A/R Aging Report:** Receivables by aging buckets (Current, 1-30, 31-60, 61-90, 90+ days)
+- **Tax Liability:** Fiscal year tax tracking, collected tax, taxable income
+- **Inventory Valuation:** Acquisition cost, book value, accumulated depreciation
 
-### Payment Ledger (Outstanding)
+### 💸 Expense Tracking
+Operating expenses with categories, payment methods, vendor association, receipt attachments, affects P&L calculations.
 
-- Shows returned but unsettled groups by default.
-- Filter modes:
-  - `All`
-  - `Amount Due`
-  - `Refund Due`
-- Record partial/full payment, refund, discount, and bad debt write-off.
-- Auto-settle group when fully cleared.
+### 📉 Bad Debt Management
+Write-off tracking, recovery workflow, dedicated losses screen, customer lifetime stats integration.
 
-### Payment History
+### 📄 Professional Invoicing
+**Proforma Invoices:** Pre-rental estimates with optional signatures.  
+**Final Invoices:** Post-return official invoices with auto-numbering, tax calculations, payment status, edit protection toggle.
 
-- Full payment/refund log with method and timestamp.
-- Global or scoped-by-invoice view.
-- Search and type filters (`All`, `Payment`, `Refund`).
+**PDF Features:** A4/57mm thermal formats, tax modes (Exclusive/Inclusive), business branding, UPI QR codes, itemized breakdowns, preview/share/print.
 
-### Losses & Bad Debt
+### 🔔 Smart Notifications
+Overdue rental alerts, pending payment reminders, daily summary digest (fires once per day max), individual toggles.
 
-- Dedicated list of written-off groups.
-- Recover funds workflow to log recovered money and reduce bad debt.
+### ⚙️ Settings
+**Appearance:** Light/Dark/System theme, 4 app icon variants, card density, font size (90%/100%/115%).  
+**Business:** Currency symbol, overdue threshold, PDF signature toggles, invoice editing permissions.  
+**Dashboard:** Top customers toggle, payment timestamp toggle.  
+**Regional:** Date format, time format (12h/24h), language (English).
 
-### Invoices & PDFs
+### 💾 Backup & Restore
+Local database export/import via file picker, portable `.db` format, no cloud dependency, user-controlled data sovereignty.
 
-- Unified `Proforma & Invoice` section with tabs:
-  - `PROFORMA`
-  - `FINAL INVOICE`
-- PDF output supports:
-  - A4
-  - 57mm thermal format
-- Tax modes:
-  - No Tax
-  - GST
-  - VAT
-  - Sales Tax
-  - Consumption Tax
-  - Inclusive/Exclusive calculation
-- Includes UPI QR details (when configured).
+---
 
-### Customers
+## Technology Stack
 
-- Customer directory with search.
-- Customer profile includes:
-  - lifetime stats
-  - rental history
-  - outstanding/refund visibility
-  - bad debt visibility
-- Blacklist flag support.
-- Direct dial action for saved phone numbers.
+| Component         | Technology                          |
+|-------------------|-------------------------------------|
+| Framework         | Flutter (Dart)                      |
+| Database          | SQLite (`sqflite` v33 schema)       |
+| PDF Generation    | `pdf`, `printing`                   |
+| File Operations   | `file_picker`, `path_provider`      |
+| Sharing           | `share_plus`                        |
+| Notifications     | `flutter_local_notifications`       |
+| Charts            | `fl_chart`                          |
+| Preferences       | `shared_preferences`                |
+| Device Actions    | `url_launcher`                      |
 
-### Settings
+---
 
-- Theme mode (light/dark/system).
-- App icon switcher.
-- Card density and font size.
-- Currency symbol, date format, and time format.
-- Payment history timestamp visibility toggle.
-- Notifications toggles:
-  - Overdue Rental Alert
-  - Pending Payment Reminder
-  - Daily Summary
-- PDF signatures toggle.
-- Privacy & data info panel.
+## Database Schema v33
 
-### Backup & Restore
+**Core Tables:** `business_info`, `items`, `customers`, `suppliers`, `rentals`, `orders`, `payment_logs`, `purchase_orders`, `expenses`, `maintenance_logs`, `sequences`.
 
-- Export local DB backup through file picker.
-- Restore from backup through file picker.
-- No cloud dependency required.
+**v33 Enhancements:** Healing migration system, safe column addition, financial/tax columns, cancellation flags, invoice tracking, party classification.
 
-## Offline & Permissions
-
-- Main app manifest requests:
-  - `POST_NOTIFICATIONS`
-  - `VIBRATE`
-- Release manifest explicitly removes network permissions:
-  - `INTERNET`
-  - `ACCESS_NETWORK_STATE`
-- Data is stored locally unless user explicitly exports/restores files.
-
-## Tech Stack
-
-| Layer              | Technology                      |
-|--------------------|---------------------------------|
-| Framework          | Flutter (Dart)                  |
-| Database           | SQLite via `sqflite`            |
-| Local storage      | `shared_preferences`            |
-| PDF/print/share    | `pdf`, `printing`, `share_plus` |
-| File import/export | `file_picker`, `path_provider`  |
-| Notifications      | `flutter_local_notifications`   |
-| Charts             | `fl_chart`                      |
-| Device actions     | `url_launcher`                  |
+---
 
 ## Getting Started
 
 ```bash
+# Clone repository
 git clone https://gitlab.com/wjust4435/rental_manager.git
 cd rental_manager
+
+# Install dependencies
 flutter clean
 flutter pub get
+
+# Run app
 flutter run
 ```
 
-Release build:
+### Release Build
 
 ```bash
 flutter build apk --release --split-per-abi
+# Output: build/app/outputs/flutter-apk/
 ```
 
+## Offline & Privacy
+
+- **Zero Internet:** Release build removes `INTERNET` and `ACCESS_NETWORK_STATE` permissions
+- **Local-Only Storage:** All data in SQLite on device
+- **No Telemetry:** No external API calls or analytics
+- **User Control:** Manual backup/restore only
+
+---
+
+## Changelog v2.8.1
+
+**Added:** Database v33 healing migration, business info caching, CPA-compliant profit calculation, payment classification (advance/later/refunds), customer risk warnings.  
+**Modified:** Tax engine improvements, balance calculation refactor, async safety enhancements.  
+**Removed:** Unused variables from rental cards.
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit changes (`git commit -m 'Add feature'`)
+4. Push to branch (`git push origin feature/amazing-feature`)
+5. Open Merge Request
+
+---
+
+## Credits
+
+**Developed by:** wjust4435  
+**Copyright:** © 2026 wjust4435  
+**License:** GNU GPL v3.0 or later
+
+---
+
+**Rental Manager** – Professional offline rental management for modern businesses.
