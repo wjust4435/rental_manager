@@ -12,7 +12,7 @@ GNU General Public License v3.0 or later (GPL-3.0-or-later). See [LICENSE](LICEN
 
 ## Current Version
 
-- **App Version:** `2.8.3`
+- **App Version:** `2.8.4`
 - **Database Schema:** `v36`
 - **Platform:** Android (Flutter)
 - **Database File:** `rental_manager_v1.db`

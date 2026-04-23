@@ -2017,9 +2017,63 @@ class DatabaseHelper {
 
     final discount = rentals.fold(0.0, (s, r) => s + ((r['discount'] as num?)?.toDouble() ?? 0.0));
     final totals = _taxBreakdown((lineSubtotal + totalPenalty) - discount, tax);
-    final totalPaid = logs.isEmpty ? rentals.fold(0.0, (s, r) => s + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0)) : logs.fold(0.0, (s, l) => s + (l['amount'] as num).toDouble());
     final badDebt = rentals.fold(0.0, (s, r) => s + ((r['badDebt'] as num?)?.toDouble() ?? 0.0));
-    final balance = (totals['grandTotal'] ?? 0.0) - totalPaid - badDebt;
+
+    // [CPA & AAD] Granular Ledger Breakdown for Final Invoice PDF
+    double advancePaid = 0.0;
+    double laterPayments = 0.0;
+    double totalRefunds = 0.0;
+
+    if (logs.isNotEmpty) {
+      for (var p in logs) {
+        double amt = (p['amount'] as num).toDouble();
+        if (amt < 0) {
+          totalRefunds += amt.abs();
+        } else {
+          String pDate = (p['paidAt'] as String).split('T')[0];
+          String cDate = (order['createdDate'] as String).split('T')[0];
+          if (pDate == cDate && advancePaid == 0.0 && p['id'] == logs.first['id']) {
+            advancePaid += amt;
+          } else {
+            laterPayments += amt;
+          }
+        }
+      }
+    } else {
+      final rawAdv = rentals.fold(0.0, (s, r) => s + ((r['advanceDeposit'] as num?)?.toDouble() ?? 0.0));
+      if (rawAdv < 0) {
+        totalRefunds = rawAdv.abs();
+      } else {
+        advancePaid = rawAdv;
+      }
+    }
+
+    // Balance = Billed - Advance - Subsequent Payments + Refunds Issued - Bad Debt Written Off
+    final balance = (totals['grandTotal'] ?? 0.0) - advancePaid - laterPayments + totalRefunds - badDebt;
+
+    final List<pw.Widget> taxRows = [];
+    if (tax['enabled'] == true) {
+      taxRows.add(finRow('Taxable Base:', formatMoney(totals['taxableBase'] ?? 0.0)));
+      if (tax['type'] == 'gst') {
+        bool isInterState = false;
+        final bizGst = tax['regNo'] as String? ?? '';
+        if (bizGst.length >= 2 && custTaxRegNo.length >= 2) {
+          if (bizGst.substring(0, 2) != custTaxRegNo.substring(0, 2)) {
+            isInterState = true;
+          }
+        }
+        if (isInterState) {
+          taxRows.add(finRow('IGST (${tax['rate']}%):', '+ ${formatMoney(totals['taxAmount'] ?? 0.0)}'));
+        } else {
+          final halfRate = (tax['rate'] as num).toDouble() / 2;
+          final halfTax = (totals['taxAmount'] as num).toDouble() / 2;
+          taxRows.add(finRow('CGST (${halfRate.toStringAsFixed(1)}%):', '+ ${formatMoney(halfTax)}'));
+          taxRows.add(finRow('SGST (${halfRate.toStringAsFixed(1)}%):', '+ ${formatMoney(halfTax)}'));
+        }
+      } else {
+        taxRows.add(finRow('${tax['label']} (${tax['rate']}%):', '+ ${formatMoney(totals['taxAmount'] ?? 0.0)}'));
+      }
+    }
 
     final doc = pw.Document();
     doc.addPage(pw.MultiPage(
@@ -2053,11 +2107,13 @@ class DatabaseHelper {
           finRow('Rentals Subtotal:', formatMoney(lineSubtotal)),
           if (totalPenalty > 0) finRow('Damage Penalties:', '+ ${formatMoney(totalPenalty)}'),
           if (discount > 0) finRow('Discount:', '- ${formatMoney(discount)}'),
-          if (tax['enabled'] == true) ...[finRow('Taxable Base:', formatMoney(totals['taxableBase'] ?? 0.0)), finRow('${tax['label']} (${tax['rate']}%):', '+ ${formatMoney(totals['taxAmount'] ?? 0.0)}')],
+          ...taxRows,
           pw.Divider(),
           finRow('TOTAL BILLED:', formatMoney(totals['grandTotal'] ?? 0.0, absolute: true), bold: true),
-          finRow('Total Paid:', '- ${formatMoney(totalPaid)}'),
-          if (badDebt > 0) finRow('Written Off:', '- ${formatMoney(badDebt)}'),
+          if (advancePaid > 0) finRow('Advance/Security:', '- ${formatMoney(advancePaid)}'),
+          if (laterPayments > 0) finRow('Payment(s) Rcvd:', '- ${formatMoney(laterPayments)}'),
+          if (totalRefunds > 0) finRow('Refund(s) Issued:', '+ ${formatMoney(totalRefunds)}'),
+          if (badDebt > 0) finRow('Written Off (Bad Debt):', '- ${formatMoney(badDebt)}'),
           pw.Divider(),
           pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
             pw.Text(
@@ -6167,7 +6223,7 @@ class _ExpenseRevenueLedgerScreenState extends State<ExpenseRevenueLedgerScreen>
     }
   }
 
-  Widget _txtRow(String l, String r) => Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(l), Text(r)]);
+  Widget _tag(String t, Color c) => Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5), decoration: BoxDecoration(color: c.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(4), border: Border.all(color: c.withValues(alpha: 0.5), width: 0.8)), child: Text(t, style: TextStyle(fontSize: 12, color: c, fontWeight: FontWeight.w600)));
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -6275,52 +6331,62 @@ class _ExpenseRevenueLedgerScreenState extends State<ExpenseRevenueLedgerScreen>
             final vendor = (e['vendor'] as String? ?? '').trim();
             final isRev = (e['type'] as String? ?? 'Expense') == 'Revenue';
             final col = isRev ? Colors.green : Colors.redAccent;
+            final mth = (e['paymentMethod'] as String? ?? '').trim();
 
             return Card(
-              margin: const EdgeInsets.only(bottom: 12),
-              shape: RoundedRectangleBorder(side: BorderSide(color: col), borderRadius: BorderRadius.circular(12)),
+              margin: const EdgeInsets.only(bottom: 8),
               child: Padding(
                 padding: appSettingsNotifier.cardPadding,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(child: Text(e['category'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), overflow: TextOverflow.ellipsis)),
-                        Row(
-                          children: [
-                            Text('${isRev ? '+' : '-'} ${formatMoney(amount)}', style: TextStyle(fontWeight: FontWeight.bold, color: col)),
-                            const SizedBox(width: 4),
-                            SizedBox(
-                              width: 28,
-                              child: PopupMenuButton<String>(
-                                icon: const Icon(Icons.more_vert, size: 20),
-                                padding: EdgeInsets.zero,
-                                tooltip: 'Options',
-                                onSelected: (val) { if (val == 'delete') { _delete(e['id'] as int); } },
-                                itemBuilder: (_) => const [PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 8), Text('Delete', style: TextStyle(color: Colors.red))]))],
-                              ),
-                            ),
-                          ],
+                        CircleAvatar(radius: 13.5, backgroundColor: col.withValues(alpha: 0.15), child: Icon(isRev ? Icons.move_to_inbox : Icons.outbox, color: col, size: 14.5)),
+                        const SizedBox(width: 6),
+                        Expanded(
+                            child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(e['category'], style: const TextStyle(fontWeight: FontWeight.w700)),
+                                  Text(
+                                      'Date: ${DatabaseHelper.formatDateString(e['date'])}${vendor.isNotEmpty ? '  |  $vendor' : ''}',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.visible,
+                                      style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodySmall?.color)
+                                  ),
+                                ]
+                            )
+                        ),
+                        const SizedBox(width: 8),
+                        Text('${isRev ? '+' : '-'} ${formatMoney(amount)}', style: TextStyle(fontWeight: FontWeight.bold, color: col)),
+                        SizedBox(
+                          width: 28,
+                          child: PopupMenuButton<String>(
+                            icon: const Icon(Icons.more_vert, size: 20),
+                            padding: EdgeInsets.zero,
+                            tooltip: 'Options',
+                            onSelected: (val) { if (val == 'delete') { _delete(e['id'] as int); } },
+                            itemBuilder: (_) => const [PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 8), Text('Delete', style: TextStyle(color: Colors.red))]))],
+                          ),
                         ),
                       ],
                     ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text('Date: ${DatabaseHelper.formatDateString(e['date'])}', style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 14)),
-                        Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: col.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6), border: Border.all(color: col.withValues(alpha: 0.5))), child: Text(isRev ? 'REVENUE' : 'EXPENSE', style: TextStyle(color: col, fontSize: 12, fontWeight: FontWeight.bold))),
-                      ],
-                    ),
-                    const Divider(height: 20),
-                    if (vendor.isNotEmpty) _txtRow(isRev ? 'Source/Payer:' : 'Vendor/Payee:', vendor),
-                    _txtRow('Payment Method:', e['paymentMethod']),
                     if ((e['notes'] as String).isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(top: 8),
                         child: Text('Note: ${e['notes']}', style: TextStyle(fontStyle: FontStyle.italic, color: Theme.of(context).textTheme.bodySmall?.color)),
                       ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        _tag(isRev ? 'Revenue' : 'Expense', col),
+                        _tag(mth.isEmpty ? 'Method: N/A' : 'Method: $mth', Colors.blueGrey),
+                      ],
+                    ),
                   ],
                 ),
               ),
@@ -7453,7 +7519,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const Divider(height: 1),
 
         _hdr('ABOUT'),
-        const ListTile(leading: Icon(Icons.construction, color: Colors.amber), title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Version 2.8.3  |  Database v36')),
+        const ListTile(leading: Icon(Icons.construction, color: Colors.amber), title: Text('Rental Manager', style: TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Version 2.8.4  |  Database v36')),
         _tile(i: Icons.privacy_tip_outlined, t: 'Privacy & Data', s: 'Offline-first data handling', onTap: _showPrivacyDialog),
         _tile(i: Icons.share, t: 'Tell a Friend', s: 'Share the app with others', onTap: () => Share.share('Check out Rental Manager, a great offline tool for tracking inventory and invoices: https://gitlab.com/wjust4435/rental_manager')),
         const SizedBox(height: 40),
