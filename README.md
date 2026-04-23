@@ -12,10 +12,10 @@ GNU General Public License v3.0 or later (GPL-3.0-or-later). See [LICENSE](LICEN
 
 ## Current Version
 
-- **App Version:** `2.8.1`
-- **Database Schema:** `v33`
+- **App Version:** `2.8.3`
+- **Database Schema:** `v36`
 - **Platform:** Android (Flutter)
-- **Database File:** `rental_manager_v33.db`
+- **Database File:** `rental_manager_v1.db`
 
 ---
 
@@ -139,30 +139,8 @@ flutter build apk --release --split-per-abi
 
 ---
 
-## Changelog v2.8.1
-
-**Added:** Database v33 healing migration, business info caching, CPA-compliant profit calculation, payment classification (advance/later/refunds), customer risk warnings.  
-**Modified:** Tax engine improvements, balance calculation refactor, async safety enhancements.  
-**Removed:** Unused variables from rental cards.
-
----
-
-## Contributing
-
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open Merge Request
-
----
-
 ## Credits
 
 **Developed by:** wjust4435  
 **Copyright:** © 2026 wjust4435  
 **License:** GNU GPL v3.0 or later
-
----
-
-**Rental Manager** – Professional offline rental management for modern businesses.
