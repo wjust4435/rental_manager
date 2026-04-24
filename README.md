@@ -100,11 +100,12 @@ Local database export/import via file picker, portable `.db` format, no cloud de
 
 ---
 
-## Database Schema v33
+## Offline & Privacy
 
-**Core Tables:** `business_info`, `items`, `customers`, `suppliers`, `rentals`, `orders`, `payment_logs`, `purchase_orders`, `expenses`, `maintenance_logs`, `sequences`.
-
-**v33 Enhancements:** Healing migration system, safe column addition, financial/tax columns, cancellation flags, invoice tracking, party classification.
+- **Zero Internet:** Release build removes `INTERNET` and `ACCESS_NETWORK_STATE` permissions
+- **Local-Only Storage:** All data in SQLite on device
+- **No Telemetry:** No external API calls or analytics
+- **User Control:** Manual backup/restore only
 
 ---
 
@@ -129,18 +130,3 @@ flutter run
 flutter build apk --release --split-per-abi
 # Output: build/app/outputs/flutter-apk/
 ```
-
-## Offline & Privacy
-
-- **Zero Internet:** Release build removes `INTERNET` and `ACCESS_NETWORK_STATE` permissions
-- **Local-Only Storage:** All data in SQLite on device
-- **No Telemetry:** No external API calls or analytics
-- **User Control:** Manual backup/restore only
-
----
-
-## Credits
-
-**Developed by:** wjust4435  
-**Copyright:** © 2026 wjust4435  
-**License:** GNU GPL v3.0 or later

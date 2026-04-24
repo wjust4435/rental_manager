@@ -770,7 +770,7 @@ class DatabaseHelper {
       totalDepreciation += (v['accumulatedDepreciation'] as num?)?.toDouble() ?? 0.0;
     }
 
-    // 5. CPA Standard: EBITDA -> EBIT -> EBT -> Net Profit
+    // 5. Standard: EBITDA -> EBIT -> EBT -> Net Profit
     double ebitda = grossRevenue - opex;
     // Depreciation and Bad Debt (Losses) are deducted to arrive at Net Taxable Profit
     double netProfit = ebitda - totalDepreciation - badDebt;
