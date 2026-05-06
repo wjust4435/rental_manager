@@ -2,6 +2,8 @@ image: ghcr.io/cirruslabs/flutter:stable
 
 variables:
   SECURE_FILES_DOWNLOAD_PATH: './.gitlab/secure_files/'
+  # Explicitly set Java 17 to match build.gradle.kts and resolve obsolete source warnings
+  JAVA_VERSION: "17"
   # This creates a permanent base URL for your APKs in the Package Registry
   PACKAGE_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/RentalManager/${CI_COMMIT_TAG}"
 
@@ -12,6 +14,7 @@ stages:
 build_job:
   stage: build
   script:
+    - java -version
     - echo "Downloading secure keystore..."
     - curl -sL https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer | bash
     - flutter pub get

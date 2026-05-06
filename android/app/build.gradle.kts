@@ -19,8 +19,7 @@ android {
     }
 
     kotlinOptions {
-        // Suppressing the warning for now as this is the standard Flutter setup
-        @Suppress("DEPRECATION")
+        // Explicitly align Kotlin with Java 17 to resolve pipeline warnings
         jvmTarget = "17"
     }
 

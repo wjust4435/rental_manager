@@ -1,29 +1,23 @@
 # Rental Manager
-
 **Professional offline-first rental management system for Android**
 
 Comprehensive Flutter application for rental businesses to manage inventory, customers, orders, invoices, payments, and financial reporting—all from a local SQLite database with zero internet dependency.
 
 ## License
-
 GNU General Public License v3.0 or later (GPL-3.0-or-later). See [LICENSE](LICENSE).
 
 ---
-
 ## Current Version
 
-- **App Version:** `2.8.4`
-- **Database Schema:** `v36`
+- **App Version:** `2.8.5`
+- **Database Schema:** `v37`
 - **Platform:** Android (Flutter)
-- **Database File:** `rental_manager_v1.db`
 
 ---
 
 ## Core Philosophy
-
 - **100% Offline** – No internet required, complete data privacy
 - **Multi-Business Support** – Manage multiple rental accounts
-- **CPA-Compliant Financials** – Professional accounting standards
 - **Professional Invoicing** – A4 and 57mm thermal PDF formats
 
 ---
@@ -53,7 +47,7 @@ Multi-item orders, walk-in or saved customers, full/partial returns, damaged/los
 Supplier POs, multi-item support, payment tracking, vendor payment logs, inventory integration, PO cancellation.
 
 ### 📈 Financial Reports
-- **P&L Statement:** Gross revenue, EBITDA, depreciation, bad debt, net profit (CPA-compliant)
+- **P&L Statement:** Gross revenue, EBITDA, depreciation, bad debt, net profit
 - **A/R Aging Report:** Receivables by aging buckets (Current, 1-30, 31-60, 61-90, 90+ days)
 - **Tax Liability:** Fiscal year tax tracking, collected tax, taxable income
 - **Inventory Valuation:** Acquisition cost, book value, accumulated depreciation
@@ -86,17 +80,17 @@ Local database export/import via file picker, portable `.db` format, no cloud de
 
 ## Technology Stack
 
-| Component         | Technology                          |
-|-------------------|-------------------------------------|
-| Framework         | Flutter (Dart)                      |
-| Database          | SQLite (`sqflite` v33 schema)       |
-| PDF Generation    | `pdf`, `printing`                   |
-| File Operations   | `file_picker`, `path_provider`      |
-| Sharing           | `share_plus`                        |
-| Notifications     | `flutter_local_notifications`       |
-| Charts            | `fl_chart`                          |
-| Preferences       | `shared_preferences`                |
-| Device Actions    | `url_launcher`                      |
+| Component         | Technology                     |
+|-------------------|--------------------------------|
+| Framework         | Flutter (Dart)                 |
+| Database          | SQLite  `sqflite`              |
+| PDF Generation    | `pdf`, `printing`              |
+| File Operations   | `file_picker`, `path_provider` |
+| Sharing           | `share_plus`                   |
+| Notifications     | `flutter_local_notifications`  |
+| Charts            | `fl_chart`                     |
+| Preferences       | `shared_preferences`           |
+| Device Actions    | `url_launcher`                 |
 
 ---
 
