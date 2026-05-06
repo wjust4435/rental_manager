@@ -13,8 +13,11 @@ stages:
 
 build_job:
   stage: build
+  before_script:
+    # Force Flutter to use the correct JDK path from the environment
+    - flutter config --jdk-dir="$JAVA_HOME"
   script:
-    - java -version
+    - java -version # Verify this outputs 17.x.x
     - echo "Downloading secure keystore..."
     - curl -sL https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer | bash
     - flutter pub get

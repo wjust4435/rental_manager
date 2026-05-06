@@ -46,3 +46,19 @@ subprojects {
         afterEvaluate { applyNamespace(this) }
     }
 }
+
+// android/build.gradle.kts (Root Level) - Place this at the very end
+subprojects {
+    // 1. Force Java compiler tasks to 17 directly (Bypasses AGP compileOptions lockdown)
+    tasks.withType<org.gradle.api.tasks.compile.JavaCompile>().configureEach {
+        sourceCompatibility = "17"
+        targetCompatibility = "17"
+    }
+
+    // 2. Force Kotlin compiler tasks to 17
+    tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
+    }
+}

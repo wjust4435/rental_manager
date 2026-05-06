@@ -18,8 +18,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    // Standard AGP syntax for Kotlin JVM target
     kotlinOptions {
-        // Explicitly align Kotlin with Java 17 to resolve pipeline warnings
         jvmTarget = "17"
     }
 
