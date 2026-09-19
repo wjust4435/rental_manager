@@ -105,6 +105,7 @@ class AppSettingsNotifier extends ChangeNotifier {
   String _language           = 'English';
   String _appIcon            = 'icon2';
   bool   _allowFinalInvoiceEditing = true;
+  List<String> _quickActions = ['New Order', 'Ledgers', 'Biz Info', 'Proforma', 'Invoice', 'Parties'];
 
   SharedPreferences? _prefs;
 
@@ -124,6 +125,7 @@ class AppSettingsNotifier extends ChangeNotifier {
   bool   get notifySummary       => _notifySummary;
   String get language            => _language;
   bool   get allowFinalInvoiceEditing => _allowFinalInvoiceEditing;
+  List<String> get quickActions  => _quickActions;
 
   double get textScale {
     if (_fontSize == 'small') return 0.9;
@@ -164,6 +166,7 @@ class AppSettingsNotifier extends ChangeNotifier {
     _appIcon                   = savedIcon == 'default' ? 'icon2' : savedIcon;
 
     _allowFinalInvoiceEditing  = p.getBool('allowFinalInvoiceEditing')    ?? true;
+    _quickActions              = p.getStringList('quickActions')          ?? ['New Order', 'Ledgers', 'Biz Info', 'Proforma', 'Invoice', 'Parties'];
     notifyListeners();
   }
 
@@ -203,6 +206,7 @@ class AppSettingsNotifier extends ChangeNotifier {
   Future<void> setLanguage(String v)            async { _language = v; notifyListeners(); await _save(); }
   Future<void> setAppIcon(String v)             async { _appIcon = v; notifyListeners(); await _save(); }
   Future<void> setAllowFinalInvoiceEditing(bool v) async { _allowFinalInvoiceEditing = v; notifyListeners(); await _save(); }
+  Future<void> setQuickActions(List<String> actions) async { _quickActions = actions; notifyListeners(); await _save(); }
 }
 
 // ========Notification Service========
@@ -580,9 +584,9 @@ class DatabaseHelper {
           try {
             // CPA HEALING SCRIPT: Prevent historical settled invoices from "zombifying" due to the strict midnight-to-midnight day calculation fix. Any unpaid variance on already-settled items is absorbed into the discount ledger, permanently locking the balance to exactly $0.00.
             await db.rawUpdate('''
-              UPDATE rentals 
+              UPDATE rentals
               SET discount = (
-                (qty * rentalRate * MAX(1, CAST(julianday(date(IFNULL(NULLIF(returnDate, ''), date('now', 'localtime')))) - julianday(date(checkoutDate)) AS INTEGER))) 
+                (qty * rentalRate * MAX(1, CAST(julianday(date(IFNULL(NULLIF(returnDate, ''), date('now', 'localtime')))) - julianday(date(checkoutDate)) AS INTEGER)))
                 + penaltyFee - advanceDeposit - badDebt
               )
               WHERE isSettled = 1 AND isCancelled = 0
@@ -694,11 +698,11 @@ class DatabaseHelper {
 
         await txn.rawUpdate(
             '''
-            UPDATE items 
-            SET total = total + ?, 
-                purchasePrice = ?, 
-                supplierId = ?, 
-                purchaseDate = ? 
+            UPDATE items
+            SET total = total + ?,
+                purchasePrice = ?,
+                supplierId = ?,
+                purchaseDate = ?
             WHERE id = ?
             ''',
             [
@@ -718,12 +722,12 @@ class DatabaseHelper {
     final db = await getDatabase();
     return await db.rawQuery('''
         SELECT po.*, c.name as supplierName, c.phone, c.phone2,
-               (SELECT GROUP_CONCAT(i.name || '|' || poi.qty || '|' || poi.unitCost || '|' || poi.lineTotal, '^') 
-                FROM purchase_order_items poi 
-                JOIN items i ON poi.itemId = i.id 
+               (SELECT GROUP_CONCAT(i.name || '|' || poi.qty || '|' || poi.unitCost || '|' || poi.lineTotal, '^')
+                FROM purchase_order_items poi
+                JOIN items i ON poi.itemId = i.id
                 WHERE poi.poId = po.id) as itemsSummary
-        FROM purchase_orders po 
-        LEFT JOIN customers c ON po.supplierId = c.id 
+        FROM purchase_orders po
+        LEFT JOIN customers c ON po.supplierId = c.id
         ORDER BY po.id DESC
      ''');
   }
@@ -754,10 +758,10 @@ class DatabaseHelper {
 
     // 1. Gross Revenue (Accrual Basis: Total generated from active rentals)
     final revResult = await db.rawQuery('''
-      SELECT 
+      SELECT
         SUM((qty * rentalRate * MAX(1, CAST(julianday(date(IFNULL(NULLIF(returnDate, ''), date('now', 'localtime')))) - julianday(date(checkoutDate)) AS INTEGER))) + penaltyFee) as totalRev,
         SUM(discount) as totalDisc
-      FROM rentals 
+      FROM rentals
       WHERE isCancelled = 0
     ''');
     double grossRevenue = (revResult.first['totalRev'] as num?)?.toDouble() ?? 0.0;
@@ -765,16 +769,16 @@ class DatabaseHelper {
 
     // 2. Operating Expenses & Auxiliary Revenue (OPEX - excluding CAPEX equipment purchases)
     final expResult = await db.rawQuery('''
-      SELECT SUM(CASE WHEN type = 'Revenue' THEN -amount ELSE amount END) as totalExp 
-      FROM expenses 
+      SELECT SUM(CASE WHEN type = 'Revenue' THEN -amount ELSE amount END) as totalExp
+      FROM expenses
       WHERE category != 'Asset Procurement (PO)'
     ''');
     double opex = (expResult.first['totalExp'] as num?)?.toDouble() ?? 0.0;
 
     // 3. Bad Debt (Written off revenue)
     final bdResult = await db.rawQuery('''
-      SELECT SUM(badDebt) as totalBd 
-      FROM rentals 
+      SELECT SUM(badDebt) as totalBd
+      FROM rentals
       WHERE isCancelled = 0
     ''');
     double badDebt = (bdResult.first['totalBd'] as num?)?.toDouble() ?? 0.0;
@@ -868,8 +872,8 @@ class DatabaseHelper {
     ''';
 
     const topCustomersQuery = '''
-      SELECT contractor as name, COUNT(DISTINCT COALESCE(orderId, id)) as invoices, SUM($lineCostSql) as revenue 
-      FROM rentals WHERE isCancelled = 0 AND contractor != '' 
+      SELECT contractor as name, COUNT(DISTINCT COALESCE(orderId, id)) as invoices, SUM($lineCostSql) as revenue
+      FROM rentals WHERE isCancelled = 0 AND contractor != ''
       GROUP BY contractor ORDER BY revenue DESC LIMIT 5
     ''';
 
@@ -890,8 +894,8 @@ class DatabaseHelper {
     final db = await getDatabase();
     final cutoff = isoDate(DateTime.now().subtract(Duration(days: overdueDays)));
     return db.rawQuery('''
-      SELECT rentals.*, items.name as itemName FROM rentals 
-      JOIN items ON rentals.itemId=items.id 
+      SELECT rentals.*, items.name as itemName FROM rentals
+      JOIN items ON rentals.itemId=items.id
       WHERE (returned=0 OR returned IS NULL) AND checkoutDate <= ? AND isCancelled = 0 ORDER BY checkoutDate ASC
     ''', [cutoff]);
   }
@@ -1078,7 +1082,9 @@ class DatabaseHelper {
     return {
       'items': q(await db.rawQuery('SELECT COUNT(*) as c FROM items')),
       'activeRentals': q(await db.rawQuery('SELECT COUNT(*) as c FROM rentals WHERE returned=0 OR returned IS NULL')),
+      'activeOrders': q(await db.rawQuery('SELECT COUNT(DISTINCT orderId) as c FROM rentals WHERE returned=0 OR returned IS NULL')),
       'returned': q(await db.rawQuery('SELECT COUNT(*) as c FROM rentals WHERE returned=1')),
+      'returnedOrders': q(await db.rawQuery('SELECT COUNT(DISTINCT orderId) as c FROM rentals WHERE returned=1')),
       'customers': q(await db.rawQuery('SELECT COUNT(*) as c FROM customers')),
       'overdue': q(await db.rawQuery('SELECT COUNT(*) as c FROM rentals WHERE (returned=0 OR returned IS NULL) AND checkoutDate<=?', [cutoff])),
     };
@@ -2251,8 +2257,8 @@ class DatabaseHelper {
         SELECT SUM(
           (qty * rentalRate * MAX(1, CAST(julianday(date(IFNULL(NULLIF(returnDate, ''), date('now', 'localtime')))) - julianday(date(checkoutDate)) AS INTEGER)))
           + penaltyFee - discount
-        ) as revenue 
-        FROM rentals 
+        ) as revenue
+        FROM rentals
         WHERE itemId = ? AND isCancelled = 0
         ''',
           [id]
@@ -3362,7 +3368,7 @@ class AppUI {
     required DateTime selectedDate, required TextEditingController dateCtrl, required String dateLabel, required ValueChanged<DateTime> onDateSelected,
   }) {
     return Row(children: [
-      Expanded(flex: 2, child: InkWell(
+      Expanded(child: InkWell(
         onTap: () async {
           final selected = await showSearchablePicker<Map<String, dynamic>>(context: context, title: 'Select $partyLabel', items: partyList, filter: filter, itemBuilder: itemBuilder);
           if (selected != null) onPartySelected(selected['id']);
@@ -3582,23 +3588,106 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _nav(Widget w) => Navigator.push(context, MaterialPageRoute(builder: (_) => w));
 
+  // Dummy actions for metadata; onTap is passed dynamically in the builder
+  final Map<String, _QuickAction> _allActions = const {
+    'New Order': _QuickAction(icon: Icons.playlist_add, label: 'New Order', onTap: _dummy),
+    'Ledgers': _QuickAction(icon: Icons.account_balance_wallet, label: 'Ledgers', onTap: _dummy),
+    'Biz Info': _QuickAction(icon: Icons.store, label: 'Biz Info', onTap: _dummy),
+    'Proforma': _QuickAction(icon: Icons.receipt_long, label: 'Proforma', onTap: _dummy),
+    'Invoice': _QuickAction(icon: Icons.request_quote, label: 'Invoice', onTap: _dummy),
+    'Parties': _QuickAction(icon: Icons.people, label: 'Parties', onTap: _dummy),
+    'Inventory': _QuickAction(icon: Icons.inventory_2, label: 'Inventory', onTap: _dummy),
+    'Reports': _QuickAction(icon: Icons.bar_chart, label: 'Reports', onTap: _dummy),
+  };
+  static void _dummy() {}
+
+  void _editQuickActions() {
+    List<String> currentSelected = List.from(appSettingsNotifier.quickActions);
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setState) {
+          return AlertDialog(
+            title: const Text('Edit Quick Actions'),
+            content: SingleChildScrollView(
+              child: Wrap(
+                spacing: 8,
+                children: _allActions.keys.map((key) {
+                  final isSelected = currentSelected.contains(key);
+                  return FilterChip(
+                    label: Text(key),
+                    selected: isSelected,
+                    onSelected: (selected) {
+                      setState(() {
+                        if (selected) {
+                          if (currentSelected.length < 6) currentSelected.add(key);
+                        } else {
+                          currentSelected.remove(key);
+                        }
+                      });
+                    },
+                  );
+                }).toList(),
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              ElevatedButton(
+                onPressed: () {
+                  appSettingsNotifier.setQuickActions(currentSelected);
+                  Navigator.pop(ctx);
+                  this.setState(() {}); // refresh dashboard
+                },
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  void _handleQuickAction(String key) {
+    switch (key) {
+      case 'New Order': _nav(const NewOrderScreen()); break;
+      case 'Ledgers': _nav(const PaymentLedgerScreen()); break;
+      case 'Biz Info': _nav(const BusinessInfoScreen()); break;
+      case 'Proforma': _nav(const InvoiceManagerScreen(initialIndex: 0)); break;
+      case 'Invoice': _nav(const InvoiceManagerScreen(initialIndex: 1)); break;
+      case 'Parties': _nav(const PartiesManagementScreen()); break;
+      case 'Inventory': _nav(const InventoryTab()); break;
+      case 'Reports': _nav(const FinancialReportsScreen()); break;
+    }
+  }
+
   @override Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_error != null) return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [const Icon(Icons.error_outline, color: Colors.redAccent, size: 48), const SizedBox(height: 16), Text(_error!), const SizedBox(height: 24), ElevatedButton.icon(onPressed: _load, icon: const Icon(Icons.refresh), label: const Text('Retry'))]));
 
     return RefreshIndicator(onRefresh: _load, child: ListView(padding: const EdgeInsets.all(16), children: [
-      Row(children: [Expanded(child: _StatCard(label:'Total Items', value:'${_stats['items']}', icon:Icons.inventory_2, color:Colors.blue)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Active Lines', value:'${_stats['activeRentals']}', icon:Icons.handshake, color:Colors.orange))]),
+      Row(children: [Expanded(child: _StatCard(label:'Total Items', value:'${_stats['items']}', icon:Icons.inventory_2, color:Colors.blue)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Active Rental Items', value:'${_stats['activeRentals']}', subtitle: '${_stats['activeOrders'] ?? 0} invoices', icon:Icons.handshake, color:Colors.orange))]),
       const SizedBox(height: 8),
-      Row(children: [Expanded(child: _StatCard(label:'Customers', value:'${_stats['customers']}', icon:Icons.people, color:Colors.purple)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Returned Lines', value:'${_stats['returned']}', icon:Icons.check_circle, color:Colors.green))]),
+      Row(children: [Expanded(child: _StatCard(label:'Customers', value:'${_stats['customers']}', icon:Icons.people, color:Colors.purple)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Returned Lines', value:'${_stats['returned']}', subtitle: '${_stats['returnedOrders'] ?? 0} invoices', icon:Icons.check_circle, color:Colors.green))]),
       const SizedBox(height: 14),
 
       Card(child: ListTile(leading: const Icon(Icons.account_balance_wallet, color: Colors.orange), title: const Text('Pending Collections', style: TextStyle(fontWeight: FontWeight.w700)), subtitle: const Text('Outstanding amount from returned invoices'), trailing: Text(formatMoney(_pendingCollections, decimals: 0), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.orange)), onTap: () => _nav(const PaymentLedgerScreen()))),
-      const SizedBox(height: 20), const Text('Quick Actions', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)), const SizedBox(height: 12),
+      const SizedBox(height: 20),
+      Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Text('Quick Actions', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          IconButton(icon: const Icon(Icons.edit, size: 20), onPressed: _editQuickActions, padding: EdgeInsets.zero, constraints: const BoxConstraints()),
+        ],
+      ),
+      const SizedBox(height: 12),
 
-      GridView.count(crossAxisCount: 3, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), crossAxisSpacing: 8, mainAxisSpacing: 8, childAspectRatio: 1.4, children: [
-        _QuickAction(icon:Icons.playlist_add, label:'New Order', onTap:() => _nav(const NewOrderScreen())), _QuickAction(icon:Icons.account_balance_wallet, label:'Ledgers', onTap:() => _nav(const PaymentLedgerScreen())), _QuickAction(icon:Icons.store, label:'Biz Info', onTap:() => _nav(const BusinessInfoScreen())),
-        _QuickAction(icon:Icons.receipt_long, label:'Proforma', onTap:() => _nav(const InvoiceManagerScreen(initialIndex: 0))), _QuickAction(icon:Icons.request_quote, label:'Invoice', onTap:() => _nav(const InvoiceManagerScreen(initialIndex: 1))), _QuickAction(icon:Icons.people, label:'Parties', onTap:() => _nav(const PartiesManagementScreen())),
-      ]),
+      GridView.count(
+        crossAxisCount: 3, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), crossAxisSpacing: 8, mainAxisSpacing: 8, childAspectRatio: 1.4,
+        children: appSettingsNotifier.quickActions.where((k) => _allActions.containsKey(k)).map((k) {
+          final action = _allActions[k] as _QuickAction;
+          return _QuickAction(icon: action.icon, label: action.label, onTap: () => _handleQuickAction(k));
+        }).toList(),
+      ),
 
       if ((_stats['overdue'] ?? 0) > 0) ...[
         const SizedBox(height: 20), Row(children: [const Icon(Icons.warning_amber_rounded, color: Colors.orange), const SizedBox(width: 8), Text('Overdue Rentals', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.orange[300]))]), const SizedBox(height: 8),
@@ -6820,8 +6909,8 @@ void _applySort(List<RentalGroup> list, String mode) {
 
 
 class _StatCard extends StatelessWidget {
-  final String label, value; final IconData icon; final Color color;
-  const _StatCard({required this.label, required this.value, required this.icon, required this.color});
+  final String label, value; final IconData icon; final Color color; final String? subtitle;
+  const _StatCard({required this.label, required this.value, required this.icon, required this.color, this.subtitle});
   @override
   Widget build(BuildContext context) => Card(
     child: Padding(
@@ -6835,6 +6924,10 @@ class _StatCard extends StatelessWidget {
           Text(label, style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
           const SizedBox(height: 2),
           Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
+          if (subtitle != null) ...[
+            const SizedBox(height: 4),
+            Text(subtitle!, style: TextStyle(fontSize: 10, color: Theme.of(context).textTheme.bodySmall?.color?.withValues(alpha: 0.7))),
+          ]
         ],
       ),
     ),
