@@ -584,9 +584,9 @@ class DatabaseHelper {
           try {
             // CPA HEALING SCRIPT: Prevent historical settled invoices from "zombifying" due to the strict midnight-to-midnight day calculation fix. Any unpaid variance on already-settled items is absorbed into the discount ledger, permanently locking the balance to exactly $0.00.
             await db.rawUpdate('''
-              UPDATE rentals
+              UPDATE rentals 
               SET discount = (
-                (qty * rentalRate * MAX(1, CAST(julianday(date(IFNULL(NULLIF(returnDate, ''), date('now', 'localtime')))) - julianday(date(checkoutDate)) AS INTEGER)))
+                (qty * rentalRate * MAX(1, CAST(julianday(date(IFNULL(NULLIF(returnDate, ''), date('now', 'localtime')))) - julianday(date(checkoutDate)) AS INTEGER))) 
                 + penaltyFee - advanceDeposit - badDebt
               )
               WHERE isSettled = 1 AND isCancelled = 0
@@ -698,11 +698,11 @@ class DatabaseHelper {
 
         await txn.rawUpdate(
             '''
-            UPDATE items
-            SET total = total + ?,
-                purchasePrice = ?,
-                supplierId = ?,
-                purchaseDate = ?
+            UPDATE items 
+            SET total = total + ?, 
+                purchasePrice = ?, 
+                supplierId = ?, 
+                purchaseDate = ? 
             WHERE id = ?
             ''',
             [
@@ -722,12 +722,12 @@ class DatabaseHelper {
     final db = await getDatabase();
     return await db.rawQuery('''
         SELECT po.*, c.name as supplierName, c.phone, c.phone2,
-               (SELECT GROUP_CONCAT(i.name || '|' || poi.qty || '|' || poi.unitCost || '|' || poi.lineTotal, '^')
-                FROM purchase_order_items poi
-                JOIN items i ON poi.itemId = i.id
+               (SELECT GROUP_CONCAT(i.name || '|' || poi.qty || '|' || poi.unitCost || '|' || poi.lineTotal, '^') 
+                FROM purchase_order_items poi 
+                JOIN items i ON poi.itemId = i.id 
                 WHERE poi.poId = po.id) as itemsSummary
-        FROM purchase_orders po
-        LEFT JOIN customers c ON po.supplierId = c.id
+        FROM purchase_orders po 
+        LEFT JOIN customers c ON po.supplierId = c.id 
         ORDER BY po.id DESC
      ''');
   }
@@ -758,10 +758,10 @@ class DatabaseHelper {
 
     // 1. Gross Revenue (Accrual Basis: Total generated from active rentals)
     final revResult = await db.rawQuery('''
-      SELECT
+      SELECT 
         SUM((qty * rentalRate * MAX(1, CAST(julianday(date(IFNULL(NULLIF(returnDate, ''), date('now', 'localtime')))) - julianday(date(checkoutDate)) AS INTEGER))) + penaltyFee) as totalRev,
         SUM(discount) as totalDisc
-      FROM rentals
+      FROM rentals 
       WHERE isCancelled = 0
     ''');
     double grossRevenue = (revResult.first['totalRev'] as num?)?.toDouble() ?? 0.0;
@@ -769,16 +769,16 @@ class DatabaseHelper {
 
     // 2. Operating Expenses & Auxiliary Revenue (OPEX - excluding CAPEX equipment purchases)
     final expResult = await db.rawQuery('''
-      SELECT SUM(CASE WHEN type = 'Revenue' THEN -amount ELSE amount END) as totalExp
-      FROM expenses
+      SELECT SUM(CASE WHEN type = 'Revenue' THEN -amount ELSE amount END) as totalExp 
+      FROM expenses 
       WHERE category != 'Asset Procurement (PO)'
     ''');
     double opex = (expResult.first['totalExp'] as num?)?.toDouble() ?? 0.0;
 
     // 3. Bad Debt (Written off revenue)
     final bdResult = await db.rawQuery('''
-      SELECT SUM(badDebt) as totalBd
-      FROM rentals
+      SELECT SUM(badDebt) as totalBd 
+      FROM rentals 
       WHERE isCancelled = 0
     ''');
     double badDebt = (bdResult.first['totalBd'] as num?)?.toDouble() ?? 0.0;
@@ -872,8 +872,8 @@ class DatabaseHelper {
     ''';
 
     const topCustomersQuery = '''
-      SELECT contractor as name, COUNT(DISTINCT COALESCE(orderId, id)) as invoices, SUM($lineCostSql) as revenue
-      FROM rentals WHERE isCancelled = 0 AND contractor != ''
+      SELECT contractor as name, COUNT(DISTINCT COALESCE(orderId, id)) as invoices, SUM($lineCostSql) as revenue 
+      FROM rentals WHERE isCancelled = 0 AND contractor != '' 
       GROUP BY contractor ORDER BY revenue DESC LIMIT 5
     ''';
 
@@ -894,8 +894,8 @@ class DatabaseHelper {
     final db = await getDatabase();
     final cutoff = isoDate(DateTime.now().subtract(Duration(days: overdueDays)));
     return db.rawQuery('''
-      SELECT rentals.*, items.name as itemName FROM rentals
-      JOIN items ON rentals.itemId=items.id
+      SELECT rentals.*, items.name as itemName FROM rentals 
+      JOIN items ON rentals.itemId=items.id 
       WHERE (returned=0 OR returned IS NULL) AND checkoutDate <= ? AND isCancelled = 0 ORDER BY checkoutDate ASC
     ''', [cutoff]);
   }
@@ -2257,8 +2257,8 @@ class DatabaseHelper {
         SELECT SUM(
           (qty * rentalRate * MAX(1, CAST(julianday(date(IFNULL(NULLIF(returnDate, ''), date('now', 'localtime')))) - julianday(date(checkoutDate)) AS INTEGER)))
           + penaltyFee - discount
-        ) as revenue
-        FROM rentals
+        ) as revenue 
+        FROM rentals 
         WHERE itemId = ? AND isCancelled = 0
         ''',
           [id]
@@ -2808,7 +2808,7 @@ class _MainShellState extends State<MainShell> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text('Select an account to load its inventory and ledgers.', style: TextStyle(fontSize: 12)),
-            const SizedBox(height: 10),
+              const SizedBox(height: 10),
               ...accountFiles.map((fileName) {
                 final String cachedName = prefs.getString('display_name_$fileName') ?? '';
                 final String displayName = cachedName.isNotEmpty
@@ -5486,11 +5486,11 @@ class _NewPurchaseOrderScreenState extends State<NewPurchaseOrderScreen> {
           Container(padding: const EdgeInsets.symmetric(horizontal: 12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Vendor Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)), TextButton.icon(onPressed: () => setState(() => _isFormExpanded = !_isFormExpanded), icon: Icon(_isFormExpanded ? Icons.expand_less : Icons.expand_more), label: Text(_isFormExpanded ? 'Hide' : 'Show'))])),
           if (_isFormExpanded) Padding(padding: const EdgeInsets.fromLTRB(12, 0, 12, 12), child: Column(children: [
             AppUI.buildPartyDateRow(
-              context: context, partyLabel: 'Vendor', partyIcon: Icons.domain, selectedPartyId: _selectedSupplierId, partyList: _suppliers,
-              filter: (s, q) => (s['name']?.toString().toLowerCase() ?? '').contains(q.toLowerCase()),
-              itemBuilder: (s) => ListTile(leading: const Icon(Icons.domain), title: Text(s['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)), trailing: const Icon(Icons.chevron_right, size: 16)),
-              onPartySelected: (id) => setState(() => _selectedSupplierId = id),
-              selectedDate: _orderDate, dateCtrl: _dateCtrl, dateLabel: 'Date', onDateSelected: (d) { setState(() { _orderDate = d; }); _updatePoNumber(d); }
+                context: context, partyLabel: 'Vendor', partyIcon: Icons.domain, selectedPartyId: _selectedSupplierId, partyList: _suppliers,
+                filter: (s, q) => (s['name']?.toString().toLowerCase() ?? '').contains(q.toLowerCase()),
+                itemBuilder: (s) => ListTile(leading: const Icon(Icons.domain), title: Text(s['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)), trailing: const Icon(Icons.chevron_right, size: 16)),
+                onPartySelected: (id) => setState(() => _selectedSupplierId = id),
+                selectedDate: _orderDate, dateCtrl: _dateCtrl, dateLabel: 'Date', onDateSelected: (d) { setState(() { _orderDate = d; }); _updatePoNumber(d); }
             ),
             const SizedBox(height: 12),
             Row(children: [ Expanded(child: TextFormField(controller: _amountPaidC, decoration: AppUI.inputDecoration('Advance ($curr)', i: Icons.payments), keyboardType: const TextInputType.numberWithOptions(decimal: true))), const SizedBox(width: 8), Expanded(child: DropdownButtonFormField<String>(initialValue: _selectedPaymentMethod, decoration: AppUI.inputDecoration('Method', i: Icons.payment), items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(), onChanged: (v) { if (v != null) setState(() => _selectedPaymentMethod = v); })) ]),
@@ -6923,11 +6923,17 @@ class _StatCard extends StatelessWidget {
           const SizedBox(height: 10),
           Text(label, style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color)),
           const SizedBox(height: 2),
-          Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(subtitle!, style: TextStyle(fontSize: 10, color: Theme.of(context).textTheme.bodySmall?.color?.withValues(alpha: 0.7))),
-          ]
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
+              if (subtitle != null) ...[
+                const SizedBox(width: 6),
+                Expanded(child: Text('($subtitle)', style: TextStyle(fontSize: 11, color: Theme.of(context).textTheme.bodySmall?.color?.withValues(alpha: 0.7)), maxLines: 1, overflow: TextOverflow.ellipsis)),
+              ]
+            ],
+          ),
         ],
       ),
     ),
