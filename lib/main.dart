@@ -894,9 +894,11 @@ class DatabaseHelper {
     final db = await getDatabase();
     final cutoff = isoDate(DateTime.now().subtract(Duration(days: overdueDays)));
     return db.rawQuery('''
-      SELECT rentals.*, items.name as itemName FROM rentals 
-      JOIN items ON rentals.itemId=items.id 
-      WHERE (returned=0 OR returned IS NULL) AND checkoutDate <= ? AND isCancelled = 0 ORDER BY checkoutDate ASC
+      SELECT rentals.invoiceId, rentals.contractor, rentals.checkoutDate, COUNT(rentals.id) as itemCount
+      FROM rentals
+      WHERE (returned=0 OR returned IS NULL) AND checkoutDate <= ? AND isCancelled = 0
+      GROUP BY rentals.invoiceId, rentals.contractor, rentals.checkoutDate
+      ORDER BY rentals.checkoutDate ASC
     ''', [cutoff]);
   }
 
@@ -3665,9 +3667,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_error != null) return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [const Icon(Icons.error_outline, color: Colors.redAccent, size: 48), const SizedBox(height: 16), Text(_error!), const SizedBox(height: 24), ElevatedButton.icon(onPressed: _load, icon: const Icon(Icons.refresh), label: const Text('Retry'))]));
 
     return RefreshIndicator(onRefresh: _load, child: ListView(padding: const EdgeInsets.all(16), children: [
-      Row(children: [Expanded(child: _StatCard(label:'Total Items', value:'${_stats['items']}', icon:Icons.inventory_2, color:Colors.blue)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Active Rental Items', value:'${_stats['activeRentals']}', subtitle: '${_stats['activeOrders'] ?? 0} invoices', icon:Icons.handshake, color:Colors.orange))]),
+      IntrinsicHeight(child: Row(children: [Expanded(child: _StatCard(label:'Total Items', value:'${_stats['items']}', icon:Icons.inventory_2, color:Colors.blue)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Active Rental Items', value:'${_stats['activeRentals']}', subtitle: '${_stats['activeOrders'] ?? 0} invoices', icon:Icons.handshake, color:Colors.orange))])),
       const SizedBox(height: 8),
-      Row(children: [Expanded(child: _StatCard(label:'Customers', value:'${_stats['customers']}', icon:Icons.people, color:Colors.purple)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Returned Lines', value:'${_stats['returned']}', subtitle: '${_stats['returnedOrders'] ?? 0} invoices', icon:Icons.check_circle, color:Colors.green))]),
+      IntrinsicHeight(child: Row(children: [Expanded(child: _StatCard(label:'Customers', value:'${_stats['customers']}', icon:Icons.people, color:Colors.purple)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Returned Lines', value:'${_stats['returned']}', subtitle: '${_stats['returnedOrders'] ?? 0} invoices', icon:Icons.check_circle, color:Colors.green))])),
       const SizedBox(height: 14),
 
       Card(child: ListTile(leading: const Icon(Icons.account_balance_wallet, color: Colors.orange), title: const Text('Pending Collections', style: TextStyle(fontWeight: FontWeight.w700)), subtitle: const Text('Outstanding amount from returned invoices'), trailing: Text(formatMoney(_pendingCollections, decimals: 0), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.orange)), onTap: () => _nav(const PaymentLedgerScreen()))),
@@ -3691,7 +3693,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       if ((_stats['overdue'] ?? 0) > 0) ...[
         const SizedBox(height: 20), Row(children: [const Icon(Icons.warning_amber_rounded, color: Colors.orange), const SizedBox(width: 8), Text('Overdue Rentals', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.orange[300]))]), const SizedBox(height: 8),
-        ..._overdueRentals.map((r) => Card(color: Colors.orange.withValues(alpha:0.15), child: ListTile(leading: const Icon(Icons.warning_amber_rounded, color: Colors.orange), title: Text('${r['contractor']} - ${r['itemName']}'), subtitle: Text('Out since: ${DatabaseHelper.formatDateString(r['checkoutDate'])} (${RentalUtils.calculateChargeDays(r['checkoutDate'] as String?, null, 0)} days)')))),
+        ..._overdueRentals.map((r) => Card(color: Colors.orange.withValues(alpha:0.15), child: ListTile(leading: const Icon(Icons.warning_amber_rounded, color: Colors.orange), title: Text('${r['contractor']} - Invoice #${r['invoiceId']}'), subtitle: Text('${r['itemCount']} items out since: ${DatabaseHelper.formatDateString(r['checkoutDate'])} (${RentalUtils.calculateChargeDays(r['checkoutDate'] as String?, null, 0)} days)')))),
       ],
       if (AppProvider.of(context).showTopCustomersByRevenue) ...[
         const SizedBox(height: 20), const Text('Top Customers By Revenue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)), const SizedBox(height: 8),
@@ -4812,7 +4814,7 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
         context: context, lines: _lines, inventoryItems: _items, priceLabel: 'Rate ($curr)',
         onAddLine: _addLine, onRemoveLine: _removeLine, onStateChanged: () => setState((){}),
       )),
-      Padding(padding: const EdgeInsets.all(12), child: SizedBox(width: double.infinity, child: ElevatedButton.icon(icon: const Icon(Icons.check), label: const Text('Save Rental'), style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)), onPressed: _saveOrder))),
+      Padding(padding: const EdgeInsets.all(12), child: SizedBox(width: double.infinity, child: ElevatedButton.icon(icon: const Icon(Icons.check), label: const Text('Save Rental Order'), style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)), onPressed: _saveOrder))),
     ]),
   );
 }
@@ -5480,23 +5482,23 @@ class _NewPurchaseOrderScreenState extends State<NewPurchaseOrderScreen> {
     final grandTotal = subtotal + taxAmount;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('New Purchase Order')),
+      appBar: AppBar(title: const Text('Create Purchase Order')),
       body: Column(
         children: [
           Container(padding: const EdgeInsets.symmetric(horizontal: 12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Vendor Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)), TextButton.icon(onPressed: () => setState(() => _isFormExpanded = !_isFormExpanded), icon: Icon(_isFormExpanded ? Icons.expand_less : Icons.expand_more), label: Text(_isFormExpanded ? 'Hide' : 'Show'))])),
-          if (_isFormExpanded) Padding(padding: const EdgeInsets.fromLTRB(12, 0, 12, 12), child: Column(children: [
+          if (_isFormExpanded) SingleChildScrollView(padding: const EdgeInsets.fromLTRB(12, 0, 12, 12), child: Column(children: [
             AppUI.buildPartyDateRow(
                 context: context, partyLabel: 'Vendor', partyIcon: Icons.domain, selectedPartyId: _selectedSupplierId, partyList: _suppliers,
                 filter: (s, q) => (s['name']?.toString().toLowerCase() ?? '').contains(q.toLowerCase()),
-                itemBuilder: (s) => ListTile(leading: const Icon(Icons.domain), title: Text(s['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)), trailing: const Icon(Icons.chevron_right, size: 16)),
+                itemBuilder: (s) => ListTile(leading: const CircleAvatar(child: Icon(Icons.domain, size: 20)), title: Text(s['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)), trailing: const Icon(Icons.chevron_right, size: 16)),
                 onPartySelected: (id) => setState(() => _selectedSupplierId = id),
-                selectedDate: _orderDate, dateCtrl: _dateCtrl, dateLabel: 'Date', onDateSelected: (d) { setState(() { _orderDate = d; }); _updatePoNumber(d); }
+                selectedDate: _orderDate, dateCtrl: _dateCtrl, dateLabel: 'Order Date', onDateSelected: (d) { setState(() { _orderDate = d; }); _updatePoNumber(d); }
             ),
             const SizedBox(height: 12),
             Row(children: [ Expanded(child: TextFormField(controller: _amountPaidC, decoration: AppUI.inputDecoration('Advance ($curr)', i: Icons.payments), keyboardType: const TextInputType.numberWithOptions(decimal: true))), const SizedBox(width: 8), Expanded(child: DropdownButtonFormField<String>(initialValue: _selectedPaymentMethod, decoration: AppUI.inputDecoration('Method', i: Icons.payment), items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(), onChanged: (v) { if (v != null) setState(() => _selectedPaymentMethod = v); })) ]),
             const SizedBox(height: 12),
             Row(children: [ Expanded(child: TextFormField(controller: _poNumC, decoration: AppUI.inputDecoration('PO Number', i: Icons.receipt_long))), const SizedBox(width: 8), Expanded(child: TextFormField(controller: _billNumC, decoration: AppUI.inputDecoration('Vendor Bill No.', i: Icons.receipt))) ]),
-            const SizedBox(height: 12), TextFormField(controller: _notesC, decoration: AppUI.inputDecoration('Notes', i: Icons.notes)),
+            const SizedBox(height: 12), TextFormField(controller: _notesC, decoration: AppUI.inputDecoration('Order Notes', i: Icons.notes)),
           ])),
           Container(width: double.infinity, color: Theme.of(context).colorScheme.surfaceContainerHighest, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), child: const Text('Acquisition Items', style: TextStyle(fontWeight: FontWeight.bold))),
           Expanded(child: Column(children: [
@@ -6928,10 +6930,8 @@ class _StatCard extends StatelessWidget {
             textBaseline: TextBaseline.alphabetic,
             children: [
               Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
-              if (subtitle != null) ...[
-                const SizedBox(width: 6),
-                Expanded(child: Text('($subtitle)', style: TextStyle(fontSize: 11, color: Theme.of(context).textTheme.bodySmall?.color?.withValues(alpha: 0.7)), maxLines: 1, overflow: TextOverflow.ellipsis)),
-              ]
+              const SizedBox(width: 6),
+              Expanded(child: Text(subtitle != null ? '($subtitle)' : '', style: TextStyle(fontSize: 11, color: Theme.of(context).textTheme.bodySmall?.color?.withValues(alpha: 0.7)), maxLines: 1, overflow: TextOverflow.ellipsis)),
             ],
           ),
         ],

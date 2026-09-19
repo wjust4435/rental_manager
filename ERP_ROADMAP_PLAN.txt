@@ -1,0 +1,30 @@
+# Rental Manager - Master Development Roadmap
+
+## BUCKET 1: Immediate Execution (Next Sessions)
+- Fix Dashboard Card Alignment (ensure uniform height for _StatCard widgets)
+- Refactor Overdue Rentals (Dashboard) to group by invoiceId instead of line item
+- Unify PO and Rental Order UI (standardize navigation, form layout, and state management)
+
+## BUCKET 2: Future Pipeline (Approved & Planned)
+- Customizable Party Account Numbers (Customers C000*** & Suppliers V000*** with Settings config)
+- Sales vs. Rentals (Buy Option) toggle to sell inventory outright
+- Flexible Billing Intervals (Weekly/Monthly flat rates)
+- Quotes / Estimates Conversion (1-tap Proforma to active Rental Order)
+- Purchase Orders (POs) Flow Enhancement (formal generation, supplier transmission)
+- Batch Ledger / Split Payments (apply 1 payment to multiple invoices)
+- Credit Notes & Deductions (financial adjustments for returns/damages)
+- Expense / Revenue Linkage (link POs to Expenses for Accounts Payable)
+- Universal Data Export (Excel / CSV) for all major tables
+- The "Day Book" (Cash & Bank Management)
+- Digital Catalog / Price List Sharing
+- Dynamic UPI QRs on Invoices (baking exact amount into QR)
+
+## BUCKET 3: Under Consideration (Not Sure Yet)
+- Multi-Warehouse / Location Tracking
+- Inventory Low-Stock Alerts (Reorder Points)
+
+## BUCKET 4: Rejected / On Hold Indefinitely
+- Role-Based Access Control (RBAC) - Too early for user base size
+- Top 5 Languages Localization (i18n) - Paused for now
+- 1-Click WhatsApp Integration - Generic share is fine for now
+- Camera Barcode / QR Code Scanning - Not appealing right now
