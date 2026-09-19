@@ -34,9 +34,11 @@ android {
     signingConfigs {
         create("release") {
             if (System.getenv("CI") != null) {
-                // GitLab CI logic
-                val projectDir = System.getenv("CI_PROJECT_DIR")
-                storeFile = file("$projectDir/.gitlab/secure_files/rental_manager_release.jks")
+                // Supports both GitHub Actions (KEYSTORE_PATH) and GitLab CI (CI_PROJECT_DIR)
+                val keystorePath = System.getenv("KEYSTORE_PATH")
+                    ?: "${System.getenv("CI_PROJECT_DIR")}/.gitlab/secure_files/rental_manager_release.jks"
+
+                storeFile = file(keystorePath)
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("KEY_ALIAS")
                 keyPassword = System.getenv("KEY_PASSWORD")
