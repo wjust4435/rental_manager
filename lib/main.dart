@@ -105,6 +105,10 @@ class AppSettingsNotifier extends ChangeNotifier {
   String _language           = 'English';
   String _appIcon            = 'icon2';
   bool   _allowFinalInvoiceEditing = true;
+  String _customerPrefix     = 'C';
+  int    _customerSequence   = 1;
+  String _supplierPrefix     = 'S';
+  int    _supplierSequence   = 1;
   List<String> _quickActions = ['New Order', 'Ledgers', 'Biz Info', 'Proforma', 'Invoice', 'Parties'];
 
   SharedPreferences? _prefs;
@@ -125,6 +129,10 @@ class AppSettingsNotifier extends ChangeNotifier {
   bool   get notifySummary       => _notifySummary;
   String get language            => _language;
   bool   get allowFinalInvoiceEditing => _allowFinalInvoiceEditing;
+  String get customerPrefix      => _customerPrefix;
+  int    get customerSequence    => _customerSequence;
+  String get supplierPrefix      => _supplierPrefix;
+  int    get supplierSequence    => _supplierSequence;
   List<String> get quickActions  => _quickActions;
 
   double get textScale {
@@ -166,6 +174,10 @@ class AppSettingsNotifier extends ChangeNotifier {
     _appIcon                   = savedIcon == 'default' ? 'icon2' : savedIcon;
 
     _allowFinalInvoiceEditing  = p.getBool('allowFinalInvoiceEditing')    ?? true;
+    _customerPrefix            = p.getString('customerPrefix')            ?? 'C';
+    _customerSequence          = p.getInt('customerSequence')             ?? 1;
+    _supplierPrefix            = p.getString('supplierPrefix')            ?? 'S';
+    _supplierSequence          = p.getInt('supplierSequence')             ?? 1;
     _quickActions              = p.getStringList('quickActions')          ?? ['New Order', 'Ledgers', 'Biz Info', 'Proforma', 'Invoice', 'Parties'];
     notifyListeners();
   }
@@ -188,6 +200,10 @@ class AppSettingsNotifier extends ChangeNotifier {
     await p.setString('language',            _language);
     await p.setString('appIcon',             _appIcon);
     await p.setBool('allowFinalInvoiceEditing', _allowFinalInvoiceEditing);
+    await p.setString('customerPrefix',      _customerPrefix);
+    await p.setInt('customerSequence',       _customerSequence);
+    await p.setString('supplierPrefix',      _supplierPrefix);
+    await p.setInt('supplierSequence',       _supplierSequence);
   }
 
   Future<void> setCurrencySymbol(String v)      async { _currencySymbol = v; notifyListeners(); await _save(); }
@@ -206,6 +222,10 @@ class AppSettingsNotifier extends ChangeNotifier {
   Future<void> setLanguage(String v)            async { _language = v; notifyListeners(); await _save(); }
   Future<void> setAppIcon(String v)             async { _appIcon = v; notifyListeners(); await _save(); }
   Future<void> setAllowFinalInvoiceEditing(bool v) async { _allowFinalInvoiceEditing = v; notifyListeners(); await _save(); }
+  Future<void> setCustomerPrefix(String v)      async { _customerPrefix = v; notifyListeners(); await _save(); }
+  Future<void> setCustomerSequence(int v)       async { _customerSequence = v; notifyListeners(); await _save(); }
+  Future<void> setSupplierPrefix(String v)      async { _supplierPrefix = v; notifyListeners(); await _save(); }
+  Future<void> setSupplierSequence(int v)       async { _supplierSequence = v; notifyListeners(); await _save(); }
   Future<void> setQuickActions(List<String> actions) async { _quickActions = actions; notifyListeners(); await _save(); }
 }
 
@@ -333,7 +353,7 @@ class NotificationService {
 
 // ========Database Helper========
 class DatabaseHelper {
-  static const int _dbVersion = 37;
+  static const int _dbVersion = 38;
   static Database? _db;
   static String _activeDbFile = 'rental_manager_v1.db';
 
@@ -422,7 +442,7 @@ class DatabaseHelper {
             "CREATE TABLE rentals(id INTEGER PRIMARY KEY AUTOINCREMENT, itemId INTEGER, orderId INTEGER, customerId INTEGER, contractor TEXT, phone TEXT, phone2 TEXT DEFAULT '', address TEXT, advanceDeposit REAL DEFAULT 0, discount REAL DEFAULT 0, badDebt REAL DEFAULT 0, qty INTEGER, checkoutDate TEXT, rentalRate REAL DEFAULT 0, returned INTEGER DEFAULT 0, returnDate TEXT, notes TEXT DEFAULT '', isSettled INTEGER DEFAULT 0, paymentMethod TEXT DEFAULT '', penaltyFee REAL DEFAULT 0, damagedQty INTEGER DEFAULT 0, isCancelled INTEGER DEFAULT 0, invoiceNumber TEXT DEFAULT '', voidedAt TEXT DEFAULT '')"
         );
         await db.execute(
-            "CREATE TABLE customers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, phone TEXT, phone2 TEXT DEFAULT '', email TEXT DEFAULT '', address TEXT, notes TEXT DEFAULT '', joinedDate TEXT DEFAULT '', isBlacklisted INTEGER DEFAULT 0, partyType TEXT DEFAULT 'Customer', taxRegNo TEXT DEFAULT '')"
+            "CREATE TABLE customers(id INTEGER PRIMARY KEY AUTOINCREMENT, customerNumber TEXT DEFAULT '', name TEXT, phone TEXT, phone2 TEXT DEFAULT '', email TEXT DEFAULT '', address TEXT, notes TEXT DEFAULT '', joinedDate TEXT DEFAULT '', isBlacklisted INTEGER DEFAULT 0, partyType TEXT DEFAULT 'Customer', taxRegNo TEXT DEFAULT '')"
         );
         await db.execute(
             "CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT, customerId INTEGER, customerName TEXT, createdDate TEXT, proformaNumber TEXT DEFAULT '', invoiceNumber TEXT DEFAULT '', voidedAt TEXT DEFAULT '', taxType TEXT DEFAULT 'none', taxRate REAL DEFAULT 0, taxMode TEXT DEFAULT 'exclusive', taxRegNo TEXT DEFAULT '')"
@@ -440,7 +460,7 @@ class DatabaseHelper {
             "CREATE TABLE expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, paymentMethod TEXT, vendor TEXT, receiptPath TEXT, notes TEXT)"
         );
         await db.execute(
-            "CREATE TABLE suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT, email TEXT, address TEXT, taxRegNo TEXT, notes TEXT, joinedDate TEXT)"
+            "CREATE TABLE suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, vendorNumber TEXT DEFAULT '', name TEXT NOT NULL, phone TEXT, email TEXT, address TEXT, taxRegNo TEXT, notes TEXT, joinedDate TEXT)"
         );
         await db.execute(
             "CREATE TABLE purchase_orders(id INTEGER PRIMARY KEY AUTOINCREMENT, supplierId INTEGER, poNumber TEXT, billNumber TEXT DEFAULT '', orderDate TEXT, subtotal REAL DEFAULT 0, taxAmount REAL DEFAULT 0, grandTotal REAL DEFAULT 0, amountPaid REAL DEFAULT 0, notes TEXT, isCancelled INTEGER DEFAULT 0)"
@@ -593,6 +613,18 @@ class DatabaseHelper {
             ''');
           } catch (e, st) {
             debugPrint('Migration v37 error: $e\n$st');
+          }
+        }
+
+        if (oldV < 38) {
+          try {
+            Future<void> safeAddColumn(String table, String definition) async {
+              try { await db.execute("ALTER TABLE $table ADD COLUMN $definition"); } catch (_) {}
+            }
+            await safeAddColumn("customers", "customerNumber TEXT DEFAULT ''");
+            await safeAddColumn("suppliers", "vendorNumber TEXT DEFAULT ''");
+          } catch (e, st) {
+            debugPrint('Migration v38 error: $e\n$st');
           }
         }
       },
@@ -894,9 +926,11 @@ class DatabaseHelper {
     final db = await getDatabase();
     final cutoff = isoDate(DateTime.now().subtract(Duration(days: overdueDays)));
     return db.rawQuery('''
-      SELECT rentals.*, items.name as itemName FROM rentals 
-      JOIN items ON rentals.itemId=items.id 
-      WHERE (returned=0 OR returned IS NULL) AND checkoutDate <= ? AND isCancelled = 0 ORDER BY checkoutDate ASC
+      SELECT rentals.orderId, rentals.contractor, rentals.checkoutDate, COUNT(rentals.id) as itemCount 
+      FROM rentals 
+      WHERE (returned=0 OR returned IS NULL) AND checkoutDate <= ? AND isCancelled = 0 
+      GROUP BY rentals.orderId, rentals.contractor, rentals.checkoutDate
+      ORDER BY rentals.checkoutDate ASC
     ''', [cutoff]);
   }
 
@@ -1449,17 +1483,19 @@ class DatabaseHelper {
     return db.query('customers', where: 'partyType = ?', whereArgs: [partyType], orderBy: 'name ASC');
   }
 
-  static Future<int> insertCustomer(String name, String phone, String phone2, String email, String address, {String notes = '', String joinedDate = '', String partyType = 'Customer', String taxRegNo = ''}) async {
+  static Future<int> insertCustomer(String name, String phone, String phone2, String email, String address, {String notes = '', String joinedDate = '', String partyType = 'Customer', String taxRegNo = '', String customerNumber = ''}) async {
     final db = await getDatabase();
     return db.insert('customers', {
+      'customerNumber': customerNumber,
       'name': name, 'phone': phone, 'phone2': phone2, 'email': email, 'address': address,
       'notes': notes, 'joinedDate': joinedDate.isNotEmpty ? joinedDate : isoNow(), 'isBlacklisted': 0, 'partyType': partyType, 'taxRegNo': taxRegNo
     });
   }
 
-  static Future<void> updateCustomer(int id, String name, String phone, String phone2, String email, String address, {String notes = '', String joinedDate = '', int isBlacklisted = 0, String partyType = 'Customer', String taxRegNo = ''}) async {
+  static Future<void> updateCustomer(int id, String name, String phone, String phone2, String email, String address, {String notes = '', String joinedDate = '', int isBlacklisted = 0, String partyType = 'Customer', String taxRegNo = '', String customerNumber = ''}) async {
     final db = await getDatabase();
     await db.update('customers', {
+      'customerNumber': customerNumber,
       'name': name, 'phone': phone, 'phone2': phone2, 'email': email, 'address': address,
       'notes': notes, 'joinedDate': joinedDate, 'isBlacklisted': isBlacklisted, 'partyType': partyType, 'taxRegNo': taxRegNo
     }, where: 'id=?', whereArgs: [id]);
@@ -3665,9 +3701,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_error != null) return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [const Icon(Icons.error_outline, color: Colors.redAccent, size: 48), const SizedBox(height: 16), Text(_error!), const SizedBox(height: 24), ElevatedButton.icon(onPressed: _load, icon: const Icon(Icons.refresh), label: const Text('Retry'))]));
 
     return RefreshIndicator(onRefresh: _load, child: ListView(padding: const EdgeInsets.all(16), children: [
-      Row(children: [Expanded(child: _StatCard(label:'Total Items', value:'${_stats['items']}', icon:Icons.inventory_2, color:Colors.blue)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Active Rental Items', value:'${_stats['activeRentals']}', subtitle: '${_stats['activeOrders'] ?? 0} invoices', icon:Icons.handshake, color:Colors.orange))]),
+      IntrinsicHeight(child: Row(children: [Expanded(child: _StatCard(label:'Total Items', value:'${_stats['items']}', icon:Icons.inventory_2, color:Colors.blue)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Active Rental Items', value:'${_stats['activeRentals']}', subtitle: '${_stats['activeOrders'] ?? 0} invoices', icon:Icons.handshake, color:Colors.orange))])),
       const SizedBox(height: 8),
-      Row(children: [Expanded(child: _StatCard(label:'Customers', value:'${_stats['customers']}', icon:Icons.people, color:Colors.purple)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Returned Lines', value:'${_stats['returned']}', subtitle: '${_stats['returnedOrders'] ?? 0} invoices', icon:Icons.check_circle, color:Colors.green))]),
+      IntrinsicHeight(child: Row(children: [Expanded(child: _StatCard(label:'Customers', value:'${_stats['customers']}', icon:Icons.people, color:Colors.purple)), const SizedBox(width: 8), Expanded(child: _StatCard(label:'Returned Lines', value:'${_stats['returned']}', subtitle: '${_stats['returnedOrders'] ?? 0} invoices', icon:Icons.check_circle, color:Colors.green))])),
       const SizedBox(height: 14),
 
       Card(child: ListTile(leading: const Icon(Icons.account_balance_wallet, color: Colors.orange), title: const Text('Pending Collections', style: TextStyle(fontWeight: FontWeight.w700)), subtitle: const Text('Outstanding amount from returned invoices'), trailing: Text(formatMoney(_pendingCollections, decimals: 0), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.orange)), onTap: () => _nav(const PaymentLedgerScreen()))),
@@ -3691,7 +3727,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       if ((_stats['overdue'] ?? 0) > 0) ...[
         const SizedBox(height: 20), Row(children: [const Icon(Icons.warning_amber_rounded, color: Colors.orange), const SizedBox(width: 8), Text('Overdue Rentals', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.orange[300]))]), const SizedBox(height: 8),
-        ..._overdueRentals.map((r) => Card(color: Colors.orange.withValues(alpha:0.15), child: ListTile(leading: const Icon(Icons.warning_amber_rounded, color: Colors.orange), title: Text('${r['contractor']} - ${r['itemName']}'), subtitle: Text('Out since: ${DatabaseHelper.formatDateString(r['checkoutDate'])} (${RentalUtils.calculateChargeDays(r['checkoutDate'] as String?, null, 0)} days)')))),
+        ..._overdueRentals.map((r) => Card(color: Colors.orange.withValues(alpha:0.15), child: ListTile(leading: const Icon(Icons.warning_amber_rounded, color: Colors.orange), title: Text('${r['contractor']} - Order #${r['orderId']}'), subtitle: Text('${r['itemCount']} items out since: ${DatabaseHelper.formatDateString(r['checkoutDate'])} (${RentalUtils.calculateChargeDays(r['checkoutDate'] as String?, null, 0)} days)')))),
       ],
       if (AppProvider.of(context).showTopCustomersByRevenue) ...[
         const SizedBox(height: 20), const Text('Top Customers By Revenue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)), const SizedBox(height: 8),
@@ -4544,7 +4580,19 @@ class _PartiesListTabState extends State<_PartiesListTab> {
     bool isBl = (existing?['isBlacklisted'] as int? ?? 0) == 1;
 
     await AppUI.showFormDialog(context, title: isEdit ? 'Edit ${widget.partyType}' : 'Add ${widget.partyType}', onSave: () async {
-      isEdit ? await DatabaseHelper.updateCustomer(existing['id'], nC.text.trim(), p1C.text.trim(), p2C.text.trim(), eC.text.trim(), aC.text.trim(), notes: ntC.text.trim(), joinedDate: existing['joinedDate'], isBlacklisted: isBl ? 1 : 0, partyType: widget.partyType, taxRegNo: tC.text.trim()) : await DatabaseHelper.insertCustomer(nC.text.trim(), p1C.text.trim(), p2C.text.trim(), eC.text.trim(), aC.text.trim(), notes: ntC.text.trim(), partyType: widget.partyType, taxRegNo: tC.text.trim());
+      String cNum = existing?['customerNumber'] as String? ?? '';
+      if (cNum.isEmpty) {
+        final s = appSettingsNotifier;
+        if (widget.partyType == 'Customer') {
+          cNum = '${s.customerPrefix}${s.customerSequence.toString().padLeft(4, '0')}';
+          s.setCustomerSequence(s.customerSequence + 1);
+        } else if (widget.partyType == 'Supplier') {
+          cNum = '${s.supplierPrefix}${s.supplierSequence.toString().padLeft(4, '0')}';
+          s.setSupplierSequence(s.supplierSequence + 1);
+        }
+      }
+
+      isEdit ? await DatabaseHelper.updateCustomer(existing['id'], nC.text.trim(), p1C.text.trim(), p2C.text.trim(), eC.text.trim(), aC.text.trim(), notes: ntC.text.trim(), joinedDate: existing['joinedDate'], isBlacklisted: isBl ? 1 : 0, partyType: widget.partyType, taxRegNo: tC.text.trim(), customerNumber: cNum) : await DatabaseHelper.insertCustomer(nC.text.trim(), p1C.text.trim(), p2C.text.trim(), eC.text.trim(), aC.text.trim(), notes: ntC.text.trim(), partyType: widget.partyType, taxRegNo: tC.text.trim(), customerNumber: cNum);
       _load();
     }, children: [
       AppUI.buildTextField(controller: nC, label: 'Name *', validator: (v) => v?.trim().isEmpty == true ? 'Required' : null),
@@ -4583,6 +4631,7 @@ class _PartiesListTabState extends State<_PartiesListTab> {
             const SizedBox(width: 10),
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [if (isBl) const Padding(padding: EdgeInsets.only(right: 5), child: Icon(Icons.block, size: 14, color: Colors.red)), Expanded(child: Text(name, style: TextStyle(fontWeight: FontWeight.w700, color: isBl ? Colors.red : null)))]),
+              if ((c['customerNumber'] ?? '').isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4, bottom: 2), child: Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Theme.of(context).colorScheme.primaryContainer, borderRadius: BorderRadius.circular(4)), child: Text(c['customerNumber'] as String? ?? '', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onPrimaryContainer)))),
               if ((c['phone'] ?? '').isNotEmpty) Padding(padding: const EdgeInsets.only(top: 2), child: Text('${c['phone']}${c['phone2'].isNotEmpty ? ' / ${c['phone2']}' : ''}', style: const TextStyle(fontSize: 13))),
               if ((c['joinedDate'] ?? '').isNotEmpty) Padding(padding: const EdgeInsets.only(top: 2), child: Text('Since ${DatabaseHelper.formatDateString(c['joinedDate'])}', style: TextStyle(fontSize: 11, color: Theme.of(context).textTheme.bodySmall?.color))),
             ])),
@@ -4783,6 +4832,15 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
     }
     if (sel.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Add at least one item.'))); return; }
     try {
+      // Phase 2 CRM Core Ops: Ensure auto-number generation triggers retroactively when a legacy customer makes a new order
+      String cNum = cust['customerNumber'] as String? ?? '';
+      if (cNum.isEmpty && cust['id'] != null) {
+        final s = appSettingsNotifier;
+        cNum = '${s.customerPrefix}${s.customerSequence.toString().padLeft(4, '0')}';
+        s.setCustomerSequence(s.customerSequence + 1);
+        await DatabaseHelper.updateCustomer(cust['id'], cust['name'], cust['phone'] ?? '', cust['phone2'] ?? '', cust['email'] ?? '', cust['address'] ?? '', notes: cust['notes'] ?? '', joinedDate: cust['joinedDate'] ?? '', isBlacklisted: cust['isBlacklisted'] ?? 0, partyType: cust['partyType'] ?? 'Customer', taxRegNo: cust['taxRegNo'] ?? '', customerNumber: cNum);
+      }
+
       final oid = await DatabaseHelper.createOrder(cust['id'], sel.first['contractor'], DatabaseHelper.isoDate(_selectedDate));
       await DatabaseHelper.createOrderRentals(oid, sel);
       if (!mounted) return;
@@ -4812,7 +4870,7 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
         context: context, lines: _lines, inventoryItems: _items, priceLabel: 'Rate ($curr)',
         onAddLine: _addLine, onRemoveLine: _removeLine, onStateChanged: () => setState((){}),
       )),
-      Padding(padding: const EdgeInsets.all(12), child: SizedBox(width: double.infinity, child: ElevatedButton.icon(icon: const Icon(Icons.check), label: const Text('Save Rental'), style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)), onPressed: _saveOrder))),
+      Padding(padding: const EdgeInsets.all(12), child: SizedBox(width: double.infinity, child: ElevatedButton.icon(icon: const Icon(Icons.check), label: const Text('Save Rental Order'), style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)), onPressed: _saveOrder))),
     ]),
   );
 }
@@ -5422,6 +5480,17 @@ class _NewPurchaseOrderScreenState extends State<NewPurchaseOrderScreen> {
   Future<void> _savePO() async {
     if (_selectedSupplierId == null) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a supplier.'))); return; }
 
+    // Phase 2 CRM Core Ops: Ensure auto-number generation triggers retroactively when a legacy supplier gets a new PO
+    final supplier = _suppliers.firstWhere((s) => s['id'] == _selectedSupplierId, orElse: () => <String, dynamic>{});
+    String vNum = supplier['customerNumber'] as String? ?? '';
+    if (vNum.isEmpty && supplier.isNotEmpty) {
+      final s = appSettingsNotifier;
+      vNum = '${s.supplierPrefix}${s.supplierSequence.toString().padLeft(4, '0')}';
+      s.setSupplierSequence(s.supplierSequence + 1);
+      // We re-use updateCustomer since suppliers live in the customers table with partyType='Supplier'
+      await DatabaseHelper.updateCustomer(supplier['id'], supplier['name'], supplier['phone'] ?? '', supplier['phone2'] ?? '', supplier['email'] ?? '', supplier['address'] ?? '', notes: supplier['notes'] ?? '', joinedDate: supplier['joinedDate'] ?? '', isBlacklisted: supplier['isBlacklisted'] ?? 0, partyType: 'Supplier', taxRegNo: supplier['taxRegNo'] ?? '', customerNumber: vNum);
+    }
+
     final subtotal = _calculateSubtotal();
     final taxRate = double.tryParse(_taxRateC.text) ?? 0.0;
     final taxAmount = subtotal * (taxRate / 100.0);
@@ -5480,23 +5549,23 @@ class _NewPurchaseOrderScreenState extends State<NewPurchaseOrderScreen> {
     final grandTotal = subtotal + taxAmount;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('New Purchase Order')),
+      appBar: AppBar(title: const Text('Create Purchase Order')),
       body: Column(
         children: [
           Container(padding: const EdgeInsets.symmetric(horizontal: 12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Vendor Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)), TextButton.icon(onPressed: () => setState(() => _isFormExpanded = !_isFormExpanded), icon: Icon(_isFormExpanded ? Icons.expand_less : Icons.expand_more), label: Text(_isFormExpanded ? 'Hide' : 'Show'))])),
-          if (_isFormExpanded) Padding(padding: const EdgeInsets.fromLTRB(12, 0, 12, 12), child: Column(children: [
+          if (_isFormExpanded) SingleChildScrollView(padding: const EdgeInsets.fromLTRB(12, 0, 12, 12), child: Column(children: [
             AppUI.buildPartyDateRow(
                 context: context, partyLabel: 'Vendor', partyIcon: Icons.domain, selectedPartyId: _selectedSupplierId, partyList: _suppliers,
                 filter: (s, q) => (s['name']?.toString().toLowerCase() ?? '').contains(q.toLowerCase()),
-                itemBuilder: (s) => ListTile(leading: const Icon(Icons.domain), title: Text(s['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)), trailing: const Icon(Icons.chevron_right, size: 16)),
+                itemBuilder: (s) => ListTile(leading: const CircleAvatar(child: Icon(Icons.domain, size: 20)), title: Text(s['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)), trailing: const Icon(Icons.chevron_right, size: 16)),
                 onPartySelected: (id) => setState(() => _selectedSupplierId = id),
-                selectedDate: _orderDate, dateCtrl: _dateCtrl, dateLabel: 'Date', onDateSelected: (d) { setState(() { _orderDate = d; }); _updatePoNumber(d); }
+                selectedDate: _orderDate, dateCtrl: _dateCtrl, dateLabel: 'Order Date', onDateSelected: (d) { setState(() { _orderDate = d; }); _updatePoNumber(d); }
             ),
             const SizedBox(height: 12),
             Row(children: [ Expanded(child: TextFormField(controller: _amountPaidC, decoration: AppUI.inputDecoration('Advance ($curr)', i: Icons.payments), keyboardType: const TextInputType.numberWithOptions(decimal: true))), const SizedBox(width: 8), Expanded(child: DropdownButtonFormField<String>(initialValue: _selectedPaymentMethod, decoration: AppUI.inputDecoration('Method', i: Icons.payment), items: kPaymentMethods.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(), onChanged: (v) { if (v != null) setState(() => _selectedPaymentMethod = v); })) ]),
             const SizedBox(height: 12),
             Row(children: [ Expanded(child: TextFormField(controller: _poNumC, decoration: AppUI.inputDecoration('PO Number', i: Icons.receipt_long))), const SizedBox(width: 8), Expanded(child: TextFormField(controller: _billNumC, decoration: AppUI.inputDecoration('Vendor Bill No.', i: Icons.receipt))) ]),
-            const SizedBox(height: 12), TextFormField(controller: _notesC, decoration: AppUI.inputDecoration('Notes', i: Icons.notes)),
+            const SizedBox(height: 12), TextFormField(controller: _notesC, decoration: AppUI.inputDecoration('Order Notes', i: Icons.notes)),
           ])),
           Container(width: double.infinity, color: Theme.of(context).colorScheme.surfaceContainerHighest, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), child: const Text('Acquisition Items', style: TextStyle(fontWeight: FontWeight.bold))),
           Expanded(child: Column(children: [
@@ -6928,10 +6997,8 @@ class _StatCard extends StatelessWidget {
             textBaseline: TextBaseline.alphabetic,
             children: [
               Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
-              if (subtitle != null) ...[
-                const SizedBox(width: 6),
-                Expanded(child: Text('($subtitle)', style: TextStyle(fontSize: 11, color: Theme.of(context).textTheme.bodySmall?.color?.withValues(alpha: 0.7)), maxLines: 1, overflow: TextOverflow.ellipsis)),
-              ]
+              const SizedBox(width: 6),
+              Expanded(child: Text(subtitle != null ? '($subtitle)' : '', style: TextStyle(fontSize: 11, color: Theme.of(context).textTheme.bodySmall?.color?.withValues(alpha: 0.7)), maxLines: 1, overflow: TextOverflow.ellipsis)),
             ],
           ),
         ],
@@ -7221,6 +7288,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
     )).then((_) => customC.dispose());
   }
 
+  void _showCustomerPrefixDialog() {
+    final s = appSettingsNotifier;
+    final prefixC = TextEditingController(text: s.customerPrefix);
+    final seqC = TextEditingController(text: s.customerSequence.toString());
+    showDialog<void>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text('Customer IDs'),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        const Text('Auto-generate IDs for customers (e.g. C0001)'),
+        const SizedBox(height: 16),
+        TextField(controller: prefixC, decoration: const InputDecoration(labelText: 'Prefix', border: OutlineInputBorder(), isDense: true, helperText: 'e.g., C, CUST'), maxLength: 5),
+        const SizedBox(height: 12),
+        TextField(controller: seqC, decoration: const InputDecoration(labelText: 'Next Sequence No.', border: OutlineInputBorder(), isDense: true, helperText: 'Starts at 1'), keyboardType: TextInputType.number),
+      ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        ElevatedButton(onPressed: () {
+          s.setCustomerPrefix(prefixC.text.trim().isEmpty ? 'C' : prefixC.text.trim());
+          s.setCustomerSequence(int.tryParse(seqC.text) ?? 1);
+          Navigator.pop(ctx);
+        }, child: const Text('Save'))
+      ],
+    )).then((_) { prefixC.dispose(); seqC.dispose(); });
+  }
+
+  void _showSupplierPrefixDialog() {
+    final s = appSettingsNotifier;
+    final prefixC = TextEditingController(text: s.supplierPrefix);
+    final seqC = TextEditingController(text: s.supplierSequence.toString());
+    showDialog<void>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text('Supplier IDs'),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        const Text('Auto-generate IDs for suppliers (e.g. V0001)'),
+        const SizedBox(height: 16),
+        TextField(controller: prefixC, decoration: const InputDecoration(labelText: 'Prefix', border: OutlineInputBorder(), isDense: true, helperText: 'e.g., V, VEN, S'), maxLength: 5),
+        const SizedBox(height: 12),
+        TextField(controller: seqC, decoration: const InputDecoration(labelText: 'Next Sequence No.', border: OutlineInputBorder(), isDense: true, helperText: 'Starts at 1'), keyboardType: TextInputType.number),
+      ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        ElevatedButton(onPressed: () {
+          s.setSupplierPrefix(prefixC.text.trim().isEmpty ? 'S' : prefixC.text.trim());
+          s.setSupplierSequence(int.tryParse(seqC.text) ?? 1);
+          Navigator.pop(ctx);
+        }, child: const Text('Save'))
+      ],
+    )).then((_) { prefixC.dispose(); seqC.dispose(); });
+  }
+
   void _showOverdueDaysDialog() {
     final s = appSettingsNotifier;
     final ctrl = TextEditingController(text: s.overdueDays.toString());
@@ -7267,6 +7382,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _hdr('BUSINESS'),
         _tile(i: Icons.currency_exchange, t: 'Currency Symbol', s: 'Currently: ${s.currencySymbol}', onTap: _showCurrencyDialog),
         _tile(i: Icons.warning_amber_rounded, t: 'Overdue Threshold', s: 'Flagged after ${s.overdueDays} days', onTap: _showOverdueDaysDialog),
+        _tile(i: Icons.badge_outlined, t: 'Customer Auto-ID', s: 'Prefix: ${s.customerPrefix} (Next: ${s.customerPrefix}${s.customerSequence.toString().padLeft(4, '0')})', onTap: _showCustomerPrefixDialog),
+        _tile(i: Icons.storefront_outlined, t: 'Supplier Auto-ID', s: 'Prefix: ${s.supplierPrefix} (Next: ${s.supplierPrefix}${s.supplierSequence.toString().padLeft(4, '0')})', onTap: _showSupplierPrefixDialog),
         _swt(i: Icons.draw_outlined, t: 'Proforma Signatures', s: 'Show signature lines on Proforma PDFs', v: s.showProformaSignatures, onChange: s.setShowProformaSignatures),
         _swt(i: Icons.draw, t: 'Invoice Signatures', s: 'Show signature lines on Final Invoices', v: s.showInvoiceSignatures, onChange: s.setShowInvoiceSignatures),
         _swt(i: Icons.edit_document, t: 'Allow Invoice Editing', s: 'Modify records after Final Invoice is issued', v: s.allowFinalInvoiceEditing, onChange: s.setAllowFinalInvoiceEditing),

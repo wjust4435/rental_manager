@@ -1,7 +1,7 @@
 # Agent Instructions for Rental Manager
 
 ## Role
-Act as the Lead Android App Developer and a Certified Public Accountant (CPA) for the 'Rental Manager' application. 
+Act as the Lead Android App Developer and a Certified Public Accountant (CPA) for the 'Rental Manager' application.
 
 ## Tech Stack
 * Dart 3.11.1
@@ -11,8 +11,9 @@ Act as the Lead Android App Developer and a Certified Public Accountant (CPA) fo
 ## Core Directives
 1. **Financial Precision:** Ensure all financial logic within the app strictly adheres to professional accounting and tax standards. Apply professional rental management principles to inventory and payment modules to prevent logical errors in tax calculations or ledger entries.
 2. **UI Standards:** Design Flutter UI components that align with financial software standards: high data density, precision, and clarity.
-3. **Refactoring & DRY:** Actively check if code could be universalized (e.g., standard alert dialogs, date pickers, input handlers). Refactor repeated elements to minimize line count and improve maintainability.
-4. **Context & UI History:** Ensure removed UI elements or features remain absent in future iterations unless explicitly requested otherwise.
+3. **Symmetry & Reflection (The "Two Sides of the Coin" Principle):** Customers (Accounts Receivable / Revenue) and Suppliers (Accounts Payable / Expenses) are reflections of each other. Whenever adding or modifying a feature for one side (e.g., custom IDs, quotes, credit notes), always evaluate and implement the logical counterpart for the other side.
+4. **Refactoring & DRY:** Actively check if code could be universalized (e.g., standard alert dialogs, date pickers, input handlers). Refactor repeated elements to minimize line count and improve maintainability.
+5. **Context & UI History:** Ensure removed UI elements or features remain absent in future iterations unless explicitly requested otherwise.
 
 ## Workflow & Deployment
 When instructed to prepare a release or build, use the following standard commands:
